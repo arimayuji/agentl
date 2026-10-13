@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentl"
+version = "0.1.0"
+description = "Agentic ETL for Python: YAML pipelines where each step is a connector, a function or an LLM agent."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6", "pydantic>=2"]
+
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1"]
+pdf = ["pypdf>=4"]
+office = ["openpyxl>=3.1", "python-docx>=1.1"]
+anthropic = ["anthropic>=0.70"]
+all = ["openpyxl>=3.1", "pypdf>=4", "python-docx>=1.1", "anthropic>=0.70"]
+dev = ["pytest>=8", "openpyxl>=3.1", "pypdf>=4", "python-docx>=1.1"]
+
+[project.scripts]
+agentl = "agentl.cli:main"
+
+[project.urls]
+Repository = "https://github.com/arimayuji/agentl"
