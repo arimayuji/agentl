@@ -18,3 +18,8 @@
 @keyframes agt-blink { 50% { opacity: 0; } }
 .md-typeset .launch-video { display: block; width: 100%; max-width: 64rem; margin: 1rem auto 2.5rem;
   border-radius: .9rem; box-shadow: 0 20px 60px rgba(0,0,0,.35); background: #07070b; aspect-ratio: 16 / 9; }
+
+.md-typeset .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); margin: 0; }
+.md-typeset .hero-wordmark { height: 5.5rem; margin: .5rem auto 1.2rem; display: block; }
+[data-md-color-scheme="slate"] .only-light, [data-md-color-scheme="default"] .only-dark { display: none !important; }
+@media screen and (max-width: 44.9375em) { .md-typeset .hero-wordmark { height: 3.8rem; } }

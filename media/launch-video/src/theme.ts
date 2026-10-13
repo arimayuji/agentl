@@ -2,11 +2,13 @@ import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/700.css";
 import "@fontsource/inter/800.css";
+import "@fontsource/outfit/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
 // Fonts are bundled from npm so renders work offline and are reproducible.
 export const sans = "Inter, system-ui, sans-serif";
+export const brand = "Outfit, Inter, sans-serif"; // wordmark font
 export const mono = "'JetBrains Mono', ui-monospace, monospace";
 export const FPS = 60;
 export const W = 1920;

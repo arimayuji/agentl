@@ -6,7 +6,10 @@ hide:
 
 <div class="hero" markdown>
 
-# agentl
+# agentl { .sr-only }
+
+<img class="hero-wordmark only-dark" src="assets/agentl-wordmark-dark.svg" alt="agentl">
+<img class="hero-wordmark only-light" src="assets/agentl-wordmark-light.svg" alt="agentl">
 
 <p class="tagline">Agentic ETL for Python. Declare pipelines in YAML where each step is a connector,
 a function or an LLM agent, and follow every run in a live diagram.</p>

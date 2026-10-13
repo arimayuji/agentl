@@ -1,4 +1,9 @@
-# agentl
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/brand/dist/agentl-wordmark-dark.svg">
+    <img src="media/brand/dist/agentl-wordmark-light.svg" alt="agentl" height="72">
+  </picture>
+</p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentl)](https://pypi.org/project/agentl/)

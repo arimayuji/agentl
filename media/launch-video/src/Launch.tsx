@@ -9,7 +9,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { c, gradientText, mono, sans } from "./theme";
+import { brand, c, gradientText, mono, sans } from "./theme";
 
 // ---------------------------------------------------------------- timeline
 // Shots overlap by OVERLAP frames so one zooms out while the next zooms in.
@@ -208,26 +208,6 @@ const Question: React.FC = () => {
 };
 
 // ---------------------------------------------------------------- 3. logo
-const Mark: React.FC<{ size: number; progress: number }> = ({ size, progress }) => {
-  const d = (k: number) => interpolate(progress, [k, k + 0.35], [0, 1], clamp);
-  return (
-    <svg width={size} height={size} viewBox="0 0 100 100" style={{ overflow: "visible" }}>
-      <defs>
-        <linearGradient id="mk" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0" stopColor={c.violet} />
-          <stop offset="1" stopColor={c.teal} />
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="96" height="96" rx="24" fill="url(#mk)" opacity={d(0)} />
-      <path d="M33 48 L62 30 M33 52 L62 70" stroke="#fff" strokeWidth="5" strokeLinecap="round"
-        strokeDasharray="40" strokeDashoffset={40 * (1 - d(0.35))} />
-      <circle cx="30" cy="50" r={10 * d(0.2)} fill="#fff" />
-      <circle cx="68" cy="28" r={10 * d(0.45)} fill="#fff" />
-      <circle cx="68" cy="72" r={10 * d(0.6)} fill={c.bg} />
-    </svg>
-  );
-};
-
 const Logo: React.FC = () => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -243,9 +223,8 @@ const Logo: React.FC = () => {
           border: `3px solid rgba(167,139,250,${0.6 * (1 - ring)})` }} />
         <div style={{ display: "flex", alignItems: "center", gap: 40,
           transform: `scale(${0.6 + sp * 0.4}) rotate(${(1 - sp) * -12}deg)` }}>
-          <Mark size={180} progress={lerp(f, 6, 60, 0, 1)} />
-          <div style={{ fontSize: 190, fontWeight: 800, letterSpacing: -7, color: c.fg }}>
-            <Chars text="agentl" at={24} step={3} />
+          <div style={{ fontFamily: brand, fontSize: 230, fontWeight: 700, letterSpacing: -7, color: c.fg }}>
+            <Chars text="agentl" at={10} step={3} />
           </div>
         </div>
         <div style={{ marginTop: 34, fontSize: 48, color: c.muted, fontWeight: 500 }}>
@@ -552,8 +531,7 @@ const CTA: React.FC = () => {
     <Shot dur={S.cta.dur + 40}>
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", fontFamily: sans, transform: `scale(${pull})` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
-          <Mark size={116} progress={lerp(f, 0, 40, 0, 1)} />
-          <div style={{ fontSize: 124, fontWeight: 800, letterSpacing: -5, color: c.fg }}><Chars text="agentl" at={10} step={2.5} /></div>
+          <div style={{ fontFamily: brand, fontSize: 150, fontWeight: 700, letterSpacing: -4, color: c.fg }}><Chars text="agentl" at={6} step={2.5} /></div>
         </div>
         <div style={{ marginTop: 48, padding: "24px 40px", borderRadius: 18, background: c.panel, border: `1px solid ${c.line}`,
           fontFamily: mono, fontSize: 42, color: c.fg, minWidth: 760, opacity: lerp(f, 28, 40, 0, 1),

@@ -9,8 +9,8 @@ copyright: Copyright &copy; 2026 Yuji Arima. Released under the MIT License.
 theme:
   name: material
   custom_dir: docs/overrides
+  logo: assets/favicon.svg
   icon:
-    logo: material/pipe
     repo: fontawesome/brands/github
   favicon: assets/favicon.svg
   palette:
