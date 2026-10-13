@@ -86,4 +86,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -e '.[dev]'
-      - run: pytest tests/test_postgres.py tests/test_store.py -v
+      - run: pytest tests/test_postgres.py tests/test_store.py tests/test_sql.py -v

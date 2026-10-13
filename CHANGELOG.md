@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `sql.read` and `sql.write` for any SQLAlchemy database (MySQL/MariaDB, SQL Server, Oracle,
+  Snowflake, BigQuery, DuckDB, ...) with `append`, `replace` and `upsert`. Extras `sql`, `mysql`,
+  `mssql`, `oracle`, `snowflake`, `bigquery`, `duckdb` (#24).
 - Shared run store in Postgres: `--db postgresql://...`, `AGENTL_DB` or `open_store(url)`; runs,
   events and the agent cache are shared by every worker (#32).
 - `agentl.run()` accepts a YAML path with `vars`, `db` and `raise_on_failure` (raises

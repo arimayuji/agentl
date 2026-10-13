@@ -3,4 +3,4 @@
 `input` is None for sources, a list of records for one upstream step, or a
 dict of {step_id: records} when the step has several inputs."""
 
-from . import files, http, postgres, sql, transforms  # noqa: F401  (registers connectors)
+from . import db, files, http, postgres, sql, transforms  # noqa: F401  (registers connectors)

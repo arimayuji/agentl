@@ -120,6 +120,46 @@ from the records (`bigint`, `double precision`, `boolean`, `jsonb`, `timestamptz
 `upsert` creates a unique index on `key` and uses `ON CONFLICT ... DO UPDATE`. Identifiers are
 quoted and values are always sent as parameters. Keep the DSN in an environment variable.
 
+## Any SQL database
+
+`sql.read` and `sql.write` work with any database SQLAlchemy supports. Install the extra for yours:
+
+| Database | Install | URL |
+|---|---|---|
+| MySQL / MariaDB | `agentl-etl[mysql]` | `mysql+pymysql://user:pass@host/db` |
+| SQL Server | `agentl-etl[mssql]` | `mssql+pymssql://user:pass@host/db` |
+| Oracle | `agentl-etl[oracle]` | `oracle+oracledb://user:pass@host/?service_name=XE` |
+| Snowflake | `agentl-etl[snowflake]` | `snowflake://user:pass@account/db/schema?warehouse=WH` |
+| BigQuery | `agentl-etl[bigquery]` | `bigquery://project/dataset` |
+| DuckDB | `agentl-etl[duckdb]` | `duckdb:///path/file.duckdb` |
+| Postgres, SQLite, others | `agentl-etl[sql]` + driver | `postgresql+psycopg://...`, `sqlite:///file.db` |
+
+```yaml
+- id: orders
+  use: sql.read
+  with:
+    url: ${WAREHOUSE_URL}
+    query: SELECT * FROM orders WHERE created_at >= :since
+    params: { since: "2026-10-01" }
+
+- id: save
+  use: sql.write
+  input: clean
+  with: { url: ${MYSQL_URL}, table: orders, mode: upsert, key: id }
+```
+
+| Parameter | Notes |
+|---|---|
+| `mode` | `append`, `replace` (drop and recreate) or `upsert` on `key` |
+| `key` | column or list of columns |
+| `schema`, `batch_size`, `create` | target schema, rows per batch (default 1000), create the table when missing (default true) |
+| `engine_options` | passed to `sqlalchemy.create_engine` (pool size, connect args) |
+
+Upsert is native on Postgres, SQLite and MySQL/MariaDB (a unique index on `key` is created when
+missing). On other databases, rows with the same key are deleted and re-inserted inside the same
+transaction. Missing tables are created with types inferred from the records; text keys become
+`VARCHAR(255)` so they can be indexed. For Postgres-specific features prefer `postgres.write`.
+
 ## Remote storage
 
 Every reader, `file.read`, `csv.write` and `json.write` accept remote paths:
