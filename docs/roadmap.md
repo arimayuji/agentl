@@ -6,6 +6,9 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.4.0**: browser (Playwright) and email (IMAP) connectors, Teams/Discord/Telegram/email/
+  PagerDuty/Opsgenie notifications, JSON logs, OpenTelemetry and Sentry, spend per step in the
+  dashboard.
 - **0.3.0**: OpenAI, Ollama and OpenAI-compatible providers, cost budget per run, remote storage
   (S3, GCS, Azure, SFTP), any SQL database, Celery/Temporal/Airflow integrations and a shared
   Postgres run store.
@@ -15,17 +18,12 @@ Priorities change with feedback, so dates are intentionally left out.
   (CSV, JSON, Excel, PDF, Word, HTTP, SQLite), notifications, CLI and local dashboard.
   See the [changelog](changelog.md).
 
-## Next: 0.4, more connectors and operations
+## Next: 0.5
 
 | Feature | Issue |
 |---|---|
-| Email (IMAP) with attachments | [#13](https://github.com/arimayuji/agentl/issues/13) |
-| Browser connector with Playwright | [#14](https://github.com/arimayuji/agentl/issues/14) |
 | AWS Lambda connector | [#15](https://github.com/arimayuji/agentl/issues/15) |
 | Bedrock provider | [#16](https://github.com/arimayuji/agentl/issues/16) |
-| Spend per step in the dashboard | [#17](https://github.com/arimayuji/agentl/issues/17) |
-| More notification channels: email, Teams, Discord, Telegram, PagerDuty, Opsgenie | [#27](https://github.com/arimayuji/agentl/issues/27) |
-| Observability: OpenTelemetry traces and metrics, JSON logs, Sentry | [#28](https://github.com/arimayuji/agentl/issues/28) |
 
 ## Later
 
