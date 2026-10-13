@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import graph, registry
-from .runner import Runner
+from .runner import Runner, add_import_paths
 from .spec import SpecError, load
 from .store import Store
 
@@ -48,10 +48,7 @@ def main(argv: list[str] | None = None) -> int:
 
     a = p.parse_args(argv)
     if getattr(a, "pipeline", None):
-        # Let `fn: module:function` find modules next to the pipeline or in the working dir.
-        for path in (str(Path(a.pipeline).resolve().parent), str(Path.cwd())):
-            if path not in sys.path:
-                sys.path.insert(0, path)
+        add_import_paths(Path(a.pipeline))
     try:
         if a.cmd == "run":
             spec = load(a.pipeline)

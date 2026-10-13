@@ -51,6 +51,7 @@ nav:
       - Agent steps: agents.md
       - Notifications: notifications.md
       - CLI and dashboard: cli.md
+      - Scheduling and orchestration: orchestration.md
       - Extending: extending.md
       - Migrate from pandas: migrate-from-pandas.md
       - Use with AI agents: ai-agents.md
