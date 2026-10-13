@@ -68,23 +68,33 @@ def icon(size: int = 512, bg: str = BG_DARK, ink: str = INK_DARK) -> str:
     )
 
 
+BLOBS = [  # (cx, cy, r, color) of the soft color mesh behind the social image
+    (0.02, 0.05, 0.26, "#c4b5fd"),
+    (0.38, -0.12, 0.22, "#a5f3fc"),
+    (0.95, 0.02, 0.26, "#fbcfe8"),
+    (1.02, 0.95, 0.27, "#99f6e4"),
+    (0.58, 1.14, 0.24, "#fde68a"),
+    (0.00, 1.02, 0.24, "#bfdbfe"),
+]
+
+
 def social(width: int = 1280, height: int = 640) -> str:
-    d, w, top, bottom = outline("agentl", 200)
+    d, w, top, bottom = outline("agentl", 210)
     gx = (width - w) / 2
-    gy = height / 2 - 30 - (top + bottom) / 2
-    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 40)
+    gy = height / 2 - 40 - (top + bottom) / 2
+    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 44)
+    blobs = "".join(
+        f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r * width:.0f}" fill="{col}"/>'
+        for x, y, r, col in BLOBS
+    )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
-        "<defs>"
-        '<radialGradient id="a" cx="30%" cy="25%" r="60%"><stop offset="0" stop-color="#6366f1" stop-opacity=".35"/>'
-        '<stop offset="1" stop-color="#6366f1" stop-opacity="0"/></radialGradient>'
-        '<radialGradient id="b" cx="75%" cy="80%" r="55%"><stop offset="0" stop-color="#2dd4bf" stop-opacity=".22"/>'
-        '<stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/></radialGradient>'
-        "</defs>"
-        f'<rect width="{width}" height="{height}" fill="{BG_DARK}"/>'
-        f'<rect width="{width}" height="{height}" fill="url(#a)"/><rect width="{width}" height="{height}" fill="url(#b)"/>'
-        f'<path transform="translate({gx:.1f} {gy:.1f})" d="{d}" fill="{INK_DARK}"/>'
-        f'<path transform="translate({(width - tw) / 2:.1f} {gy + bottom + 80:.1f})" d="{tag}" fill="#8b8fa3"/>'
+        '<defs><filter id="soft" x="-50%" y="-50%" width="200%" height="200%">'
+        '<feGaussianBlur stdDeviation="90"/></filter></defs>'
+        f'<rect width="{width}" height="{height}" fill="#ffffff"/>'
+        f'<g filter="url(#soft)" opacity=".9">{blobs}</g>'
+        f'<path transform="translate({gx:.1f} {gy:.1f})" d="{d}" fill="{INK_LIGHT}"/>'
+        f'<path transform="translate({(width - tw) / 2:.1f} {gy + bottom + 90:.1f})" d="{tag}" fill="#27272a"/>'
         "</svg>"
     )
 
