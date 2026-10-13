@@ -521,7 +521,7 @@ const Features: React.FC = () => {
 const CTA: React.FC = () => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const cmd = "pip install agentl";
+  const cmd = "pip install agentl-etl";
   const typed = cmd.slice(0, Math.floor(lerp(f, 40, 84, 0, cmd.length, Easing.linear)));
   const enter = f >= 96;
   const ok = spring({ frame: f - 104, fps, config: { damping: 12 } });
@@ -539,7 +539,7 @@ const CTA: React.FC = () => {
           <div><span style={{ color: c.teal }}>$ </span>{typed}{!enter && <span style={{ color: c.teal, opacity: f % 30 < 15 ? 1 : 0 }}>▋</span>}</div>
           {enter && (
             <div style={{ color: c.green, fontSize: 30, marginTop: 10, opacity: ok, transform: `translateY(${(1 - ok) * 20}px)` }}>
-              Successfully installed agentl-0.1.0
+              Successfully installed agentl-etl-0.1.1
             </div>
           )}
         </div>

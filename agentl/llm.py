@@ -55,7 +55,7 @@ class AnthropicProvider:
         try:
             import anthropic
         except ImportError as e:
-            raise ImportError("pip install 'agentl[anthropic]'") from e
+            raise ImportError("pip install 'agentl-etl[anthropic]'") from e
         self.client = anthropic.Anthropic()
         self.spec = spec
 

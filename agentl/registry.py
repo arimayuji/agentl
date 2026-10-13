@@ -57,4 +57,4 @@ def require(module: str, extra: str) -> Any:
     try:
         return import_module(module)
     except ImportError as e:
-        raise ImportError(f"this connector needs '{module}': pip install 'agentl[{extra}]'") from e
+        raise ImportError(f"this connector needs '{module}': pip install 'agentl-etl[{extra}]'") from e

@@ -9,6 +9,14 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-13
+
+### Changed
+
+- The PyPI distribution is now `agentl-etl` (PyPI treats `agentl` as confusable with an existing
+  project). Install with `pip install agentl-etl`; the import (`import agentl`) and the `agentl`
+  command are unchanged. 0.1.0 was never published.
+
 ## [0.1.0] - 2026-10-13
 
 ### Added
@@ -21,5 +29,6 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/arimayuji/agentl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/arimayuji/agentl/releases/tag/v0.1.0

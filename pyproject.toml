@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentl"
+name = "agentl-etl"
 dynamic = ["version"]
 description = "Agentic ETL for Python: YAML pipelines where each step is a connector, a function or an LLM agent."
 readme = "README.md"
@@ -45,6 +45,9 @@ Homepage = "https://github.com/arimayuji/agentl"
 Repository = "https://github.com/arimayuji/agentl"
 Issues = "https://github.com/arimayuji/agentl/issues"
 Changelog = "https://github.com/arimayuji/agentl/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentl"]
 
 [tool.hatch.version]
 path = "agentl/__init__.py"

@@ -1,8 +1,8 @@
 // Animated terminal on the landing page: install -> validate -> run -> dashboard.
 (function () {
   const script = [
-    { cmd: "pip install agentl" },
-    { out: "Successfully installed agentl-0.1.0", cls: "ok" },
+    { cmd: "pip install agentl-etl" },
+    { out: "Successfully installed agentl-etl-0.1.1", cls: "ok" },
     { cmd: "agentl validate pipeline.yaml" },
     { out: "ok: invoices (5 steps)", cls: "ok" },
     { cmd: "agentl run pipeline.yaml" },

@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/agentl
+      url: https://pypi.org/p/agentl-etl
     permissions:
       id-token: write  # PyPI trusted publishing, no API token stored
     steps:
