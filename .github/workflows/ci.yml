@@ -87,3 +87,16 @@ jobs:
           python-version: "3.13"
       - run: pip install -e '.[dev]'
       - run: pytest tests/test_postgres.py tests/test_store.py tests/test_sql.py -v
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e '.[dev,browser]'
+      - run: playwright install --with-deps chromium
+      - run: pytest tests/test_browser.py -v

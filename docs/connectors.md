@@ -101,6 +101,50 @@ Other databases will ship as plugins.
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 
+## Browser (Playwright)
+
+For pages that only work in a real browser: content rendered by JavaScript, logins, download
+buttons. Install with `pip install 'agentl-etl[browser]'` and `playwright install chromium`.
+
+```yaml
+- id: report
+  use: browser.scrape
+  with:
+    steps:
+      - goto: https://portal.example.com/login
+      - fill: "#user"
+        value: ${PORTAL_USER}
+      - fill: "#password"
+        value: ${PORTAL_PASSWORD}
+      - click: button[type=submit]
+      - goto: https://portal.example.com/reports/monthly
+    wait_for: table.results
+    selector: table.results      # extract: table (default), text, html or links
+```
+
+Click a download button and read the file:
+
+```yaml
+- id: export
+  use: browser.scrape
+  with: { steps: [...login...], download: "a#export-csv" }
+- id: rows
+  use: file.read
+  input: export
+```
+
+| Parameter | Notes |
+|---|---|
+| `url` | page to open; with upstream records it runs once per record and fills `{field}` |
+| `steps` | `goto`, `fill` + `value`, `click`, `press` + `key`, `select` + `value`, `check`, `wait_for`, `wait` (ms) |
+| `wait_for` | CSS selector to wait for before extracting |
+| `selector`, `extract`, `table` | what to extract: `table` rows (header from the first row), `text`, `html`, `links` (`text`, `href`) |
+| `download` | selector of a link or button that downloads a file; returns `{path, filename}` |
+| `timeout`, `headless`, `executable_path`, `user_agent` | browser settings (`AGENTL_BROWSER_EXECUTABLE` also sets the browser binary) |
+
+Every record gets `_url`. Keep credentials in environment variables, and check the site's terms
+before automating it.
+
 ## Email (IMAP)
 
 ```yaml
