@@ -9,11 +9,7 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-### Fixed
-
-- `fn:` modules next to a pipeline are loaded by file path under a unique name: two pipelines with
-  their own `steps.py` no longer share (or silently swap) code in one process, and pipeline folders
-  are no longer added to `sys.path` (#43).
+## [0.3.0] - 2026-10-13
 
 ### Added
 
@@ -32,6 +28,19 @@ They are always listed under **Changed** or **Removed**.
   `cost_usd` in run results and events (#17).
 - LLM providers `openai`, `ollama` and `openai-compatible` (vLLM, LM Studio, Groq, ...), with strict
   JSON-schema output, retries and token usage. Standard library only, no new dependency (#16).
+
+### Changed
+
+- Pipeline folders are no longer added to `sys.path` permanently; see the `fn:` lookup order in
+  Extending. Code that relied on importing a pipeline's modules by bare name after a run must import
+  them explicitly.
+- `--db` accepts a `postgresql://` URL and defaults to `$AGENTL_DB`, then `.agentl/agentl.db`.
+
+### Fixed
+
+- `fn:` modules next to a pipeline are loaded by file path under a unique name: two pipelines with
+  their own `steps.py` no longer share (or silently swap) code in one process, and pipeline folders
+  are no longer added to `sys.path` (#43).
 
 ## [0.2.0] - 2026-10-13
 
@@ -82,7 +91,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/arimayuji/agentl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/arimayuji/agentl/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/arimayuji/agentl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/arimayuji/agentl/releases/tag/v0.1.0

@@ -6,27 +6,26 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.3.0**: OpenAI, Ollama and OpenAI-compatible providers, cost budget per run, remote storage
+  (S3, GCS, Azure, SFTP), any SQL database, Celery/Temporal/Airflow integrations and a shared
+  Postgres run store.
 - **0.2.0**: read from URLs, universal `file.read` (txt, xls, parquet, xml, html, zip/gz), Postgres
   with upsert, pandas bridge, migration guide and docs for AI agents.
 - **0.1.1**: YAML pipelines, agent steps with validated schemas, per-record cache, connectors
   (CSV, JSON, Excel, PDF, Word, HTTP, SQLite), notifications, CLI and local dashboard.
   See the [changelog](changelog.md).
 
-## Next: 0.3, more sources, providers and operations
+## Next: 0.4, more connectors and operations
 
 | Feature | Issue |
 |---|---|
-| Remote paths for every reader: SFTP, FTP, SMB, WebDAV, S3, GCS, Azure | [#23](https://github.com/arimayuji/agentl/issues/23) |
-| Any SQL database: MySQL, SQL Server, Oracle, Snowflake, BigQuery | [#24](https://github.com/arimayuji/agentl/issues/24) |
 | Email (IMAP) with attachments | [#13](https://github.com/arimayuji/agentl/issues/13) |
 | Browser connector with Playwright | [#14](https://github.com/arimayuji/agentl/issues/14) |
 | AWS Lambda connector | [#15](https://github.com/arimayuji/agentl/issues/15) |
-| More LLM providers: OpenAI, Ollama, Bedrock | [#16](https://github.com/arimayuji/agentl/issues/16) |
-| Cost budget per run | [#17](https://github.com/arimayuji/agentl/issues/17) |
+| Bedrock provider | [#16](https://github.com/arimayuji/agentl/issues/16) |
+| Spend per step in the dashboard | [#17](https://github.com/arimayuji/agentl/issues/17) |
 | More notification channels: email, Teams, Discord, Telegram, PagerDuty, Opsgenie | [#27](https://github.com/arimayuji/agentl/issues/27) |
 | Observability: OpenTelemetry traces and metrics, JSON logs, Sentry | [#28](https://github.com/arimayuji/agentl/issues/28) |
-| Run from orchestrators: Celery, Temporal, Airflow, Prefect | [#31](https://github.com/arimayuji/agentl/issues/31) |
-| Shared run store in Postgres | [#32](https://github.com/arimayuji/agentl/issues/32) |
 
 ## Later
 
