@@ -124,6 +124,8 @@ class PipelineSpec(BaseModel):
     steps: list[StepSpec]
     notify: NotifySpec | None = None
     budget: BudgetSpec | None = None
+    # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
+    base_dir: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
@@ -209,4 +211,6 @@ def load(path: str | Path, env: dict[str, str] | None = None) -> PipelineSpec:
     raw = yaml.load(text, Loader=_Loader)
     if not isinstance(raw, dict):
         raise SpecError(f"{path}: expected a mapping at the top level")
-    return parse(raw, env)
+    spec = parse(raw, env)
+    spec.base_dir = str(Path(path).resolve().parent)
+    return spec

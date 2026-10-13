@@ -5,10 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from . import graph, registry
-from .runner import Runner, add_import_paths
+from .runner import Runner
 from .spec import SpecError, load
 from .store import open_store
 
@@ -51,8 +50,6 @@ def main(argv: list[str] | None = None) -> int:
     ds.add_argument("--host", default="127.0.0.1")
 
     a = p.parse_args(argv)
-    if getattr(a, "pipeline", None):
-        add_import_paths(Path(a.pipeline))
     try:
         if a.cmd == "run":
             spec = load(a.pipeline)

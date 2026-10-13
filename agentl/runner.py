@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 import threading
 import time
 import uuid
@@ -182,7 +181,7 @@ class Runner:
             # A source agent step (no input) runs once; an empty upstream means nothing to do.
             return self._run_agent(run_id, step, [{}] if data is None else data, result)
 
-        fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "")
+        fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
         key = _hash("step", step.model_dump(by_alias=True), data)
         if self.use_cache and step.cached and (hit := self.store.cache_get(key)) is not None:
             return hit
@@ -276,9 +275,7 @@ def run(
     if isinstance(pipeline, PipelineSpec):
         spec = pipeline
     else:
-        path = Path(pipeline)
-        add_import_paths(path)
-        spec = load(path, {**os.environ, **(vars or {})})
+        spec = load(Path(pipeline), {**os.environ, **(vars or {})})
     if "store" in kwargs:
         result = Runner(spec, **kwargs).run()
     else:
@@ -287,10 +284,3 @@ def run(
     if raise_on_failure and result.status != "succeeded":
         raise PipelineFailed(result)
     return result
-
-
-def add_import_paths(pipeline: Path) -> None:
-    """Let `fn: module:function` find modules next to the pipeline or in the working dir."""
-    for d in (str(pipeline.resolve().parent), str(Path.cwd())):
-        if d not in sys.path:
-            sys.path.insert(0, d)

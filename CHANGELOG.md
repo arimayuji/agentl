@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Fixed
+
+- `fn:` modules next to a pipeline are loaded by file path under a unique name: two pipelines with
+  their own `steps.py` no longer share (or silently swap) code in one process, and pipeline folders
+  are no longer added to `sys.path` (#43).
+
 ### Added
 
 - `sql.read` and `sql.write` for any SQLAlchemy database (MySQL/MariaDB, SQL Server, Oracle,
