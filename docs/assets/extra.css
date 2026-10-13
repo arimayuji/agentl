@@ -1,0 +1,7 @@
+.md-typeset .hero { text-align: center; padding: 2.5rem 0 1.5rem; }
+.md-typeset .hero h1 { font-size: 2.6rem; font-weight: 800; margin-bottom: .4rem; letter-spacing: -.02em; }
+.md-typeset .hero p.tagline { font-size: 1.15rem; color: var(--md-default-fg-color--light); max-width: 40rem; margin: 0 auto 1.4rem; }
+.md-typeset .hero .md-button { margin: .25rem; }
+.md-typeset .grid.cards > ul > li { border-radius: .6rem; }
+.md-typeset .contributors img { max-width: 100%; }
+@media screen and (max-width: 44.9375em) { .md-typeset .hero h1 { font-size: 2rem; } }

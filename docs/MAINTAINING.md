@@ -45,3 +45,16 @@ Protect tags `v*` with a second ruleset (restrict creation, update and deletion 
 ## Labels
 
 `bug`, `enhancement`, `connector`, `docs`, `triage`, `good first issue`, `help wanted`, `breaking`, `dependencies`.
+
+## Website (agentl.com.br)
+
+The site is built with MkDocs Material from `docs/` and deployed by `.github/workflows/docs.yml`.
+
+1. Settings > Pages > Build and deployment > Source: **GitHub Actions**.
+2. Settings > Pages > Custom domain: `agentl.com.br`, then enable **Enforce HTTPS** once the certificate is issued.
+3. DNS at Cloudflare (proxy **off**, grey cloud, so GitHub can issue the certificate):
+   - `A` records for `agentl.com.br`: `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`
+   - `CNAME` `www` -> `arimayuji.github.io`
+4. Verify the domain in your GitHub account (Settings > Pages > Verified domains) to prevent takeover.
+
+Build locally with `pip install -e '.[docs]' && mkdocs serve`.

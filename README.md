@@ -9,6 +9,8 @@ Agentic ETL for Python. Declare pipelines in YAML where each step is a connector
 
 > Status: early (v0.1). The API may change.
 
+**Documentation: [agentl.com.br](https://agentl.com.br)**
+
 ## Install
 
 ```bash
@@ -122,6 +124,10 @@ The runner emits `run.started`, `step.started`, `step.succeeded`, `step.failed`,
 Bug reports, connector requests and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
 for the setup and the checks every PR must pass, and [SECURITY.md](SECURITY.md) to report vulnerabilities privately.
 Release history is in [CHANGELOG.md](CHANGELOG.md).
+
+## Sponsors
+
+agentl is free and MIT licensed. If it saves you time, consider [sponsoring the project](https://github.com/sponsors/arimayuji).
 
 ## License
 

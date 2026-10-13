@@ -222,3 +222,6 @@ __marimo__/
 # agentl
 .agentl/
 .dev.vars
+
+# docs build
+site/
