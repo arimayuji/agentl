@@ -1,6 +1,7 @@
 import gzip
 import http.server
 import json
+import re
 import sys
 import threading
 import types
@@ -109,7 +110,7 @@ def test_file_read_mixed_folder_zip_and_gz(tmp_path):
     out = get("file.read")(None, path=str(inbox / "*"))
     by_file = {}
     for r in out:
-        by_file.setdefault(r["_file"].split("/")[-1], []).append(r)
+        by_file.setdefault(re.split(r"[\\/]", r["_file"])[-1], []).append(r)
     assert by_file["a.csv"][0]["id"] == "1"
     assert by_file["b.json"][0]["id"] == 2
     assert by_file["notes.txt"][0]["text"] == "hi"
