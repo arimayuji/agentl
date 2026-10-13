@@ -7,9 +7,10 @@ import hashlib
 import json
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -38,8 +39,13 @@ def _hash(*parts: Any) -> str:
 
 
 class Runner:
-    def __init__(self, spec: PipelineSpec, store: Store | None = None, use_cache: bool = True,
-                 listeners: list[Listener] | None = None):
+    def __init__(
+        self,
+        spec: PipelineSpec,
+        store: Store | None = None,
+        use_cache: bool = True,
+        listeners: list[Listener] | None = None,
+    ):
         self.spec = spec
         self.store = store or Store()
         self.use_cache = use_cache
@@ -66,7 +72,8 @@ class Runner:
             return self._provider("default").text(
                 "Summarize this data pipeline run in at most 3 short lines for the person "
                 "on call. Say what failed and the most likely cause, if any.",
-                json.dumps(events, default=str))
+                json.dumps(events, default=str),
+            )
         except Exception as e:
             return f"(summary unavailable: {e})"
 
@@ -101,15 +108,24 @@ class Runner:
                 result.output_tokens += tout
                 if good is not None:
                     ok.append(good)
-                else:
+                elif rejected is not None:
                     bad.append(rejected)
         if bad:
             result.rejected[step.id] = bad
-            self._emit(run_id, "item.rejected", step.id, count=len(bad), total=len(records),
-                       rate=round(len(bad) / max(1, len(records)), 4), error=bad[0]["_error"])
+            self._emit(
+                run_id,
+                "item.rejected",
+                step.id,
+                count=len(bad),
+                total=len(records),
+                rate=round(len(bad) / max(1, len(records)), 4),
+                error=bad[0]["_error"],
+            )
         return ok
 
-    def _run_step(self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult) -> Records:
+    def _run_step(
+        self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult
+    ) -> Records:
         refs = step.inputs
         data: Any = None
         if len(refs) == 1:
@@ -150,8 +166,9 @@ class Runner:
                     self._emit(run_id, "step.failed", step_id, error=f"{type(e).__name__}: {e}")
                     raise
                 result.outputs[step_id] = out
-                self._emit(run_id, "step.succeeded", step_id, records=len(out),
-                           seconds=round(time.time() - t0, 3))
+                self._emit(
+                    run_id, "step.succeeded", step_id, records=len(out), seconds=round(time.time() - t0, 3)
+                )
                 if not out and not step.inputs:
                     self._emit(run_id, "source.empty", step_id)
             result.status = "succeeded"
@@ -159,10 +176,15 @@ class Runner:
             result.status = "failed"
             result.error = f"{type(e).__name__}: {e}"
         self.store.finish_run(run_id, result.status, result.error)
-        self._emit(run_id, f"run.{result.status}", seconds=round(time.time() - started, 3),
-                   input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-                   rejected=sum(len(v) for v in result.rejected.values()),
-                   **({"error": result.error} if result.error else {}))
+        self._emit(
+            run_id,
+            f"run.{result.status}",
+            seconds=round(time.time() - started, 3),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            rejected=sum(len(v) for v in result.rejected.values()),
+            **({"error": result.error} if result.error else {}),
+        )
         return result
 
 

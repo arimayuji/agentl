@@ -30,12 +30,12 @@ def _request(method: str, url: str, headers: dict, body: Any, timeout: float, re
                 except json.JSONDecodeError:
                     return {"text": raw}
         except urllib.error.HTTPError as e:
-            if e.code < 500 and e.code != 429 or attempt == retries:
+            if (e.code < 500 and e.code != 429) or attempt == retries:
                 raise
         except urllib.error.URLError:
             if attempt == retries:
                 raise
-        time.sleep(2 ** attempt)
+        time.sleep(2**attempt)
 
 
 def _fill(value: Any, rec: dict) -> Any:
@@ -58,8 +58,17 @@ def _as_records(data: Any, items: str | None) -> list[dict]:
     return [data if isinstance(data, dict) else {"value": data}]
 
 
-def _http(method: str, input: Any, url: str, headers: dict | None, json_body: Any, items: str | None,
-          concurrency: int, timeout: float, retries: int) -> list[dict]:
+def _http(
+    method: str,
+    input: Any,
+    url: str,
+    headers: dict | None,
+    json_body: Any,
+    items: str | None,
+    concurrency: int,
+    timeout: float,
+    retries: int,
+) -> list[dict]:
     headers = headers or {}
     upstream = single(input)
     if not upstream:
@@ -74,12 +83,27 @@ def _http(method: str, input: Any, url: str, headers: dict | None, json_body: An
 
 
 @connector("http.get")
-def http_get(input: Any = None, url: str = "", headers: dict | None = None, items: str | None = None,
-             concurrency: int = 4, timeout: float = 30, retries: int = 2) -> list[dict]:
+def http_get(
+    input: Any = None,
+    url: str = "",
+    headers: dict | None = None,
+    items: str | None = None,
+    concurrency: int = 4,
+    timeout: float = 30,
+    retries: int = 2,
+) -> list[dict]:
     return _http("GET", input, url, headers, None, items, concurrency, timeout, retries)
 
 
 @connector("http.post")
-def http_post(input: Any = None, url: str = "", headers: dict | None = None, json: Any = None,
-              items: str | None = None, concurrency: int = 4, timeout: float = 30, retries: int = 2) -> list[dict]:
+def http_post(
+    input: Any = None,
+    url: str = "",
+    headers: dict | None = None,
+    json: Any = None,
+    items: str | None = None,
+    concurrency: int = 4,
+    timeout: float = 30,
+    retries: int = 2,
+) -> list[dict]:
     return _http("POST", input, url, headers, json, items, concurrency, timeout, retries)

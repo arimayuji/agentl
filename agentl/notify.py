@@ -7,13 +7,20 @@ import logging
 import operator
 import re
 import urllib.request
-from typing import Any, Callable
+from collections.abc import Callable
 
 from .spec import Channel, NotifySpec, Rule
 
 log = logging.getLogger("agentl.notify")
 
-_OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne}
+_OPS = {
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
 _WHEN = re.compile(r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?[\d.]+)\s*$")
 
 
@@ -46,8 +53,12 @@ def format_text(event: dict, pipeline: str) -> str:
 
 
 def _post(url: str, payload: dict) -> None:
-    req = urllib.request.Request(url, data=json.dumps(payload, default=str).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, default=str).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     urllib.request.urlopen(req, timeout=10).close()
 
 
@@ -65,8 +76,9 @@ def send(channel_name: str, channel: Channel, text: str, event: dict) -> None:
 
 
 class Notifier:
-    def __init__(self, spec: NotifySpec | None, pipeline: str,
-                 summarize: Callable[[dict], str] | None = None):
+    def __init__(
+        self, spec: NotifySpec | None, pipeline: str, summarize: Callable[[dict], str] | None = None
+    ):
         self.spec = spec or NotifySpec()
         self.pipeline = pipeline
         self.summarize = summarize

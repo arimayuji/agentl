@@ -12,7 +12,9 @@ from ._util import paths, single
 
 
 @connector("csv.read")
-def csv_read(input: Any = None, path: str | None = None, delimiter: str = ",", encoding: str = "utf-8") -> list[dict]:
+def csv_read(
+    input: Any = None, path: str | None = None, delimiter: str = ",", encoding: str = "utf-8"
+) -> list[dict]:
     out: list[dict] = []
     for p in paths(input, path):
         with p.open(newline="", encoding=encoding) as f:
@@ -62,7 +64,9 @@ def json_write(input: Any, path: str) -> list[dict]:
 
 
 @connector("excel.read")
-def excel_read(input: Any = None, path: str | None = None, sheet: str | None = None, header_row: int = 1) -> list[dict]:
+def excel_read(
+    input: Any = None, path: str | None = None, sheet: str | None = None, header_row: int = 1
+) -> list[dict]:
     openpyxl = require("openpyxl", "excel")
     out: list[dict] = []
     for p in paths(input, path):
@@ -72,7 +76,7 @@ def excel_read(input: Any = None, path: str | None = None, sheet: str | None = N
         header = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(next(rows, []))]
         for row in rows:
             if any(v is not None for v in row):
-                out.append(dict(zip(header, row)))
+                out.append(dict(zip(header, row, strict=False)))
         wb.close()
     return out
 

@@ -49,7 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "run":
             spec = load(a.pipeline)
-            result = Runner(spec, store=Store(a.db), use_cache=not a.no_cache, listeners=[_print_event]).run()
+            with Store(a.db) as store:
+                runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=[_print_event])
+                result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return 0 if result.status == "succeeded" else 1
@@ -65,7 +67,9 @@ def main(argv: list[str] | None = None) -> int:
             print(graph.mermaid(load(a.pipeline)))
             return 0
         if a.cmd == "runs":
-            for run in Store(a.db).runs():
+            with Store(a.db) as store:
+                runs = store.runs()
+            for run in runs:
                 print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
@@ -73,7 +77,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "dashboard":
             from .dashboard import serve
-            serve(Store(a.db), a.host, a.port)
+
+            with Store(a.db) as store:
+                serve(store, a.host, a.port)
             return 0
     except (SpecError, KeyError, FileNotFoundError) as e:
         print(f"error: {e}", file=sys.stderr)

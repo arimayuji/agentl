@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import import_module
 from importlib.metadata import entry_points
-from typing import Any, Callable
+from typing import Any
 
 Records = list[dict[str, Any]]
 Connector = Callable[..., Records]
@@ -18,6 +19,7 @@ def connector(name: str) -> Callable[[Connector], Connector]:
     def deco(fn: Connector) -> Connector:
         _CONNECTORS[name] = fn
         return fn
+
     return deco
 
 

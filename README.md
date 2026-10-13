@@ -1,5 +1,10 @@
 # agentl
 
+[![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentl)](https://pypi.org/project/agentl/)
+[![Python](https://img.shields.io/pypi/pyversions/agentl)](https://pypi.org/project/agentl/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
 
 > Status: early (v0.1). The API may change.
@@ -93,6 +98,7 @@ You can also write `extract:`, `transform:` and `load:` sections instead of `ste
 ```python
 from agentl import connector, register_provider
 
+
 @connector("crm.contacts")
 def contacts(input, since=None):
     return [{"id": 1, "email": "a@b.com"}]
@@ -111,12 +117,11 @@ The runner emits `run.started`, `step.started`, `step.succeeded`, `step.failed`,
 - More providers (OpenAI, Ollama, Bedrock), cost budget per run
 - `agentl new "describe the pipeline"` and an MCP server to operate pipelines from Claude Code
 
-## Development
+## Contributing
 
-```bash
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest -q
-```
+Bug reports, connector requests and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+for the setup and the checks every PR must pass, and [SECURITY.md](SECURITY.md) to report vulnerabilities privately.
+Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -21,12 +21,17 @@ def select(input: Any, fields: list[str] | None = None, rename: dict[str, str] |
 
 
 @connector("filter")
-def filter_(input: Any, where: dict[str, Any] | None = None, not_empty: list[str] | None = None) -> list[dict]:
+def filter_(
+    input: Any, where: dict[str, Any] | None = None, not_empty: list[str] | None = None
+) -> list[dict]:
     rows = single(input)
     where = where or {}
-    return [r for r in rows
-            if all(r.get(k) == v for k, v in where.items())
-            and all(r.get(k) not in (None, "") for k in (not_empty or []))]
+    return [
+        r
+        for r in rows
+        if all(r.get(k) == v for k, v in where.items())
+        and all(r.get(k) not in (None, "") for k in (not_empty or []))
+    ]
 
 
 @connector("dedupe")
@@ -47,7 +52,7 @@ def join(input: Any, left: str, right: str, on: str, how: str = "inner") -> list
     index: dict[Any, list[dict]] = {}
     for r in input[right]:
         index.setdefault(str(r.get(on)), []).append(r)
-    out = []
+    out: list[dict] = []
     for l in input[left]:
         matches = index.get(str(l.get(on)), [])
         if matches:

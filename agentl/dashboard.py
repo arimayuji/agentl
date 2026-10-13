@@ -63,8 +63,11 @@ def run_detail(store: Store, run_id: str) -> dict | None:
         return None
     events = store.events(run_id)
     diagram = run["diagram"] or "flowchart LR"
-    for name, style in (("running", "fill:#dbeafe,stroke:#2563eb"), ("succeeded", "fill:#dcfce7,stroke:#16a34a"),
-                        ("failed", "fill:#fee2e2,stroke:#dc2626")):
+    for name, style in (
+        ("running", "fill:#dbeafe,stroke:#2563eb"),
+        ("succeeded", "fill:#dcfce7,stroke:#16a34a"),
+        ("failed", "fill:#fee2e2,stroke:#dc2626"),
+    ):
         diagram += f"\n  classDef {name} {style}"
     for step, st in _status(events).items():
         diagram += f"\n  class {step} {st}"

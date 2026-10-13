@@ -4,8 +4,9 @@ validated object. Register more with `register_provider`."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, create_model
 
@@ -21,7 +22,7 @@ def schema_model(name: str, fields: dict[str, str]) -> type[BaseModel]:
         optional = type_name.endswith("?")
         base = type_name.rstrip("?")
         if base.startswith("list[") and base.endswith("]"):
-            py = list[_TYPES[base[5:-1]]]
+            py = list[_TYPES[base[5:-1]]]  # type: ignore[misc,valid-type]
         elif base in _TYPES:
             py = _TYPES[base]
         else:

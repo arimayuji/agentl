@@ -12,12 +12,15 @@ from agentl.store import Store
 
 @pytest.fixture
 def store(tmp_path):
-    return Store(tmp_path / "db.sqlite")
+    with Store(tmp_path / "db.sqlite") as s:
+        yield s
 
 
 def test_example_pipeline_runs(store, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path.parent)  # out/ goes to a temp dir
-    import pathlib, shutil
+    import pathlib
+    import shutil
+
     root = pathlib.Path(__file__).parents[1]
     shutil.copytree(root / "examples", tmp_path.parent / "examples", dirs_exist_ok=True)
     spec = load("examples/notas.yaml")
@@ -26,16 +29,19 @@ def test_example_pipeline_runs(store, tmp_path, monkeypatch):
     rows = result.outputs["classificar"]
     assert [r["numero"] for r in rows] == ["1001", "1002", "1003"]
     assert rows[0]["cliente"] == "Acme Ltda" and rows[2]["cliente"] is None
-    assert json.loads(open("out/notas.json").read())[1]["cliente"] == "Beta SA"
+    assert json.loads(pathlib.Path("out/notas.json").read_text())[1]["cliente"] == "Beta SA"
 
 
 def test_sections_chain_and_env(tmp_path):
-    spec = parse({
-        "name": "x",
-        "extract": [{"id": "a", "use": "csv.read", "with": {"path": "${SRC}"}}],
-        "transform": [{"id": "b", "use": "select", "with": {"fields": ["n"]}}],
-        "load": [{"use": "json.write", "with": {"path": "${OUT:-o.json}"}}],
-    }, env={"SRC": "in.csv"})
+    spec = parse(
+        {
+            "name": "x",
+            "extract": [{"id": "a", "use": "csv.read", "with": {"path": "${SRC}"}}],
+            "transform": [{"id": "b", "use": "select", "with": {"fields": ["n"]}}],
+            "load": [{"use": "json.write", "with": {"path": "${OUT:-o.json}"}}],
+        },
+        env={"SRC": "in.csv"},
+    )
     assert spec.step("a").with_["path"] == "in.csv"
     assert spec.step("b").inputs == ["a"]
     assert spec.step("load_1").inputs == ["b"] and spec.step("load_1").with_["path"] == "o.json"
@@ -56,15 +62,26 @@ def test_spec_validation():
 
 
 def test_cycle_detected():
-    spec = parse({"name": "x", "steps": [
-        {"id": "a", "use": "concat", "input": "b"}, {"id": "b", "use": "concat", "input": "a"}]})
+    spec = parse(
+        {
+            "name": "x",
+            "steps": [{"id": "a", "use": "concat", "input": "b"}, {"id": "b", "use": "concat", "input": "a"}],
+        }
+    )
     with pytest.raises(SpecError, match="cycle"):
         graph.order(spec)
 
 
 def test_mermaid_has_nodes_edges_and_status():
-    spec = parse({"name": "x", "steps": [
-        {"id": "a", "use": "csv.read"}, {"id": "b", "agent": "go", "input": "a", "output": {"v": "str"}}]})
+    spec = parse(
+        {
+            "name": "x",
+            "steps": [
+                {"id": "a", "use": "csv.read"},
+                {"id": "b", "agent": "go", "input": "a", "output": {"v": "str"}},
+            ],
+        }
+    )
     text = graph.mermaid(spec, {"b": "failed"})
     assert "a --> b" in text and 'b{{"' in text and "class b failed" in text
 
@@ -74,10 +91,15 @@ def test_custom_connector_and_fn(store):
     def numbers(input, n=3):
         return [{"n": i} for i in range(n)]
 
-    spec = parse({"name": "x", "steps": [
-        {"id": "src", "use": "test.numbers", "with": {"n": 4}},
-        {"id": "dbl", "fn": "tests.helpers:double", "input": "src"},
-    ]})
+    spec = parse(
+        {
+            "name": "x",
+            "steps": [
+                {"id": "src", "use": "test.numbers", "with": {"n": 4}},
+                {"id": "dbl", "fn": "tests.helpers:double", "input": "src"},
+            ],
+        }
+    )
     result = Runner(spec, store=store).run()
     assert result.status == "succeeded", result.error
     assert [r["n"] for r in result.outputs["dbl"]] == [0, 2, 4, 6]
@@ -85,6 +107,7 @@ def test_custom_connector_and_fn(store):
 
 class FlakyProvider:
     """Fails on records with bad=True, counts calls."""
+
     calls = 0
 
     def __init__(self, spec):
@@ -111,8 +134,10 @@ def test_agent_rejects_cache_and_notify(store, monkeypatch):
             {"id": "src", "use": "test.rows"},
             {"id": "label", "agent": "label it", "input": "src", "output": {"label": "str"}},
         ],
-        "notify": {"channels": {"slack": {"webhook": "https://hooks.example/x"}},
-                   "rules": [{"on": "item.rejected", "when": "rate > 0.2", "to": ["slack"]}]},
+        "notify": {
+            "channels": {"slack": {"webhook": "https://hooks.example/x"}},
+            "rules": [{"on": "item.rejected", "when": "rate > 0.2", "to": ["slack"]}],
+        },
     }
 
     @connector("test.rows")
@@ -151,6 +176,7 @@ def test_schema_model_types():
 def test_file_connectors(tmp_path):
     import docx
     import openpyxl
+
     from agentl.registry import get
 
     wb = openpyxl.Workbook()
@@ -174,10 +200,13 @@ def test_http_get_per_record(monkeypatch):
     class Resp:
         def __init__(self, body):
             self.body = body
+
         def read(self):
             return json.dumps(self.body).encode()
+
         def __enter__(self):
             return self
+
         def __exit__(self, *a):
             pass
 
@@ -187,6 +216,7 @@ def test_http_get_per_record(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     from agentl.registry import get
+
     out = get("http.get")([{"id": 1}, {"id": 2}], url="https://api.x/c/{id}", items="data.items")
     assert sorted(seen) == ["https://api.x/c/1", "https://api.x/c/2"]
     assert sorted(r["id"] for r in out) == ["1", "2"]

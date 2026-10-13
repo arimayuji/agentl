@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,8 @@ _Loader.yaml_implicit_resolvers = {
 }
 for _first in "tTfF":
     _Loader.yaml_implicit_resolvers.setdefault(_first, []).append(
-        ("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$")))
+        ("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"))
+    )
 
 
 class LLMSpec(BaseModel):
@@ -52,7 +54,7 @@ class StepSpec(BaseModel):
     cache: bool | None = None  # default: True for agent steps
 
     @model_validator(mode="after")
-    def _one_kind(self) -> "StepSpec":
+    def _one_kind(self) -> StepSpec:
         kinds = [k for k in ("use", "fn", "agent") if getattr(self, k)]
         if len(kinds) != 1:
             raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent")
@@ -99,7 +101,7 @@ class PipelineSpec(BaseModel):
     notify: NotifySpec | None = None
 
     @model_validator(mode="after")
-    def _refs(self) -> "PipelineSpec":
+    def _refs(self) -> PipelineSpec:
         ids = [s.id for s in self.steps]
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
@@ -116,10 +118,11 @@ class PipelineSpec(BaseModel):
         return next(s for s in self.steps if s.id == step_id)
 
 
-def interpolate(value: Any, env: dict[str, str] | None = None) -> Any:
+def interpolate(value: Any, env: Mapping[str, str] | None = None) -> Any:
     """Replace ${VAR} and ${VAR:-default} recursively. Missing vars raise."""
     env = os.environ if env is None else env
     if isinstance(value, str):
+
         def sub(m: re.Match) -> str:
             name, default = m.group(1), m.group(2)
             if name in env:
@@ -127,6 +130,7 @@ def interpolate(value: Any, env: dict[str, str] | None = None) -> Any:
             if default is not None:
                 return default
             raise SpecError(f"environment variable '{name}' is not set")
+
         return _ENV.sub(sub, value)
     if isinstance(value, list):
         return [interpolate(v, env) for v in value]

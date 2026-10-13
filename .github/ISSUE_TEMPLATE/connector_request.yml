@@ -1,0 +1,32 @@
+name: Connector request
+description: Ask for a new source or destination (database, API, file format, cloud service).
+labels: ["connector", "triage"]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: Postgres, S3, Gmail, Salesforce...
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Direction
+      options: [Read (extract), Write (load), Both]
+    validations:
+      required: true
+  - type: textarea
+    id: usage
+    attributes:
+      label: How would you use it?
+      description: A YAML sketch of the step you would like to write.
+      render: yaml
+    validations:
+      required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I can help implement or test it
