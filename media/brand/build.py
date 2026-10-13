@@ -19,6 +19,7 @@ from fontTools.ttLib import TTFont
 
 HERE = Path(__file__).parent
 FONT = TTFont(HERE / "font" / "outfit-latin-700-normal.woff2")
+TEXT_FONT = TTFont(HERE / "font" / "inter-latin-400-normal.woff2")  # supporting text
 OUT = HERE / "assets"
 TRACKING = -0.03  # em, slightly tighter than default
 
@@ -27,11 +28,13 @@ INK_LIGHT = "#0b0b10"  # on light backgrounds
 BG_DARK = "#07070b"
 
 
-def outline(text: str, size: float) -> tuple[str, float, float, float]:
+def outline(
+    text: str, size: float, font: TTFont = FONT, tracking: float = TRACKING
+) -> tuple[str, float, float, float]:
     """Return (svg path, width, top, bottom) for `text` at `size` px."""
-    glyphs = FONT.getGlyphSet()
-    cmap = FONT.getBestCmap()
-    upm = FONT["head"].unitsPerEm
+    glyphs = font.getGlyphSet()
+    cmap = font.getBestCmap()
+    upm = font["head"].unitsPerEm
     scale = size / upm
     pen = SVGPathPen(glyphs)
     bounds = BoundsPen(glyphs)
@@ -42,7 +45,7 @@ def outline(text: str, size: float) -> tuple[str, float, float, float]:
         t = (scale, 0, 0, -scale, x * scale, 0)
         glyphs[name].draw(TransformPen(pen, t))
         glyphs[name].draw(TransformPen(bounds, t))
-        x += glyphs[name].width + TRACKING * upm
+        x += glyphs[name].width + tracking * upm
     _x_min, y_min, x_max, y_max = bounds.bounds
     return pen.getCommands(), x_max, y_min, y_max
 
@@ -82,7 +85,7 @@ def social(width: int = 1280, height: int = 640) -> str:
     d, w, top, bottom = outline("agentl", 210)
     gx = (width - w) / 2
     gy = height / 2 - 40 - (top + bottom) / 2
-    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 44)
+    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 34, TEXT_FONT, 0.01)
     blobs = "".join(
         f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r * width:.0f}" fill="{col}"/>'
         for x, y, r, col in BLOBS
@@ -94,7 +97,7 @@ def social(width: int = 1280, height: int = 640) -> str:
         f'<rect width="{width}" height="{height}" fill="#ffffff"/>'
         f'<g filter="url(#soft)" opacity=".9">{blobs}</g>'
         f'<path transform="translate({gx:.1f} {gy:.1f})" d="{d}" fill="{INK_LIGHT}"/>'
-        f'<path transform="translate({(width - tw) / 2:.1f} {gy + bottom + 90:.1f})" d="{tag}" fill="#27272a"/>'
+        f'<path transform="translate({(width - tw) / 2:.1f} {gy + bottom + 80:.1f})" d="{tag}" fill="#3f3f46"/>'
         "</svg>"
     )
 
