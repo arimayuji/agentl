@@ -37,6 +37,7 @@ llm:
 | `anthropic` | Claude with structured output. Needs `agentl-etl[anthropic]` and `ANTHROPIC_API_KEY`. |
 | `openai` | OpenAI Chat Completions with strict JSON schema. Needs `OPENAI_API_KEY`. No extra dependency. |
 | `ollama` | Local models through [Ollama](https://ollama.com), free and offline. Uses `OLLAMA_HOST` (default `http://localhost:11434`). |
+| `bedrock` | Amazon Bedrock (Converse API): Claude, Llama, Mistral, Nova and other models with tool use. Needs `agentl-etl[aws]`; credentials and region from the AWS chain. `model` is a Bedrock model or inference profile id. |
 | `openai-compatible` | Any OpenAI-style endpoint (vLLM, LM Studio, Groq, Together, gateways): set `options.base_url` and, if needed, `options.api_key_env`. |
 | `echo` | Offline. Copies matching fields from the record and leaves the rest empty, so required fields that are not in the record (for example `valid: bool`) get rejected. Mark them optional (`bool?`) while testing with echo. |
 
@@ -44,6 +45,7 @@ llm:
 llm:
   default: { provider: openai, model: gpt-4o-mini }
   local: { provider: ollama, model: llama3.2 }
+  aws: { provider: bedrock, model: us.amazon.nova-pro-v1:0, options: { region: us-east-1 } }
   groq:
     provider: openai-compatible
     model: llama-3.3-70b-versatile
@@ -83,7 +85,8 @@ llm:
 - `max_usd` needs a `price` on every LLM used by an agent step (except `echo` and `ollama`).
   agentl ships no price table, because prices change; copy them from your provider.
 - Calls already in flight finish, so with `concurrency > 1` a run can go slightly over the limit.
-- Cached records cost nothing and do not count.
+- Cached records cost nothing and do not count. Answers rejected for not matching the schema
+  still count, since the provider charged for them.
 - Every run reports `input_tokens`, `output_tokens` and `cost_usd` in `run.succeeded` / `run.failed`;
   each agent step reports its own in `step.succeeded` / `step.failed`, in `RunResult.spend` and in the
   dashboard's Spend table.

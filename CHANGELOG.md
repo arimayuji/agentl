@@ -11,8 +11,15 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- LLM provider `bedrock` (Amazon Bedrock Converse API, structured output through a forced tool).
+  Extra `aws` (#16).
 - `aws.lambda`: invoke a Lambda function once or once per record (payload templating, `items`,
   `keep_input`, async `Event`), with function errors surfaced. Extra `aws` (#15).
+
+### Fixed
+
+- Tokens spent on answers that fail schema validation (and their retry) now count toward
+  `budget`, `cost_usd` and spend per step; before, only successful calls were counted.
 
 ## [0.4.0] - 2026-10-13
 

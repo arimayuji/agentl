@@ -152,6 +152,10 @@ class Runner:
                 try:
                     res = prov.structured(step.agent or "", rec, schema)
                 except (ValidationError, ValueError, RuntimeError) as e:
+                    # Invalid answers still cost tokens: count them for budget and spend.
+                    self._charge(
+                        result, llm_spec, getattr(e, "input_tokens", 0), getattr(e, "output_tokens", 0)
+                    )
                     last = e
                     continue
                 self._charge(result, llm_spec, res.input_tokens, res.output_tokens)
