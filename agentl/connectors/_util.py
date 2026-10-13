@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .. import netguard
 from ..registry import require
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentl-"))
@@ -30,7 +31,7 @@ def download(url: str, headers: dict | None = None, timeout: float = 60, retries
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, headers={"User-Agent": "agentl", **(headers or {})})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp, target.open("wb") as f:
+            with netguard.urlopen(req, timeout=timeout) as resp, target.open("wb") as f:
                 shutil.copyfileobj(resp, f)
             return target
         except urllib.error.HTTPError as e:

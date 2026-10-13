@@ -1,5 +1,4 @@
 import json
-import urllib.request
 
 import pytest
 
@@ -214,7 +213,7 @@ def test_http_get_per_record(monkeypatch):
         seen.append(req.full_url)
         return Resp({"data": {"items": [{"id": req.full_url[-1]}]}})
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("agentl.netguard.urlopen", fake_urlopen)
     from agentl.registry import get
 
     out = get("http.get")([{"id": 1}, {"id": 2}], url="https://api.x/c/{id}", items="data.items")

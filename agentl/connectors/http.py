@@ -11,6 +11,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from .. import netguard
 from ..registry import connector
 from ._util import single
 
@@ -24,7 +25,7 @@ def _request(method: str, url: str, headers: dict, body: Any, timeout: float, re
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with netguard.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode()
                 try:
                     return json.loads(raw)
