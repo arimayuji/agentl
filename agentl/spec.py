@@ -208,7 +208,13 @@ def parse(raw: dict, env: dict[str, str] | None = None) -> PipelineSpec:
 
 def load(path: str | Path, env: dict[str, str] | None = None) -> PipelineSpec:
     text = Path(path).read_text(encoding="utf-8")
-    raw = yaml.load(text, Loader=_Loader)
+    try:
+        raw = yaml.load(text, Loader=_Loader)
+    except yaml.YAMLError as e:
+        hint = ""
+        if "'?'" in str(e):
+            hint = "\nhint: optional types like `str?` need block style or quotes inside { }"
+        raise SpecError(f"{path}: invalid YAML: {e}{hint}") from None
     if not isinstance(raw, dict):
         raise SpecError(f"{path}: expected a mapping at the top level")
     spec = parse(raw, env)

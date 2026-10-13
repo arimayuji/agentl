@@ -1,0 +1,45 @@
+name: invoices
+llm: { provider: openai, model: gpt-4o-mini }
+
+extract:
+  - id: invoices
+    use: http.get
+    with:
+      url: ${VENDOR_API_URL}/invoices
+      headers: { Authorization: "Bearer ${VENDOR_API_TOKEN}" }
+      params: { per_page: 500, updated_since: "${SINCE}" }
+      paginate: { param: page, next: next_page }
+      items: items
+  - id: customers
+    use: csv.read
+    with:
+      url: ${VENDOR_API_URL}/customers/export.csv
+      headers: { Authorization: "Bearer ${VENDOR_API_TOKEN}" }
+  - id: archive
+    use: json.write
+    input: invoices
+    with: { path: "${RAW_BUCKET}/invoices/${DAY}/raw.json" }
+
+transform:
+  - id: clean
+    fn: steps:clean
+    input: [invoices, customers]
+  - id: classify
+    agent: Classify the expense category; flag for review if the customer is unknown.
+    input: clean
+    output:
+      category: str
+      needs_review: bool
+      reason: str?
+
+load:
+  - id: save
+    use: postgres.write
+    input: classify
+    with: { dsn: "${DATABASE_URL}", table: invoices, mode: upsert, key: number }
+
+notify:
+  channels: { slack: { webhook: "${SLACK_WEBHOOK}" } }
+  rules:
+    - { on: run.failed, to: [slack] }
+    - { on: item.rejected, when: "rate > 0.05", to: [slack] }
