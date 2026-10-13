@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl.pandas`: `@dataframe` turns `fn(df) -> DataFrame` into a step, plus `to_df` and
+  `to_records`; `agentl-etl[pandas]` extra (#8).
 - `postgres.read` and `postgres.write` (`append`, `replace`, `upsert` on `key`), with typed
   auto-created tables and batched writes in one transaction; `agentl-etl[postgres]` extra (#9).
 - Readers accept `url:` (HTTP download with `headers` and retries) besides `path:`, and upstream
