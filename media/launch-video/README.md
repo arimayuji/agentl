@@ -9,7 +9,7 @@ Everything is code, so the video can be re-rendered for every release.
 cd media/launch-video
 npm install
 npm run studio        # live preview in the browser
-npm run render        # out/agentl-launch.mp4 (1920x1080, 60 fps)
+npm run render        # out/agentl-launch.mp4 (1920x1080, 60 fps, camera motion blur)
 npm run poster        # out/poster.jpg
 ```
 
