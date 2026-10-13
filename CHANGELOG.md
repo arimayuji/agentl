@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Remote paths for every reader, `file.read`, `csv.write` and `json.write` through fsspec: S3,
+  GCS, Azure, SFTP, FTP, SMB, WebDAV, with globs and `storage_options`. New extras `remote`, `s3`,
+  `gcs`, `azure`, `sftp` (#23).
 - `budget:` per run (`max_tokens`, `max_usd`) with a `budget.exceeded` event, `price:` per LLM and
   `cost_usd` in run results and events (#17).
 - LLM providers `openai`, `ollama` and `openai-compatible` (vLLM, LM Studio, Groq, ...), with strict
