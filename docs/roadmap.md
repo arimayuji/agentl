@@ -6,22 +6,13 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.2.0**: read from URLs, universal `file.read` (txt, xls, parquet, xml, html, zip/gz), Postgres
+  with upsert, pandas bridge, migration guide and docs for AI agents.
 - **0.1.1**: YAML pipelines, agent steps with validated schemas, per-record cache, connectors
   (CSV, JSON, Excel, PDF, Word, HTTP, SQLite), notifications, CLI and local dashboard.
   See the [changelog](changelog.md).
 
-## Next: 0.2, real-world pipelines
-
-| Feature | Issue |
-|---|---|
-| Read CSV and JSON directly from a URL | [#7](https://github.com/arimayuji/agentl/issues/7) |
-| Universal file reader: txt, xls, zip/gz, parquet, xml, html, legacy .doc | [#22](https://github.com/arimayuji/agentl/issues/22) |
-| pandas bridge: steps that receive and return DataFrames | [#8](https://github.com/arimayuji/agentl/issues/8) |
-| Postgres connectors with upsert | [#9](https://github.com/arimayuji/agentl/issues/9) |
-| Docs for AI agents: `llms.txt`, prompt library, `AGENTS.md` | [#10](https://github.com/arimayuji/agentl/issues/10) |
-| Guide: migrate a pandas pipeline (CSV over HTTP to Postgres) | [#11](https://github.com/arimayuji/agentl/issues/11) |
-
-## Then: 0.3, more sources, providers and operations
+## Next: 0.3, more sources, providers and operations
 
 | Feature | Issue |
 |---|---|
@@ -34,6 +25,8 @@ Priorities change with feedback, so dates are intentionally left out.
 | Cost budget per run | [#17](https://github.com/arimayuji/agentl/issues/17) |
 | More notification channels: email, Teams, Discord, Telegram, PagerDuty, Opsgenie | [#27](https://github.com/arimayuji/agentl/issues/27) |
 | Observability: OpenTelemetry traces and metrics, JSON logs, Sentry | [#28](https://github.com/arimayuji/agentl/issues/28) |
+| Run from orchestrators: Celery, Temporal, Airflow, Prefect | [#31](https://github.com/arimayuji/agentl/issues/31) |
+| Shared run store in Postgres | [#32](https://github.com/arimayuji/agentl/issues/32) |
 
 ## Later
 
