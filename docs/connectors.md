@@ -8,6 +8,9 @@ Connectors are used with `use:` and configured with `with:`. List what is instal
 Every reader (`csv.read`, `json.read`, `excel.read`, `file.read`, ...) takes its input from one of:
 
 - `path`: a local file or glob (`data/**/*.csv`),
+- `path` can also be remote: `s3://`, `gs://`, `az://`/`abfs://`, `sftp://`, `ftp://`, `smb://`,
+  `webdav://` and anything else [fsspec](https://filesystem-spec.readthedocs.io) supports, with globs
+  (see [Remote storage](#remote-storage)),
 - `url`: an address downloaded first (`http(s)` with `headers` for authentication; `file://` also works),
 - upstream records with a `path` field (local paths or URLs).
 
@@ -98,11 +101,6 @@ Other databases will ship as plugins.
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 
-## Roadmap
-
-S3/R2, email (IMAP), Postgres, Playwright and AWS Lambda are planned.
-[Request a connector](https://github.com/arimayuji/agentl/issues/new?template=connector_request.yml).
-
 ## PostgreSQL
 
 ```yaml
@@ -121,3 +119,51 @@ Install with `pip install 'agentl-etl[postgres]'`. Missing tables are created wi
 from the records (`bigint`, `double precision`, `boolean`, `jsonb`, `timestamptz`, `text`).
 `upsert` creates a unique index on `key` and uses `ON CONFLICT ... DO UPDATE`. Identifiers are
 quoted and values are always sent as parameters. Keep the DSN in an environment variable.
+
+## Remote storage
+
+Every reader, `file.read`, `csv.write` and `json.write` accept remote paths:
+
+```yaml
+extract:
+  - id: raw
+    use: file.read
+    with:
+      path: s3://my-bucket/exports/2026/**/*.csv
+
+load:
+  - id: archive
+    use: json.write
+    input: clean
+    with:
+      path: s3://my-bucket/processed/sales.json
+```
+
+| Storage | Install | Path |
+|---|---|---|
+| Amazon S3 (and S3-compatible: R2, MinIO) | `agentl-etl[s3]` | `s3://bucket/key` |
+| Google Cloud Storage | `agentl-etl[gcs]` | `gs://bucket/key` |
+| Azure Blob / Data Lake | `agentl-etl[azure]` | `az://container/key`, `abfs://...` |
+| SFTP | `agentl-etl[sftp]` | `sftp://host/path` |
+| FTP, SMB, WebDAV, others | `agentl-etl[remote]` + the fsspec backend | `ftp://...`, `smb://...` |
+
+Credentials come from the usual places for each backend (AWS profile and `AWS_*` variables, Google
+application default credentials, Azure environment variables, SSH keys). To pass options explicitly,
+use `storage_options`, keeping secrets in environment variables:
+
+```yaml
+with:
+  path: s3://bucket/data/*.parquet
+  storage_options:
+    key: ${R2_ACCESS_KEY_ID}
+    secret: ${R2_SECRET_ACCESS_KEY}
+    client_kwargs: { endpoint_url: https://<account>.r2.cloudflarestorage.com }
+```
+
+Files are downloaded to a temporary folder removed at exit; `_file` shows the remote URI. Writes go
+to a temporary file and are uploaded when complete.
+
+## Roadmap
+
+S3/R2, email (IMAP), Postgres, Playwright and AWS Lambda are planned.
+[Request a connector](https://github.com/arimayuji/agentl/issues/new?template=connector_request.yml).

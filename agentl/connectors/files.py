@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ..registry import connector, require
-from ._util import paths, single, tmpdir
+from ._util import is_remote, origin, paths, single, tmpdir, upload
 
 log = logging.getLogger("agentl.files")
 
@@ -267,7 +267,8 @@ def _each(
     **opts: Any,
 ) -> Records:
     out: Records = []
-    for p in paths(input, path, field, url, headers):
+    so = opts.pop("storage_options", None)
+    for p in paths(input, path, field, url, headers, so):
         out.extend(reader(p, **opts))
     return out
 
@@ -281,6 +282,7 @@ def file_read(
     field: str = "path",
     on_unsupported: str = "skip",
     max_extract_bytes: int = MAX_EXTRACT_BYTES,
+    storage_options: dict | None = None,
     **opts: Any,
 ) -> Records:
     """Read any supported file, detecting the format by extension.
@@ -291,7 +293,7 @@ def file_read(
     if on_unsupported not in ("skip", "error"):
         raise ValueError("on_unsupported must be 'skip' or 'error'")
     out: Records = []
-    for p in paths(input, path, field, url, headers):
+    for p in paths(input, path, field, url, headers, storage_options):
         for f, archive in _expand(p, max_extract_bytes):
             reader = READERS.get(f.suffix.lower())
             if reader is None:
@@ -299,11 +301,11 @@ def file_read(
                     raise ValueError(f"unsupported file type: {f.name}")
                 log.warning("file.read: skipping unsupported file %s", f.name)
                 continue
-            shown = f"{archive.name}!{f.name}" if archive else str(f)
+            shown = f"{archive.name}!{f.name}" if archive else origin(f)
             for rec in reader(f, **opts):
                 rec.setdefault("_file", shown)
                 if archive:
-                    rec.setdefault("_archive", str(archive))
+                    rec.setdefault("_archive", origin(archive))
                 out.append(rec)
     return out
 
@@ -314,10 +316,20 @@ def csv_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     delimiter: str | None = None,
     encoding: str = "utf-8",
 ) -> Records:
-    return _each(read_csv, input, path, url, headers, delimiter=delimiter, encoding=encoding)
+    return _each(
+        read_csv,
+        input,
+        path,
+        url,
+        headers,
+        delimiter=delimiter,
+        encoding=encoding,
+        storage_options=storage_options,
+    )
 
 
 @connector("json.read")
@@ -326,9 +338,10 @@ def json_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     key: str | None = None,
 ) -> Records:
-    return _each(read_json, input, path, url, headers, key=key)
+    return _each(read_json, input, path, url, headers, key=key, storage_options=storage_options)
 
 
 @connector("txt.read")
@@ -337,10 +350,13 @@ def txt_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     lines: bool = False,
     encoding: str = "utf-8",
 ) -> Records:
-    return _each(read_txt, input, path, url, headers, lines=lines, encoding=encoding)
+    return _each(
+        read_txt, input, path, url, headers, lines=lines, encoding=encoding, storage_options=storage_options
+    )
 
 
 @connector("excel.read")
@@ -349,13 +365,16 @@ def excel_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     sheet: str | None = None,
     header_row: int = 1,
 ) -> Records:
     def read(p: Path, **kw: Any) -> Records:
         return (read_xls if p.suffix.lower() == ".xls" else read_xlsx)(p, **kw)
 
-    return _each(read, input, path, url, headers, sheet=sheet, header_row=header_row)
+    return _each(
+        read, input, path, url, headers, sheet=sheet, header_row=header_row, storage_options=storage_options
+    )
 
 
 @connector("parquet.read")
@@ -364,9 +383,10 @@ def parquet_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     columns: list[str] | None = None,
 ) -> Records:
-    return _each(read_parquet, input, path, url, headers, columns=columns)
+    return _each(read_parquet, input, path, url, headers, columns=columns, storage_options=storage_options)
 
 
 @connector("pdf.read")
@@ -375,9 +395,10 @@ def pdf_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     field: str = "path",
 ) -> Records:
-    return _each(read_pdf, input, path, url, headers, field)
+    return _each(read_pdf, input, path, url, headers, field, storage_options=storage_options)
 
 
 @connector("docx.read")
@@ -386,9 +407,10 @@ def docx_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     field: str = "path",
 ) -> Records:
-    return _each(read_docx, input, path, url, headers, field)
+    return _each(read_docx, input, path, url, headers, field, storage_options=storage_options)
 
 
 @connector("doc.read")
@@ -397,9 +419,10 @@ def doc_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     field: str = "path",
 ) -> Records:
-    return _each(read_doc, input, path, url, headers, field)
+    return _each(read_doc, input, path, url, headers, field, storage_options=storage_options)
 
 
 @connector("xml.read")
@@ -408,9 +431,10 @@ def xml_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     items: str | None = None,
 ) -> Records:
-    return _each(read_xml, input, path, url, headers, items=items)
+    return _each(read_xml, input, path, url, headers, items=items, storage_options=storage_options)
 
 
 @connector("html.read")
@@ -419,33 +443,45 @@ def html_read(
     path: str | None = None,
     url: str | None = None,
     headers: dict | None = None,
+    storage_options: dict | None = None,
     table: int | None = None,
 ) -> Records:
-    return _each(read_html, input, path, url, headers, table=table)
+    return _each(read_html, input, path, url, headers, table=table, storage_options=storage_options)
 
 
 # ---------------------------------------------------------------- writers
+def _target(path: str) -> Path:
+    """Local file to write: the path itself, or a temp file uploaded afterwards."""
+    local = tmpdir("out-") / Path(path).name if is_remote(path) else Path(path)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    return local
+
+
 @connector("csv.write")
-def csv_write(input: Any, path: str, delimiter: str = ",") -> Records:
+def csv_write(input: Any, path: str, delimiter: str = ",", storage_options: dict | None = None) -> Records:
     rows = single(input)
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    local = _target(path)
     fields: list[str] = []
     for r in rows:
         fields.extend(k for k in r if k not in fields)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with open(local, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields, delimiter=delimiter)
         w.writeheader()
         w.writerows(rows)
+    if is_remote(path):
+        upload(local, path, storage_options)
     return [{"path": path, "written": len(rows)}]
 
 
 @connector("json.write")
-def json_write(input: Any, path: str) -> Records:
+def json_write(input: Any, path: str, storage_options: dict | None = None) -> Records:
     rows = single(input)
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    local = _target(path)
+    with open(local, "w", encoding="utf-8") as f:
         if path.endswith(".jsonl"):
             f.writelines(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
         else:
             json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
+    if is_remote(path):
+        upload(local, path, storage_options)
     return [{"path": path, "written": len(rows)}]
