@@ -31,7 +31,8 @@ Rules:
 - Keep my transform logic in pandas, inside a function decorated with
   agentl.pandas.dataframe, in steps.py next to the pipeline.
 - Replace pd.read_* with agentl reader connectors (csv.read, json.read, excel.read, file.read)
-  and DataFrame.to_sql with postgres.write or sqlite.write. Use mode: upsert when rows have
+  and DataFrame.to_sql with postgres.write (append, replace, upsert) or sqlite.write (append,
+  replace). Use mode: upsert when rows have
   a natural key, and mode: replace for aggregates that are recomputed in full.
 - Readers return CSV values as strings: cast types inside the function.
 - Credentials only as ${ENV_VAR}.
@@ -48,6 +49,7 @@ and <writes to Z>. Docs: https://agentl.com.br/llms-full.txt
 
 Use built-in connectors where they exist (`agentl connectors` lists them). Put custom
 Python in steps.py and reference it as `fn: steps:<name>`. Secrets only as ${ENV_VAR}.
+Relative paths resolve from the directory where agentl runs.
 Add a notify rule for run.failed. Run `agentl validate pipeline.yaml` and
 `agentl diagram pipeline.yaml`, then show me both outputs.
 ```
@@ -61,7 +63,8 @@ and flags records that look wrong. Docs: https://agentl.com.br/agents/
 - Declare an `output:` schema with the original key, the checked value, `valid: bool`
   and `reason: str?`.
 - Write the instruction as a short, specific task, with one example of a bad value.
-- Keep the provider in `llm:` and start with `provider: echo` so I can test offline.
+- Keep the provider in `llm:` and start with `provider: echo` so I can test offline. Echo cannot
+  invent values, so make the new fields optional (`bool?`, `str?`) for the offline run.
 - Run `agentl validate` and `agentl run --show <new step id>`.
 ```
 

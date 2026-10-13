@@ -136,7 +136,8 @@ class Runner:
         if step.kind == "agent":
             if isinstance(data, dict):
                 raise ValueError("agent steps take a single input; join the inputs first")
-            return self._run_agent(run_id, step, data or [{}], result)
+            # A source agent step (no input) runs once; an empty upstream means nothing to do.
+            return self._run_agent(run_id, step, [{}] if data is None else data, result)
 
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "")
         key = _hash("step", step.model_dump(by_alias=True), data)

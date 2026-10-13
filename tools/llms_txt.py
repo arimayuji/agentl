@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+HTML_TAG = re.compile(r"</?(?:div|span|p|a|img|video|source|br|small|section|figure|h[1-6])\b[^>]*>", re.I)
+
 SKIP = {"index.md", "changelog.md", "reference.md"}  # HTML landing, history, autodoc stubs
 
 
@@ -23,7 +25,7 @@ def _walk(nav: list[Any], section: str = "Docs") -> list[tuple[str, str, str]]:
 
 
 def _clean(md: str) -> str:
-    md = re.sub(r"<[^>]+>", "", md)  # raw HTML blocks
+    md = re.sub(HTML_TAG, "", md)  # raw HTML, keeping <placeholders> in prompts
     return re.sub(r"\n{3,}", "\n\n", md).strip()
 
 

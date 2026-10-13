@@ -220,3 +220,29 @@ def test_http_get_per_record(monkeypatch):
     out = get("http.get")([{"id": 1}, {"id": 2}], url="https://api.x/c/{id}", items="data.items")
     assert sorted(seen) == ["https://api.x/c/1", "https://api.x/c/2"]
     assert sorted(r["id"] for r in out) == ["1", "2"]
+
+
+def test_transforms_accept_a_single_field_name():
+    from agentl.registry import get
+
+    rows = [{"id": 1, "v": "a"}, {"id": 1, "v": "b"}, {"id": 2, "v": ""}]
+    assert get("dedupe")(rows, on="id") == [{"id": 1, "v": "a"}, {"id": 2, "v": ""}]
+    assert get("filter")(rows, not_empty="v") == rows[:2]
+    assert get("select")(rows[:1], fields="v") == [{"v": "a"}]
+
+
+def test_agent_step_with_empty_upstream_does_nothing(store):
+    spec = parse(
+        {
+            "name": "x",
+            "llm": {"provider": "echo"},
+            "steps": [
+                {"id": "src", "use": "filter", "input": "seed", "with": {"where": {"k": "none"}}},
+                {"id": "seed", "use": "concat"},
+                {"id": "ask", "agent": "Check it.", "input": "src", "output": {"k": "str?"}},
+            ],
+        }
+    )
+    result = Runner(spec, store=store).run()
+    assert result.status == "succeeded", result.error
+    assert result.outputs["ask"] == []

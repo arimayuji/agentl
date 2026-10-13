@@ -9,8 +9,16 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Fixed
+
+- `dedupe`, `filter` and `select` accept a single field name (`on: id`); a string used to be
+  split into characters and silently dropped records.
+- An agent step with an empty upstream now outputs nothing instead of running once on an empty record.
+
 ### Added
 
+- Docs for AI agents: `llms.txt` and `llms-full.txt` built with the site, a "Use with AI agents"
+  page with tested prompts, and `AGENTS.md` (#10).
 - Guide "Migrate a pandas pipeline" and `examples/sales` (CSV over HTTP to Postgres upsert) (#11).
 - `agentl run`/`validate` find `fn:` modules next to the pipeline file and in the working directory.
 - `agentl.pandas`: `@dataframe` turns `fn(df) -> DataFrame` into a step, plus `to_df` and

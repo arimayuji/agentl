@@ -92,9 +92,9 @@ Other databases will ship as plugins.
 
 | Connector | Parameters | What it does |
 |---|---|---|
-| `select` | `fields`, `rename` | Keep and rename fields |
-| `filter` | `where`, `not_empty` | Keep records matching values |
-| `dedupe` | `on` | Drop duplicates by key |
+| `select` | `fields` (name or list), `rename` (map) | Keep and rename fields |
+| `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
+| `dedupe` | `on` (name or list) | Keep the first record per key, in input order |
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 
