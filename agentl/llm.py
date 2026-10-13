@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, ValidationError, create_model
 
 from .spec import LLMSpec
 
@@ -40,6 +40,16 @@ class Result:
     value: BaseModel
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+class InvalidOutput(ValueError):
+    """The model answered, but not in the requested shape. Carries the tokens the call used, so
+    budgets and cost still count them."""
+
+    def __init__(self, message: str, input_tokens: int = 0, output_tokens: int = 0):
+        super().__init__(message)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
 
 class Provider(Protocol):
@@ -175,11 +185,12 @@ class OpenAICompatibleProvider:
         if message.get("refusal"):
             raise RuntimeError(f"model refused this record: {message['refusal']}")
         usage = resp.get("usage") or {}
-        return Result(
-            schema.model_validate_json(message.get("content") or "{}"),
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-        )
+        tin, tout = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        try:
+            value = schema.model_validate_json(message.get("content") or "{}")
+        except ValidationError as e:
+            raise InvalidOutput(str(e), tin, tout) from e
+        return Result(value, tin, tout)
 
     def text(self, instruction: str, content: str) -> str:
         resp = self._chat([{"role": "user", "content": f"{instruction}\n\n{content}"}])
@@ -203,7 +214,76 @@ class OllamaProvider(OpenAICompatibleProvider):
         super().__init__(spec)
 
 
+class BedrockProvider:
+    """Amazon Bedrock through the Converse API: Claude, Llama, Mistral, Nova and other models
+    that support tool use. Structured output uses a forced tool whose input schema is the step's
+    output schema. Needs `agentl-etl[aws]`; credentials and region come from the AWS chain.
+
+    `options`: `region`, `endpoint_url`, `temperature`, `top_p`."""
+
+    TOOL = "record_output"
+
+    def __init__(self, spec: LLMSpec):
+        if spec.model.startswith("claude-") or not spec.model:
+            raise ValueError(
+                "llm provider 'bedrock': set llm.model to a Bedrock model or inference profile id "
+                f"(got '{spec.model}')"
+            )
+        try:
+            import boto3
+        except ImportError as e:
+            raise ImportError("pip install 'agentl-etl[aws]'") from e
+        opts = dict(spec.options)
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=opts.pop("region", None),
+            endpoint_url=opts.pop("endpoint_url", None),
+        )
+        self.inference = {"maxTokens": spec.max_tokens}
+        for src, dst in (("temperature", "temperature"), ("top_p", "topP")):
+            if src in opts:
+                self.inference[dst] = opts.pop(src)
+        self.spec = spec
+
+    def _converse(self, messages: list[dict], **extra: Any) -> dict:
+        return self.client.converse(
+            modelId=self.spec.model, messages=messages, inferenceConfig=self.inference, **extra
+        )
+
+    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
+        msg = f"Instruction: {instruction}\n\nRecord:\n{json.dumps(record, ensure_ascii=False, default=str)}"
+        tool = {
+            "toolSpec": {
+                "name": self.TOOL,
+                "description": "Return the requested fields for this record.",
+                "inputSchema": {"json": _strict_schema(schema)},
+            }
+        }
+        resp = self._converse(
+            [{"role": "user", "content": [{"text": msg}]}],
+            system=[{"text": SYSTEM}],
+            toolConfig={"tools": [tool], "toolChoice": {"tool": {"name": self.TOOL}}},
+        )
+        usage = resp.get("usage") or {}
+        tin, tout = usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+        if resp.get("stopReason") == "guardrail_intervened":
+            raise InvalidOutput("bedrock guardrail blocked this record", tin, tout)
+        for block in resp["output"]["message"]["content"]:
+            if "toolUse" in block and block["toolUse"].get("name") == self.TOOL:
+                try:
+                    value = schema.model_validate(block["toolUse"]["input"])
+                except ValidationError as e:
+                    raise InvalidOutput(str(e), tin, tout) from e
+                return Result(value, tin, tout)
+        raise InvalidOutput("model did not return the structured output", tin, tout)
+
+    def text(self, instruction: str, content: str) -> str:
+        resp = self._converse([{"role": "user", "content": [{"text": f"{instruction}\n\n{content}"}]}])
+        return "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
+
+
 _PROVIDERS: dict[str, Callable[[LLMSpec], Provider]] = {
+    "bedrock": BedrockProvider,
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,

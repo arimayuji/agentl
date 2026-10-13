@@ -125,3 +125,13 @@ def test_in_pipeline(fake_api, tmp_path):
     assert result.status == "succeeded", result.error
     assert result.outputs["tag"][0]["label"] == "ok"
     assert result.input_tokens == 7
+
+
+def test_invalid_json_keeps_token_usage(fake_api):
+    from agentl.llm import InvalidOutput
+
+    fake_api["reply"] = '{"category": 5}'
+    prov = provider(spec(options={"base_url": fake_api["url"]}))
+    with pytest.raises(InvalidOutput) as e:
+        prov.structured("x", {}, schema_model("o", {"category": "str"}))
+    assert (e.value.input_tokens, e.value.output_tokens) == (7, 3)
