@@ -64,6 +64,13 @@ Any importable function works as a step:
 
 It receives the input records plus the `with:` parameters as keyword arguments.
 
+`my_package.cleaning` is looked up in this order:
+
+1. a file next to the pipeline YAML (`my_package/cleaning.py`), loaded under a name unique to that
+   file, so two pipelines with their own `steps.py` never share code, even in one worker process;
+2. a normal import (installed packages and `sys.path`);
+3. a file in the current working directory.
+
 ### pandas steps
 
 Already have pandas code? Wrap it with `@dataframe` (`pip install 'agentl-etl[pandas]'`):
