@@ -22,8 +22,53 @@ notify:
 | Type | Settings |
 |---|---|
 | `slack` | `webhook` |
-| `webhook` | `url` (receives `{"text": ..., "event": ...}`) |
+| `teams` | `webhook` (a Teams Workflows "When a Teams webhook request is received" URL; posts an Adaptive Card) |
+| `discord` | `webhook` |
+| `telegram` | `token` (bot token), `chat_id` |
+| `email` | `host`, `port` (587), `user`, `password`, `from`, `to` (address or list), `starttls` (true), `ssl` (false, port 465) |
+| `pagerduty` | `routing_key` (Events API v2), `severity` (default: error for failures, warning otherwise) |
+| `opsgenie` | `api_key`, `region` (`eu` for the EU instance), `priority` (default P2 for failures, P4 otherwise) |
+| `webhook` | `url`, `headers` (receives `{"text": ..., "event": ...}`) |
 | `console` | none |
+
+```yaml
+notify:
+  channels:
+    oncall: { type: pagerduty, routing_key: "${PD_ROUTING_KEY}" }
+    team: { type: teams, webhook: "${TEAMS_WEBHOOK}" }
+    mail:
+      type: email
+      host: smtp.gmail.com
+      user: "${SMTP_USER}"
+      password: "${SMTP_PASSWORD}"
+      to: [data-team@example.com]
+  rules:
+    - on: [run.failed, budget.exceeded]
+      to: [oncall, team]
+    - on: run.succeeded        # resolves the PagerDuty incident opened by a failure
+      to: [oncall]
+    - on: item.rejected
+      when: "rate > 0.05"
+      to: [mail]
+```
+
+PagerDuty and Opsgenie alerts are deduplicated per pipeline and step, so a pipeline that keeps
+failing updates one incident instead of opening many. Credentials belong in environment variables.
+
+### Custom channels
+
+```python
+from agentl import register_channel
+
+
+def sms(config: dict, text: str, event: dict) -> None:
+    my_sms_client.send(config["phone"], text[:160])
+
+
+register_channel("sms", sms)  # then: channels: { phone: { type: sms, phone: "+55..." } }
+```
+
+A failing channel is logged and never fails the pipeline.
 
 A channel's type defaults to its name. Set `type:` to give channels custom names.
 
