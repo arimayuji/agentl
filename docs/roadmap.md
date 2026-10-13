@@ -6,6 +6,8 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.5.0**: AWS Lambda connector, Bedrock provider, HTTP pagination, the `examples/invoices` migration
+  example, and correct cost accounting for invalid LLM answers.
 - **0.4.0**: browser (Playwright) and email (IMAP) connectors, Teams/Discord/Telegram/email/
   PagerDuty/Opsgenie notifications, JSON logs, OpenTelemetry and Sentry, spend per step in the
   dashboard.
@@ -18,12 +20,15 @@ Priorities change with feedback, so dates are intentionally left out.
   (CSV, JSON, Excel, PDF, Word, HTTP, SQLite), notifications, CLI and local dashboard.
   See the [changelog](changelog.md).
 
-## Next: 0.5
+## Next: 0.6, performance
 
 | Feature | Issue |
 |---|---|
-| AWS Lambda connector | [#15](https://github.com/arimayuji/agentl/issues/15) |
-| Bedrock provider | [#16](https://github.com/arimayuji/agentl/issues/16) |
+| Reproducible benchmarks and a published performance page | [#56](https://github.com/arimayuji/agentl/issues/56) |
+| Cheaper and faster agent steps: prompt caching, multi-record calls, batch mode | [#59](https://github.com/arimayuji/agentl/issues/59) |
+| Run independent steps in parallel | [#57](https://github.com/arimayuji/agentl/issues/57) |
+| Stream records in chunks for large inputs | [#58](https://github.com/arimayuji/agentl/issues/58) |
+| Columnar fast path with Apache Arrow | [#60](https://github.com/arimayuji/agentl/issues/60) |
 
 ## Later
 
