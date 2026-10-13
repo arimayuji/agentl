@@ -15,6 +15,7 @@ Priorities change with feedback, so dates are intentionally left out.
 | Feature | Issue |
 |---|---|
 | Read CSV and JSON directly from a URL | [#7](https://github.com/arimayuji/agentl/issues/7) |
+| Universal file reader: txt, xls, zip/gz, parquet, xml, html, legacy .doc | [#22](https://github.com/arimayuji/agentl/issues/22) |
 | pandas bridge: steps that receive and return DataFrames | [#8](https://github.com/arimayuji/agentl/issues/8) |
 | Postgres connectors with upsert | [#9](https://github.com/arimayuji/agentl/issues/9) |
 | Docs for AI agents: `llms.txt`, prompt library, `AGENTS.md` | [#10](https://github.com/arimayuji/agentl/issues/10) |
