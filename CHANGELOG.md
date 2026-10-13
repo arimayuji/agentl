@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `http.get` / `http.post`: `params` (query string, filled per record) and `paginate`
+  (`param`, `start`, `next`, `max_pages`).
+- `examples/invoices`: a 253-line legacy ETL next to its 45-line agentl pipeline, tested end to end.
 - LLM provider `bedrock` (Amazon Bedrock Converse API, structured output through a forced tool).
   Extra `aws` (#16).
 - `aws.lambda`: invoke a Lambda function once or once per record (payload templating, `items`,
@@ -18,6 +21,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Fixed
 
+- Invalid YAML is reported as a clear `SpecError` (with a hint for `str?` inside `{ }`) instead of
+  a traceback.
 - Tokens spent on answers that fail schema validation (and their retry) now count toward
   `budget`, `cost_usd` and spend per step; before, only successful calls were counted.
 

@@ -61,7 +61,7 @@ Writers: `csv.write` and `json.write` (`.json` or `.jsonl`).
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `items`, `concurrency`, `timeout`, `retries` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -78,7 +78,21 @@ filled from each record, so one request is made per record:
     concurrency: 5
 ```
 
-Requests are retried with exponential backoff on network errors, 429 and 5xx responses.
+Query parameters go in `params` (also filled per record). To follow pages:
+
+```yaml
+- id: invoices
+  use: http.get
+  with:
+    url: https://api.example.com/invoices
+    params: { per_page: 500, updated_since: "${SINCE}" }
+    paginate: { param: page, next: next_page }   # also: start (1), max_pages (1000)
+    items: items
+```
+
+Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
+returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
+responses.
 
 ## SQL
 

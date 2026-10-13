@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -58,6 +59,50 @@ def _as_records(data: Any, items: str | None) -> list[dict]:
     return [data if isinstance(data, dict) else {"value": data}]
 
 
+def _dig(data: Any, path: str) -> Any:
+    for part in path.split("."):
+        data = data.get(part) if isinstance(data, dict) else None
+    return data
+
+
+def _with_query(url: str, params: dict | None) -> str:
+    if not params:
+        return url
+    query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
+    return f"{url}{'&' if '?' in url else '?'}{query}" if query else url
+
+
+def _pages(
+    method: str,
+    url: str,
+    params: dict | None,
+    paginate: dict | None,
+    headers: dict,
+    body: Any,
+    items: str | None,
+    timeout: float,
+    retries: int,
+) -> list[dict]:
+    """One request, or every page: `paginate: {param: page, start: 1, next: next_page, max_pages: 1000}`.
+    Stops when the `next` field of the response is empty, or when a page has no items."""
+    if not paginate:
+        return _as_records(_request(method, _with_query(url, params), headers, body, timeout, retries), items)
+    param = paginate.get("param", "page")
+    page = paginate.get("start", 1)
+    out: list[dict] = []
+    for _ in range(int(paginate.get("max_pages", 1000))):
+        data = _request(
+            method, _with_query(url, {**(params or {}), param: page}), headers, body, timeout, retries
+        )
+        rows = _as_records(data, items) if data else []
+        out.extend(rows)
+        nxt = paginate.get("next")
+        if not rows or (nxt and not _dig(data, nxt)):
+            return out
+        page += 1
+    raise RuntimeError(f"pagination stopped after max_pages={paginate.get('max_pages', 1000)}")
+
+
 def _http(
     method: str,
     input: Any,
@@ -68,15 +113,26 @@ def _http(
     concurrency: int,
     timeout: float,
     retries: int,
+    params: dict | None = None,
+    paginate: dict | None = None,
 ) -> list[dict]:
     headers = headers or {}
     upstream = single(input)
     if not upstream:
-        return _as_records(_request(method, url, headers, json_body, timeout, retries), items)
+        return _pages(method, url, params, paginate, headers, json_body, items, timeout, retries)
 
     def one(rec: dict) -> list[dict]:
-        body = _fill(json_body, rec)
-        return _as_records(_request(method, url.format(**rec), headers, body, timeout, retries), items)
+        return _pages(
+            method,
+            url.format(**rec),
+            _fill(params, rec),
+            paginate,
+            headers,
+            _fill(json_body, rec),
+            items,
+            timeout,
+            retries,
+        )
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         return [r for batch in pool.map(one, upstream) for r in batch]
@@ -91,8 +147,10 @@ def http_get(
     concurrency: int = 4,
     timeout: float = 30,
     retries: int = 2,
+    params: dict | None = None,
+    paginate: dict | None = None,
 ) -> list[dict]:
-    return _http("GET", input, url, headers, None, items, concurrency, timeout, retries)
+    return _http("GET", input, url, headers, None, items, concurrency, timeout, retries, params, paginate)
 
 
 @connector("http.post")
@@ -105,5 +163,7 @@ def http_post(
     concurrency: int = 4,
     timeout: float = 30,
     retries: int = 2,
+    params: dict | None = None,
+    paginate: dict | None = None,
 ) -> list[dict]:
-    return _http("POST", input, url, headers, json, items, concurrency, timeout, retries)
+    return _http("POST", input, url, headers, json, items, concurrency, timeout, retries, params, paginate)

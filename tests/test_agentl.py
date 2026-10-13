@@ -246,3 +246,10 @@ def test_agent_step_with_empty_upstream_does_nothing(store):
     result = Runner(spec, store=store).run()
     assert result.status == "succeeded", result.error
     assert result.outputs["ask"] == []
+
+
+def test_invalid_yaml_is_a_spec_error(tmp_path):
+    p = tmp_path / "bad.yaml"
+    p.write_text("name: x\nsteps:\n  - {id: a, use: concat, output: { v: str? }}\n")
+    with pytest.raises(SpecError, match="block style"):
+        load(p)

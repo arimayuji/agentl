@@ -90,3 +90,94 @@ def test_sales_example_is_idempotent(tmp_path, monkeypatch):
         {"order_id": 1, "country": "BR", "total": 21.0},
         {"order_id": 2, "country": "US", "total": 99.0},
     ]
+
+
+def test_invoices_example_end_to_end(tmp_path, monkeypatch):
+    """examples/invoices: paginated API + CSV + pandas + agent + Postgres upsert, offline."""
+    import http.server
+    import json as _json
+    import pathlib
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    pytest.importorskip("pandas")
+    import agentl
+    from agentl import register_provider
+    from agentl.llm import Result
+
+    invoices = [
+        {
+            "number": f"NF-{i}",
+            "cnpj": "12.345.678/0001-90" if i % 2 else "99.999.999/0001-99",
+            "total": str(10 * i),
+            "issued_at": "2026-10-13T10:00:00Z",
+            "description": "SaaS seats",
+        }
+        for i in range(1, 6)
+    ]
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            u = urlparse(self.path)
+            if u.path.endswith(".csv"):
+                body, ctype = b"cnpj;name;segment\n12345678000190;Acme;tech\n", "text/csv"
+            else:
+                page = int(parse_qs(u.query)["page"][0])
+                chunk = invoices[(page - 1) * 2 : page * 2]
+                body = _json.dumps({"items": chunk, "next_page": page + 1 if page * 2 < 5 else None}).encode()
+                ctype = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    class Fake:
+        def __init__(self, spec):
+            pass
+
+        def structured(self, instruction, record, schema):
+            return Result(
+                schema.model_validate({"category": "software", "needs_review": not record["customer_known"]}),
+                5,
+                2,
+            )
+
+        def text(self, instruction, content):
+            return ""
+
+    register_provider("openai", Fake)  # stand-in for the real API in this test
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(DSN) as conn:
+        conn.execute("DROP TABLE IF EXISTS invoices")
+    env = {
+        "VENDOR_API_URL": f"http://127.0.0.1:{srv.server_address[1]}",
+        "VENDOR_API_TOKEN": "t",
+        "SINCE": "2026-10-12",
+        "DAY": "2026-10-13",
+        "RAW_BUCKET": str(tmp_path),
+        "DATABASE_URL": DSN,
+        "SLACK_WEBHOOK": "http://127.0.0.1:9/none",
+    }
+    example = pathlib.Path(__file__).parents[1] / "examples" / "invoices" / "pipeline.yaml"
+    try:
+        result = agentl.run(example, vars=env, db=tmp_path / "s.db", raise_on_failure=True)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        from agentl import llm
+
+        llm._PROVIDERS["openai"] = llm.OpenAIProvider
+    assert result.summary()["records"]["invoices"] == 5
+    rows = get("postgres.read")(
+        None, dsn=DSN, query="SELECT number, name, category, needs_review FROM invoices ORDER BY number"
+    )
+    assert [r["number"] for r in rows] == ["NF-1", "NF-2", "NF-3", "NF-4", "NF-5"]
+    assert rows[0]["name"] == "Acme" and rows[0]["needs_review"] is False
+    assert rows[1]["name"] is None and rows[1]["needs_review"] is True
+    assert (tmp_path / "invoices" / "2026-10-13" / "raw.json").exists()
