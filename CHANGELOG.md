@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `browser.scrape` (Playwright): login steps, wait for JavaScript content, extract tables, text,
+  HTML or links, or click a download and pass the file to `file.read`. Extra `browser` (#14).
 - `email.read` (IMAP: messages, bodies and attachments, with `explode` into one record per
   attachment for `file.read`) and `email.mark` (flag or move messages at the end of a pipeline) (#13).
 - Notification channels `teams`, `discord`, `telegram`, `email` (SMTP), `pagerduty` (trigger and

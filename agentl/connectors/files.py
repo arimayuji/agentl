@@ -180,8 +180,13 @@ class _Tables(HTMLParser):
 
 def read_html(p: Path, table: int | None = None, encoding: str = "utf-8", **_: Any) -> Records:
     """Rows of the HTML tables; the first row of each table is the header."""
+    return html_tables(p.read_text(encoding=encoding, errors="replace"), table)
+
+
+def html_tables(html: str, table: int | None = None) -> Records:
+    """Rows of the tables in an HTML string; the first row of each table is the header."""
     parser = _Tables()
-    parser.feed(p.read_text(encoding=encoding, errors="replace"))
+    parser.feed(html)
     out: Records = []
     for i, rows in enumerate(parser.tables):
         if (table is not None and i != table) or len(rows) < 2:
