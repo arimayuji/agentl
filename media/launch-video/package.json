@@ -5,6 +5,8 @@
   "scripts": {
     "studio": "remotion studio src/index.ts",
     "render": "remotion render src/index.ts Launch out/agentl-launch.mp4 --codec=h264 --crf=16",
+    "sources": "python3 scripts/sources.py",
+    "render:compress": "remotion render src/index.ts Compress out/agentl-compress.mp4 --codec=h264 --crf=16",
     "poster": "remotion still src/index.ts Launch out/poster.jpg --frame=600"
   },
   "dependencies": {

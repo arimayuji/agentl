@@ -15,6 +15,18 @@ npm run poster        # out/poster.jpg
 
 Fonts (Inter, JetBrains Mono) are bundled from npm, so renders work offline.
 
+## "From 253 lines to 45" video
+
+`Compress` shows `examples/invoices/legacy_etl.py` collapsing into `examples/invoices/pipeline.yaml`.
+The code on screen is generated from those files, so the video always matches the repo:
+
+```bash
+npm run sources           # regenerate src/compress/sources.ts from examples/invoices
+npm run render:compress   # out/agentl-compress.mp4 (1920x1080, 60 fps, 29 s)
+```
+
+The terminal output in the "run" scene is illustrative and labelled as sample output.
+
 ## Web version
 
 The site uses a smaller encode of the master render:
