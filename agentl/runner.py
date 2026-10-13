@@ -75,7 +75,14 @@ class Runner:
     # events -------------------------------------------------------------
     def _emit(self, run_id: str, type: str, step: str | None = None, **data: Any) -> None:
         self.store.event(run_id, type, step, data)
-        event = {"run_id": run_id, "type": type, "step": step, "data": data}
+        event = {
+            "run_id": run_id,
+            "pipeline": self.spec.name,
+            "ts": time.time(),
+            "type": type,
+            "step": step,
+            "data": data,
+        }
         for listener in self.listeners:
             listener(event)
 
