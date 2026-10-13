@@ -5,19 +5,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import threading
 import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from . import graph, llm, registry
 from .notify import Notifier
-from .spec import LLMSpec, PipelineSpec, StepSpec
+from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store
 
 Records = list[dict[str, Any]]
@@ -34,6 +37,15 @@ class RunResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+
+    def summary(self, outputs: bool = False) -> dict[str, Any]:
+        """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
+        data = asdict(self)
+        data["records"] = {k: len(v) for k, v in self.outputs.items()}
+        data["rejected"] = {k: len(v) for k, v in self.rejected.items()}
+        if not outputs:
+            data.pop("outputs")
+        return json.loads(json.dumps(data, default=str))
 
 
 class BudgetExceeded(RuntimeError):
@@ -231,5 +243,54 @@ class Runner:
         return result
 
 
-def run(spec: PipelineSpec, **kwargs: Any) -> RunResult:
-    return Runner(spec, **kwargs).run()
+class PipelineFailed(RuntimeError):
+    """Raised by `run(..., raise_on_failure=True)`; carries the `RunResult`."""
+
+    def __init__(self, result: RunResult | str):
+        # Orchestrators rebuild exceptions from their message, so a plain string must work too.
+        if isinstance(result, str):
+            super().__init__(result)
+            self.result: RunResult | None = None
+        else:
+            super().__init__(f"run {result.run_id} failed: {result.error}")
+            self.result = result
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (PipelineFailed, (str(self),))
+
+
+def run(
+    pipeline: PipelineSpec | str | os.PathLike,
+    *,
+    vars: dict[str, str] | None = None,
+    db: str | os.PathLike | None = None,
+    raise_on_failure: bool = False,
+    **kwargs: Any,
+) -> RunResult:
+    """Run a pipeline from a spec or a YAML path. The stable entry point for schedulers
+    and orchestrators (cron, Celery, Temporal, Airflow, Prefect, Lambda).
+
+    `vars` override environment variables for `${VAR}` interpolation. `db` is the run
+    store path (default `.agentl/agentl.db`). With `raise_on_failure`, a failed run raises
+    `PipelineFailed`, which is what most orchestrators need to trigger their retries."""
+    if isinstance(pipeline, PipelineSpec):
+        spec = pipeline
+    else:
+        path = Path(pipeline)
+        add_import_paths(path)
+        spec = load(path, {**os.environ, **(vars or {})})
+    if "store" in kwargs:
+        result = Runner(spec, **kwargs).run()
+    else:
+        with Store(Path(db or ".agentl/agentl.db")) as store:
+            result = Runner(spec, store=store, **kwargs).run()
+    if raise_on_failure and result.status != "succeeded":
+        raise PipelineFailed(result)
+    return result
+
+
+def add_import_paths(pipeline: Path) -> None:
+    """Let `fn: module:function` find modules next to the pipeline or in the working dir."""
+    for d in (str(pipeline.resolve().parent), str(Path.cwd())):
+        if d not in sys.path:
+            sys.path.insert(0, d)

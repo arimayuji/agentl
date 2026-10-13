@@ -2,10 +2,11 @@
 
 from .llm import register_provider
 from .registry import connector
-from .runner import Runner, RunResult, run
+from .runner import PipelineFailed, Runner, RunResult, run
 from .spec import PipelineSpec, SpecError, load, parse
 
 __all__ = [
+    "PipelineFailed",
     "PipelineSpec",
     "RunResult",
     "Runner",

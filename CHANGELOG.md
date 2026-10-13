@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl.run()` accepts a YAML path with `vars`, `db` and `raise_on_failure` (raises
+  `PipelineFailed`); `RunResult.summary()`. Integrations for Celery, Temporal and Airflow, and a
+  "Scheduling and orchestration" guide covering cron, GitHub Actions, Prefect, Dagster and Lambda (#31).
 - Remote paths for every reader, `file.read`, `csv.write` and `json.write` through fsspec: S3,
   GCS, Azure, SFTP, FTP, SMB, WebDAV, with globs and `storage_options`. New extras `remote`, `s3`,
   `gcs`, `azure`, `sftp` (#23).
