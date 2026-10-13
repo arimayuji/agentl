@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Spend per agent step: tokens and `cost_usd` in `step.succeeded` / `step.failed` events, in
+  `RunResult.spend` and in a Spend table on the dashboard (#17).
+
 ## [0.3.0] - 2026-10-13
 
 ### Added

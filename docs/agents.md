@@ -84,6 +84,8 @@ llm:
   agentl ships no price table, because prices change; copy them from your provider.
 - Calls already in flight finish, so with `concurrency > 1` a run can go slightly over the limit.
 - Cached records cost nothing and do not count.
-- Every run reports `input_tokens`, `output_tokens` and `cost_usd` in `run.succeeded` / `run.failed`.
+- Every run reports `input_tokens`, `output_tokens` and `cost_usd` in `run.succeeded` / `run.failed`;
+  each agent step reports its own in `step.succeeded` / `step.failed`, in `RunResult.spend` and in the
+  dashboard's Spend table.
 
 Notify on it like any event: `on: [budget.exceeded]`.
