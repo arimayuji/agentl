@@ -14,7 +14,7 @@ Repository settings that are not stored in git. Review them after any change to 
 
 - Restrict deletions and block force pushes.
 - Require a pull request before merging, with conversation resolution.
-- Require status checks: `lint`, `test (ubuntu-latest, 3.10)`, `test (ubuntu-latest, 3.13)`, `build`, `analyze`.
+- Require status checks: `lint`, `test (ubuntu-latest, 3.10)`, `test (ubuntu-latest, 3.13)`, `build`, `Analyze (python)`, `Analyze (actions)`.
   Require branches to be up to date.
 - Require signed commits (optional, recommended).
 - Solo maintainer: set required approvals to 0 and add yourself to the bypass list only if you need to
