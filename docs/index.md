@@ -16,9 +16,10 @@ a function or an LLM agent, and follow every run in a live diagram.</p>
 
 </div>
 
-```bash
-pip install agentl
-```
+<div class="agt-terminal" role="img" aria-label="Terminal demo: install agentl, validate and run a pipeline, open the dashboard">
+  <div class="agt-bar"><span></span><span></span><span></span></div>
+  <div class="agt-body"></div>
+</div>
 
 ## One file, the whole pipeline
 
