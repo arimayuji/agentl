@@ -1,4 +1,16 @@
-# agentl
+<p align="center">
+  <a href="https://agentl.com.br">
+    <img src="media/brand/assets/agentl-social-1280x640.png" alt="agentl: Agentic ETL for Python" width="820">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://agentl.com.br"><b>Website</b></a> ·
+  <a href="https://agentl.com.br/getting-started/">Getting started</a> ·
+  <a href="https://agentl.com.br/connectors/">Connectors</a> ·
+  <a href="https://pypi.org/project/agentl/">PyPI</a> ·
+  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
+</p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentl)](https://pypi.org/project/agentl/)
@@ -122,6 +134,10 @@ The runner emits `run.started`, `step.started`, `step.succeeded`, `step.failed`,
 Bug reports, connector requests and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
 for the setup and the checks every PR must pass, and [SECURITY.md](SECURITY.md) to report vulnerabilities privately.
 Release history is in [CHANGELOG.md](CHANGELOG.md).
+
+## Sponsors
+
+agentl is free and MIT licensed. If it saves you time, consider [sponsoring the project](https://github.com/sponsors/arimayuji).
 
 ## License
 

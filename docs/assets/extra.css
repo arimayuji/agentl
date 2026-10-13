@@ -1,0 +1,25 @@
+.md-typeset .hero { text-align: center; padding: 2.5rem 0 1.5rem; }
+.md-typeset .hero h1 { font-size: 2.6rem; font-weight: 800; margin-bottom: .4rem; letter-spacing: -.02em; }
+.md-typeset .hero p.tagline { font-size: 1.15rem; color: var(--md-default-fg-color--light); max-width: 40rem; margin: 0 auto 1.4rem; }
+.md-typeset .hero .md-button { margin: .25rem; }
+.md-typeset .grid.cards > ul > li { border-radius: .6rem; }
+.md-typeset .contributors img { max-width: 100%; }
+@media screen and (max-width: 44.9375em) { .md-typeset .hero h1 { font-size: 2rem; } }
+.agt-terminal { max-width: 46rem; margin: 1.5rem auto 2rem; border-radius: .6rem; overflow: hidden;
+  background: #0d1117; box-shadow: 0 10px 30px rgba(0,0,0,.25); font-family: var(--md-code-font-family); font-size: .72rem; }
+.agt-bar { display: flex; gap: .35rem; padding: .55rem .7rem; background: #161b22; }
+.agt-bar span { width: .65rem; height: .65rem; border-radius: 50%; background: #484f58; }
+.agt-bar span:nth-child(1) { background: #ff5f56; } .agt-bar span:nth-child(2) { background: #ffbd2e; } .agt-bar span:nth-child(3) { background: #27c93f; }
+.agt-body { padding: .8rem 1rem; min-height: 21rem; color: #c9d1d9; white-space: pre-wrap; word-break: break-word; }
+.agt-cmd::before { content: "$ "; color: #7ee787; }
+.agt-cmd { color: #f0f6fc; margin-top: .35rem; }
+.agt-out { color: #8b949e; } .agt-out.ok { color: #7ee787; } .agt-out.warn { color: #e3b341; } .agt-out.link { color: #79c0ff; }
+.agt-body > div:last-child::after { content: "▋"; color: #7ee787; animation: agt-blink 1s steps(1) infinite; }
+@keyframes agt-blink { 50% { opacity: 0; } }
+.md-typeset .launch-video { display: block; width: 100%; max-width: 64rem; margin: 1rem auto 2.5rem;
+  border-radius: .9rem; box-shadow: 0 20px 60px rgba(0,0,0,.35); background: #07070b; aspect-ratio: 16 / 9; }
+
+.md-typeset .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); margin: 0; }
+.md-typeset .hero-wordmark { height: 5.5rem; margin: .5rem auto 1.2rem; display: block; }
+[data-md-color-scheme="slate"] .only-light, [data-md-color-scheme="default"] .only-dark { display: none !important; }
+@media screen and (max-width: 44.9375em) { .md-typeset .hero-wordmark { height: 3.8rem; } }
