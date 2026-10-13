@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- LLM providers `openai`, `ollama` and `openai-compatible` (vLLM, LM Studio, Groq, ...), with strict
+  JSON-schema output, retries and token usage. Standard library only, no new dependency (#16).
+
 ## [0.2.0] - 2026-10-13
 
 ### Added
