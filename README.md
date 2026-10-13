@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="media/brand/dist/agentl-wordmark-dark.svg">
-    <img src="media/brand/dist/agentl-wordmark-light.svg" alt="agentl" height="72">
+    <source media="(prefers-color-scheme: dark)" srcset="media/brand/assets/agentl-wordmark-dark.svg">
+    <img src="media/brand/assets/agentl-wordmark-light.svg" alt="agentl" height="72">
   </picture>
 </p>
 

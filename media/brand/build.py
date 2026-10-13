@@ -19,7 +19,7 @@ from fontTools.ttLib import TTFont
 
 HERE = Path(__file__).parent
 FONT = TTFont(HERE / "font" / "outfit-latin-700-normal.woff2")
-OUT = HERE / "dist"
+OUT = HERE / "assets"
 TRACKING = -0.03  # em, slightly tighter than default
 
 INK_DARK = "#f4f4f6"  # on dark backgrounds
@@ -43,7 +43,7 @@ def outline(text: str, size: float) -> tuple[str, float, float, float]:
         glyphs[name].draw(TransformPen(pen, t))
         glyphs[name].draw(TransformPen(bounds, t))
         x += glyphs[name].width + TRACKING * upm
-    x_min, y_min, x_max, y_max = bounds.bounds
+    _x_min, y_min, x_max, y_max = bounds.bounds
     return pen.getCommands(), x_max, y_min, y_max
 
 
@@ -72,7 +72,7 @@ def social(width: int = 1280, height: int = 640) -> str:
     d, w, top, bottom = outline("agentl", 200)
     gx = (width - w) / 2
     gy = height / 2 - 30 - (top + bottom) / 2
-    tag, tw, ttop, tbot = outline("Agentic ETL for Python", 40)
+    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 40)
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
         "<defs>"
