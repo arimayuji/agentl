@@ -83,6 +83,8 @@ Requests are retried with exponential backoff on network errors, 429 and 5xx res
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
 | `sqlite.write` | `db`, `table`, `mode` (`append` or `replace`) |
+| `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -100,3 +102,22 @@ Other databases will ship as plugins.
 
 S3/R2, email (IMAP), Postgres, Playwright and AWS Lambda are planned.
 [Request a connector](https://github.com/arimayuji/agentl/issues/new?template=connector_request.yml).
+
+## PostgreSQL
+
+```yaml
+load:
+  - id: save
+    use: postgres.write
+    input: clean
+    with:
+      dsn: ${DATABASE_URL}
+      table: public.sales
+      mode: upsert
+      key: id
+```
+
+Install with `pip install 'agentl-etl[postgres]'`. Missing tables are created with types inferred
+from the records (`bigint`, `double precision`, `boolean`, `jsonb`, `timestamptz`, `text`).
+`upsert` creates a unique index on `key` and uses `ON CONFLICT ... DO UPDATE`. Identifiers are
+quoted and values are always sent as parameters. Keep the DSN in an environment variable.

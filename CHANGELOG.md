@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `postgres.read` and `postgres.write` (`append`, `replace`, `upsert` on `key`), with typed
+  auto-created tables and batched writes in one transaction; `agentl-etl[postgres]` extra (#9).
 - Readers accept `url:` (HTTP download with `headers` and retries) besides `path:`, and upstream
   records whose `path` is a URL (#7).
 - `file.read`: detects the format by extension, expands ZIP and GZ archives safely (path traversal
