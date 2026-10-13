@@ -61,3 +61,29 @@ Each agent step chooses a provider with `llm:`. Register your own with
 
 Agent steps send record contents to the configured provider. Use a local provider for data that must
 not leave your machine, and select only the fields the agent needs with a `select` step first.
+
+## Budget
+
+Stop a run before it costs more than you expect:
+
+```yaml
+budget:
+  max_tokens: 2000000   # input + output, all agent steps
+  max_usd: 5.00
+
+llm:
+  default:
+    provider: anthropic
+    model: claude-opus-5-5
+    price: { input: 3.00, output: 15.00 }   # example values, USD per million tokens: copy yours
+```
+
+- Before each model call the runner checks the totals. Once a limit is reached it emits
+  `budget.exceeded` (with tokens and cost so far), fails the step and ends the run as failed.
+- `max_usd` needs a `price` on every LLM used by an agent step (except `echo` and `ollama`).
+  agentl ships no price table, because prices change; copy them from your provider.
+- Calls already in flight finish, so with `concurrency > 1` a run can go slightly over the limit.
+- Cached records cost nothing and do not count.
+- Every run reports `input_tokens`, `output_tokens` and `cost_usd` in `run.succeeded` / `run.failed`.
+
+Notify on it like any event: `on: [budget.exceeded]`.

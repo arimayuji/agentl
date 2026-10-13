@@ -32,11 +32,35 @@ for _first in "tTfF":
     )
 
 
+class PriceSpec(BaseModel):
+    """USD per million tokens, from your provider's price page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input: float = Field(ge=0)
+    output: float = Field(ge=0)
+
+
 class LLMSpec(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-opus-5-5"
     max_tokens: int = 4096
     options: dict[str, Any] = Field(default_factory=dict)
+    price: PriceSpec | None = None
+
+    def cost(self, input_tokens: int, output_tokens: int) -> float:
+        if self.price is None:
+            return 0.0
+        return (input_tokens * self.price.input + output_tokens * self.price.output) / 1_000_000
+
+
+class BudgetSpec(BaseModel):
+    """Limits for one run. The run stops with `budget.exceeded` once a limit is reached."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_tokens: int | None = Field(default=None, gt=0)
+    max_usd: float | None = Field(default=None, gt=0)
 
 
 class StepSpec(BaseModel):
@@ -99,9 +123,16 @@ class PipelineSpec(BaseModel):
     llm: dict[str, LLMSpec] = Field(default_factory=lambda: {"default": LLMSpec()})
     steps: list[StepSpec]
     notify: NotifySpec | None = None
+    budget: BudgetSpec | None = None
 
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
+        if self.budget and self.budget.max_usd is not None:
+            used = {s.llm for s in self.steps if s.kind == "agent"}
+            unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
+            unpriced = [n for n in unpriced if self.llm[n].provider not in ("echo", "ollama")]
+            if unpriced:
+                raise ValueError(f"budget.max_usd needs a price on llm {unpriced} (price: {{input, output}})")
         ids = [s.id for s in self.steps]
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
