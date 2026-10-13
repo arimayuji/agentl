@@ -52,6 +52,7 @@ nav:
       - Notifications: notifications.md
       - CLI and dashboard: cli.md
       - Extending: extending.md
+      - Migrate from pandas: migrate-from-pandas.md
       - API reference: reference.md
   - Community:
       - Roadmap: roadmap.md
