@@ -3,13 +3,13 @@
 ## Install
 
 ```bash
-pip install agentl                 # core: CSV, JSON, HTTP, SQLite, runner, dashboard
-pip install 'agentl[office,pdf]'   # Excel, Word, PDF
-pip install 'agentl[anthropic]'    # Claude as the LLM provider
-pip install 'agentl[all]'
+pip install agentl-etl                 # core: CSV, JSON, HTTP, SQLite, runner, dashboard
+pip install 'agentl-etl[office,pdf]'   # Excel, Word, PDF
+pip install 'agentl-etl[anthropic]'    # Claude as the LLM provider
+pip install 'agentl-etl[all]'
 ```
 
-agentl needs Python 3.10 or newer.
+agentl needs Python 3.10 or newer. The package is published as `agentl-etl`; you still `import agentl` and run the `agentl` command.
 
 ## Your first pipeline
 

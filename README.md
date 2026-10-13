@@ -8,13 +8,13 @@
   <a href="https://agentl.com.br"><b>Website</b></a> ·
   <a href="https://agentl.com.br/getting-started/">Getting started</a> ·
   <a href="https://agentl.com.br/connectors/">Connectors</a> ·
-  <a href="https://pypi.org/project/agentl/">PyPI</a> ·
+  <a href="https://pypi.org/project/agentl-etl/">PyPI</a> ·
   <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
 </p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/agentl)](https://pypi.org/project/agentl/)
-[![Python](https://img.shields.io/pypi/pyversions/agentl)](https://pypi.org/project/agentl/)
+[![PyPI](https://img.shields.io/pypi/v/agentl-etl)](https://pypi.org/project/agentl-etl/)
+[![Python](https://img.shields.io/pypi/pyversions/agentl-etl)](https://pypi.org/project/agentl-etl/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
@@ -24,13 +24,13 @@ Agentic ETL for Python. Declare pipelines in YAML where each step is a connector
 ## Install
 
 ```bash
-pip install agentl                 # core: CSV, JSON, HTTP, SQLite, runner, dashboard
-pip install 'agentl[office,pdf]'   # Excel, Word, PDF
-pip install 'agentl[anthropic]'    # Claude as the LLM provider
-pip install 'agentl[all]'
+pip install agentl-etl                 # core: CSV, JSON, HTTP, SQLite, runner, dashboard
+pip install 'agentl-etl[office,pdf]'   # Excel, Word, PDF
+pip install 'agentl-etl[anthropic]'    # Claude as the LLM provider
+pip install 'agentl-etl[all]'
 ```
 
-Until it is on PyPI: `pip install git+https://github.com/arimayuji/agentl`.
+The distribution is named `agentl-etl` on PyPI; the import and the CLI are both `agentl`.
 
 ## A pipeline
 
