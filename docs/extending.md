@@ -63,3 +63,30 @@ Any importable function works as a step:
 ```
 
 It receives the input records plus the `with:` parameters as keyword arguments.
+
+### pandas steps
+
+Already have pandas code? Wrap it with `@dataframe` (`pip install 'agentl-etl[pandas]'`):
+
+```python
+from agentl.pandas import dataframe
+
+
+@dataframe
+def clean(df, min_total=0):
+    df = df.astype({"total": float})
+    return df[df.total >= min_total].drop_duplicates("id")
+```
+
+```yaml
+- id: clean
+  fn: my_package.steps:clean
+  input: raw
+  with: {min_total: 10}
+```
+
+The step receives a DataFrame (a dict of DataFrames keyed by step id when it has several inputs)
+and returns a DataFrame or Series. Results go back to records with plain Python values: NaN, NaT and
+NA become `None`, numpy scalars become `int`/`float`, timestamps become `datetime`, and a
+non-default index (for example after `groupby`) becomes columns. `agentl.pandas.to_df` and
+`to_records` are available for manual conversion.
