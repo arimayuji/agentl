@@ -18,6 +18,7 @@ a function or an LLM agent, and follow every run in a live diagram.</p>
 
 <video class="launch-video" autoplay muted loop playsinline preload="metadata"
   poster="assets/agentl-launch-poster.jpg" aria-label="agentl launch video">
+  <source src="assets/agentl-launch.webm" type="video/webm">
   <source src="assets/agentl-launch.mp4" type="video/mp4">
 </video>
 

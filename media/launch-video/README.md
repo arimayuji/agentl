@@ -22,6 +22,8 @@ The site uses a smaller encode of the master render:
 ```bash
 ffmpeg -i out/agentl-launch.mp4 -vf scale=1280:-2 -c:v libx264 -crf 26 -preset slow \
   -movflags +faststart -an ../../docs/assets/agentl-launch.mp4
+ffmpeg -i out/agentl-launch.mp4 -vf scale=1280:-2 -c:v libvpx-vp9 -b:v 0 -crf 38 -row-mt 1 \
+  -an ../../docs/assets/agentl-launch.webm
 ```
 
 ## Editing
