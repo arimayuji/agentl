@@ -5,10 +5,10 @@ Connectors are used with `use:` and configured with `with:`. List what is instal
 
 ## Files
 
-Every reader takes its input from one of:
+Every reader (`csv.read`, `json.read`, `excel.read`, `file.read`, ...) takes its input from one of:
 
 - `path`: a local file or glob (`data/**/*.csv`),
-- `url`: an `http(s)` address, downloaded first (with `headers` for authentication),
+- `url`: an address downloaded first (`http(s)` with `headers` for authentication; `file://` also works),
 - upstream records with a `path` field (local paths or URLs).
 
 ### Any file: `file.read`

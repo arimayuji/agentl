@@ -31,11 +31,11 @@ Rules:
 - Keep my transform logic in pandas, inside a function decorated with
   agentl.pandas.dataframe, in steps.py next to the pipeline.
 - Replace pd.read_* with agentl reader connectors (csv.read, json.read, excel.read, file.read)
-  and DataFrame.to_sql with postgres.write or sqlite.write. Use mode: upsert when the data has
-  a natural key.
+  and DataFrame.to_sql with postgres.write or sqlite.write. Use mode: upsert when rows have
+  a natural key, and mode: replace for aggregates that are recomputed in full.
 - Readers return CSV values as strings: cast types inside the function.
 - Credentials only as ${ENV_VAR}.
-- Run `agentl validate pipeline.yaml` and fix any error.
+- Run `agentl validate pipeline.yaml` (export placeholder values for ${VARS}) and fix any error.
 
 <paste the script>
 ```

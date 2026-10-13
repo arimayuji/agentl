@@ -11,6 +11,10 @@ agentl dashboard [--host 127.0.0.1] [--port 7070]
 
 Every command accepts `--db PATH` to choose the run store (default `.agentl/agentl.db`).
 
+`validate` parses the YAML, checks the graph and that every connector exists. It does not connect to
+databases or URLs. It does resolve `${VAR}`, so every variable without a default must be set; in CI,
+export placeholders (`DATABASE_URL=postgresql://ci@localhost/ci agentl validate ...`).
+
 ## Diagram
 
 `agentl diagram` prints the pipeline as Mermaid. Connectors are boxes, functions are rounded and
