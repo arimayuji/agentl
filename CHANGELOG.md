@@ -9,11 +9,7 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-### Fixed
-
-- `dedupe`, `filter` and `select` accept a single field name (`on: id`); a string used to be
-  split into characters and silently dropped records.
-- An agent step with an empty upstream now outputs nothing instead of running once on an empty record.
+## [0.2.0] - 2026-10-13
 
 ### Added
 
@@ -36,6 +32,12 @@ They are always listed under **Changed** or **Removed**.
 
 - `csv.read` detects the delimiter (`,` `;` tab `|`) when `delimiter` is not set.
 
+### Fixed
+
+- `dedupe`, `filter` and `select` accept a single field name (`on: id`); a string used to be
+  split into characters and silently dropped records.
+- An agent step with an empty upstream now outputs nothing instead of running once on an empty record.
+
 ## [0.1.1] - 2026-10-13
 
 ### Changed
@@ -56,6 +58,7 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/arimayuji/agentl/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/arimayuji/agentl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/arimayuji/agentl/releases/tag/v0.1.0
