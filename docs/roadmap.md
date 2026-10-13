@@ -21,16 +21,19 @@ Priorities change with feedback, so dates are intentionally left out.
 | Docs for AI agents: `llms.txt`, prompt library, `AGENTS.md` | [#10](https://github.com/arimayuji/agentl/issues/10) |
 | Guide: migrate a pandas pipeline (CSV over HTTP to Postgres) | [#11](https://github.com/arimayuji/agentl/issues/11) |
 
-## Then: 0.3, more sources and providers
+## Then: 0.3, more sources, providers and operations
 
 | Feature | Issue |
 |---|---|
-| Object storage: S3, R2 and GCS | [#12](https://github.com/arimayuji/agentl/issues/12) |
+| Remote paths for every reader: SFTP, FTP, SMB, WebDAV, S3, GCS, Azure | [#23](https://github.com/arimayuji/agentl/issues/23) |
+| Any SQL database: MySQL, SQL Server, Oracle, Snowflake, BigQuery | [#24](https://github.com/arimayuji/agentl/issues/24) |
 | Email (IMAP) with attachments | [#13](https://github.com/arimayuji/agentl/issues/13) |
 | Browser connector with Playwright | [#14](https://github.com/arimayuji/agentl/issues/14) |
 | AWS Lambda connector | [#15](https://github.com/arimayuji/agentl/issues/15) |
 | More LLM providers: OpenAI, Ollama, Bedrock | [#16](https://github.com/arimayuji/agentl/issues/16) |
 | Cost budget per run | [#17](https://github.com/arimayuji/agentl/issues/17) |
+| More notification channels: email, Teams, Discord, Telegram, PagerDuty, Opsgenie | [#27](https://github.com/arimayuji/agentl/issues/27) |
+| Observability: OpenTelemetry traces and metrics, JSON logs, Sentry | [#28](https://github.com/arimayuji/agentl/issues/28) |
 
 ## Later
 
@@ -39,6 +42,9 @@ Priorities change with feedback, so dates are intentionally left out.
 | Agent tools and MCP servers inside agent steps | [#18](https://github.com/arimayuji/agentl/issues/18) |
 | MCP server and `agentl new` to build pipelines from a description | [#19](https://github.com/arimayuji/agentl/issues/19) |
 | Triggers: schedules, webhooks and file arrivals | [#20](https://github.com/arimayuji/agentl/issues/20) |
+| Queues and streams: Kafka, RabbitMQ, SQS, Pub/Sub, MQTT | [#25](https://github.com/arimayuji/agentl/issues/25) |
+| GraphQL and SaaS: Google Sheets, Drive, SharePoint | [#26](https://github.com/arimayuji/agentl/issues/26) |
+| Cloud integrations: secrets managers, serverless runs, AWS / GCP / Azure services | [#29](https://github.com/arimayuji/agentl/issues/29) |
 
 ## Missing something?
 
