@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Added
 
 - `browser.scrape` (Playwright): login steps, wait for JavaScript content, extract tables, text,
@@ -18,8 +20,8 @@ They are always listed under **Changed** or **Removed**.
 - Notification channels `teams`, `discord`, `telegram`, `email` (SMTP), `pagerduty` (trigger and
   resolve) and `opsgenie`; `webhook` accepts `headers`; `register_channel` for custom channels (#27).
 - Observability: `JsonLogs`, `OpenTelemetry` (a trace per run, a span per step, metrics) and
-  `Sentry` listeners; CLI flags `--log-format json`, `--otel`, `--sentry`. Events now carry
-  `pipeline` and `ts`. Extras `otel`, `sentry` (#28).
+  `Sentry` listeners; CLI flags `--log-format json`, `--otel`, `--sentry`. Listener events now
+  also carry `pipeline` and `ts`. Extras `otel`, `sentry` (#28).
 - Spend per agent step: tokens and `cost_usd` in `step.succeeded` / `step.failed` events, in
   `RunResult.spend` and in a Spend table on the dashboard (#17).
 
@@ -105,7 +107,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/arimayuji/agentl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/arimayuji/agentl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/arimayuji/agentl/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/arimayuji/agentl/compare/v0.1.0...v0.1.1
