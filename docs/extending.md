@@ -11,6 +11,7 @@ A connector is a function `fn(input, **params) -> list[dict]`:
 ```python
 from agentl import connector
 
+
 @connector("crm.contacts")
 def contacts(input, since=None):
     return [{"id": 1, "email": "a@b.com"}]
@@ -35,6 +36,7 @@ A provider factory receives the `LLMSpec` and returns an object with two methods
 from agentl import register_provider
 from agentl.llm import Result
 
+
 class MyProvider:
     def __init__(self, spec):
         self.spec = spec
@@ -45,6 +47,7 @@ class MyProvider:
 
     def text(self, instruction, content):
         return "..."
+
 
 register_provider("mine", MyProvider)
 ```
