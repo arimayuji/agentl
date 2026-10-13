@@ -9,6 +9,19 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Readers accept `url:` (HTTP download with `headers` and retries) besides `path:`, and upstream
+  records whose `path` is a URL (#7).
+- `file.read`: detects the format by extension, expands ZIP and GZ archives safely (path traversal
+  rejected, size cap) and reads mixed folders (#22).
+- New readers: `txt.read`, `parquet.read`, `doc.read` (via LibreOffice), `xml.read`, `html.read`;
+  `excel.read` now also reads legacy `.xls`. New extras: `xls`, `parquet`.
+
+### Changed
+
+- `csv.read` detects the delimiter (`,` `;` tab `|`) when `delimiter` is not set.
+
 ## [0.1.1] - 2026-10-13
 
 ### Changed

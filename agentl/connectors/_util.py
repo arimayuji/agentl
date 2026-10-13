@@ -1,20 +1,70 @@
 from __future__ import annotations
 
+import atexit
 import glob as _glob
+import shutil
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
+_TMP = Path(tempfile.mkdtemp(prefix="agentl-"))
+atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 
-def paths(input: Any, path: str | None, field: str = "path") -> list[Path]:
-    """Files from a glob `path`, or from the `field` of upstream records."""
+
+def tmpdir(prefix: str = "") -> Path:
+    """A fresh directory under the run's temp area, removed when the process exits."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=_TMP))
+
+
+def download(url: str, headers: dict | None = None, timeout: float = 60, retries: int = 2) -> Path:
+    """Download `url` to a temp file, keeping its file name, and return the path."""
+    name = Path(urllib.parse.urlparse(url).path).name or "download"
+    target = tmpdir("dl-") / name
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "agentl", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp, target.open("wb") as f:
+                shutil.copyfileobj(resp, f)
+            return target
+        except urllib.error.HTTPError as e:
+            if (e.code < 500 and e.code != 429) or attempt == retries:
+                raise
+        except urllib.error.URLError:
+            if attempt == retries:
+                raise
+        time.sleep(2**attempt)
+    raise RuntimeError("unreachable")
+
+
+def paths(
+    input: Any,
+    path: str | None,
+    field: str = "path",
+    url: str | None = None,
+    headers: dict | None = None,
+) -> list[Path]:
+    """Files from a `url`, a glob `path`, or the `field` of upstream records."""
+    if url:
+        return [download(url, headers)]
     if path:
-        found = sorted(_glob.glob(path, recursive=True))
+        found = sorted(p for p in _glob.glob(path, recursive=True) if Path(p).is_file())
         if not found and not any(c in path for c in "*?["):
             raise FileNotFoundError(path)
         return [Path(p) for p in found]
     if isinstance(input, list):
-        return [Path(r[field]) for r in input if r.get(field)]
-    raise ValueError("set 'path' or feed records that have a 'path' field")
+        out = []
+        for r in input:
+            ref = r.get(field)
+            if not ref:
+                continue
+            is_url = isinstance(ref, str) and ref.startswith(("http://", "https://"))
+            out.append(download(ref, headers) if is_url else Path(ref))
+        return out
+    raise ValueError("set 'path' or 'url', or feed records that have a 'path' field")
 
 
 def single(input: Any) -> list[dict]:

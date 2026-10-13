@@ -102,9 +102,9 @@ You can also write `extract:`, `transform:` and `load:` sections instead of `ste
 
 ## Built-in connectors
 
-`csv.read` `csv.write` `json.read` `json.write` `excel.read` `pdf.read` `docx.read` `http.get` `http.post` `sqlite.read` `sqlite.write` `select` `filter` `dedupe` `join` `concat`
+`file.read` `csv.read` `csv.write` `json.read` `json.write` `txt.read` `excel.read` `parquet.read` `pdf.read` `docx.read` `doc.read` `xml.read` `html.read` `http.get` `http.post` `sqlite.read` `sqlite.write` `select` `filter` `dedupe` `join` `concat`
 
-`agentl connectors` lists what is installed. `http.get` accepts `{field}` placeholders in the URL to make one request per upstream record, plus `items: data.results` to pick the list out of the response.
+`file.read` detects the format and expands ZIP/GZ archives. Readers accept `path` (glob), `url` (HTTP download) or upstream records. `agentl connectors` lists what is installed. `http.get` accepts `{field}` placeholders in the URL to make one request per upstream record, plus `items: data.results` to pick the list out of the response.
 
 ## Extending
 
@@ -125,7 +125,7 @@ The runner emits `run.started`, `step.started`, `step.succeeded`, `step.failed`,
 
 ## Roadmap
 
-Next up: CSV and JSON from URLs, a universal file reader (zip, xls, txt, parquet...), a pandas bridge, Postgres with upsert and docs for AI agents.
+Next up: a pandas bridge, Postgres with upsert and docs for AI agents.
 See the full [public roadmap](https://agentl.com.br/roadmap/) and vote on the issues you need.
 
 ## Contributing
