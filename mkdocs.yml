@@ -54,6 +54,7 @@ nav:
       - Extending: extending.md
       - API reference: reference.md
   - Community:
+      - Roadmap: roadmap.md
       - Contributing: community.md
       - Changelog: changelog.md
 

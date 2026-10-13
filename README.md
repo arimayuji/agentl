@@ -9,6 +9,7 @@
   <a href="https://agentl.com.br/getting-started/">Getting started</a> ·
   <a href="https://agentl.com.br/connectors/">Connectors</a> ·
   <a href="https://pypi.org/project/agentl-etl/">PyPI</a> ·
+  <a href="https://agentl.com.br/roadmap/">Roadmap</a> ·
   <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
 </p>
 
@@ -124,10 +125,8 @@ The runner emits `run.started`, `step.started`, `step.succeeded`, `step.failed`,
 
 ## Roadmap
 
-- Connectors: S3/R2, email (IMAP), Postgres, Playwright, AWS Lambda
-- Agent tools (HTTP, SQL, browser) and MCP servers as tools
-- More providers (OpenAI, Ollama, Bedrock), cost budget per run
-- `agentl new "describe the pipeline"` and an MCP server to operate pipelines from Claude Code
+Next up: CSV and JSON from URLs, a universal file reader (zip, xls, txt, parquet...), a pandas bridge, Postgres with upsert and docs for AI agents.
+See the full [public roadmap](https://agentl.com.br/roadmap/) and vote on the issues you need.
 
 ## Contributing
 
