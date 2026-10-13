@@ -60,10 +60,12 @@ failing updates one incident instead of opening many. Credentials belong in envi
 ```python
 from agentl import register_channel
 
+
 def sms(config: dict, text: str, event: dict) -> None:
     my_sms_client.send(config["phone"], text[:160])
 
-register_channel("sms", sms)   # then: channels: { phone: { type: sms, phone: "+55..." } }
+
+register_channel("sms", sms)  # then: channels: { phone: { type: sms, phone: "+55..." } }
 ```
 
 A failing channel is logged and never fails the pipeline.
