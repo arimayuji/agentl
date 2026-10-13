@@ -10,7 +10,7 @@ from pathlib import Path
 from . import graph, registry
 from .runner import Runner, add_import_paths
 from .spec import SpecError, load
-from .store import Store
+from .store import open_store
 
 
 def _print_event(event: dict) -> None:
@@ -22,7 +22,11 @@ def _print_event(event: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="agentl", description="Agentic ETL for Python")
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--db", default=".agentl/agentl.db", help="run store (SQLite)")
+    common.add_argument(
+        "--db",
+        default=None,
+        help="run store: SQLite path or postgresql:// URL (default: $AGENTL_DB or .agentl/agentl.db)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cmd(name: str, help: str) -> argparse.ArgumentParser:
@@ -52,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "run":
             spec = load(a.pipeline)
-            with Store(a.db) as store:
+            with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=[_print_event])
                 result = runner.run()
             if a.show:
@@ -70,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             print(graph.mermaid(load(a.pipeline)))
             return 0
         if a.cmd == "runs":
-            with Store(a.db) as store:
+            with open_store(a.db) as store:
                 runs = store.runs()
             for run in runs:
                 print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
@@ -81,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "dashboard":
             from .dashboard import serve
 
-            with Store(a.db) as store:
+            with open_store(a.db) as store:
                 serve(store, a.host, a.port)
             return 0
     except (SpecError, KeyError, FileNotFoundError) as e:

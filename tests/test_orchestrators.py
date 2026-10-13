@@ -9,14 +9,14 @@ from agentl import PipelineFailed
 @pytest.fixture
 def pipeline(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "steps.py").write_text("def boom(input=None):\n    raise RuntimeError('boom')\n")
+    (tmp_path / "orch_steps.py").write_text("def boom(input=None):\n    raise RuntimeError('boom')\n")
     (tmp_path / "in.csv").write_text("id\n1\n2\n")
     (tmp_path / "ok.yaml").write_text(
         "name: ok\nsteps:\n"
         "  - {id: raw, use: csv.read, with: {path: '${SRC}'}}\n"
         "  - {id: out, use: json.write, input: raw, with: {path: '${DEST:-out.json}'}}\n"
     )
-    (tmp_path / "bad.yaml").write_text("name: bad\nsteps:\n  - {id: x, fn: 'steps:boom'}\n")
+    (tmp_path / "bad.yaml").write_text("name: bad\nsteps:\n  - {id: x, fn: 'orch_steps:boom'}\n")
     return tmp_path
 
 

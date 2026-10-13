@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from . import graph, llm, registry
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
-from .store import Store
+from .store import Store, open_store
 
 Records = list[dict[str, Any]]
 Listener = Callable[[dict], None]
@@ -65,7 +65,7 @@ class Runner:
         listeners: list[Listener] | None = None,
     ):
         self.spec = spec
-        self.store = store or Store()
+        self.store = store or open_store()
         self.use_cache = use_cache
         self.listeners = list(listeners or [])
         self._providers: dict[str, llm.Provider] = {}
@@ -282,7 +282,7 @@ def run(
     if "store" in kwargs:
         result = Runner(spec, **kwargs).run()
     else:
-        with Store(Path(db or ".agentl/agentl.db")) as store:
+        with open_store(db) as store:
             result = Runner(spec, store=store, **kwargs).run()
     if raise_on_failure and result.status != "succeeded":
         raise PipelineFailed(result)

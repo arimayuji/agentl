@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Shared run store in Postgres: `--db postgresql://...`, `AGENTL_DB` or `open_store(url)`; runs,
+  events and the agent cache are shared by every worker (#32).
 - `agentl.run()` accepts a YAML path with `vars`, `db` and `raise_on_failure` (raises
   `PipelineFailed`); `RunResult.summary()`. Integrations for Celery, Temporal and Airflow, and a
   "Scheduling and orchestration" guide covering cron, GitHub Actions, Prefect, Dagster and Lambda (#31).

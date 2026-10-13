@@ -17,8 +17,8 @@ result.summary()  # JSON-serializable: status, run_id, records per step, tokens,
 
 Retries are cheap: agent results are cached per record, so a retried run only pays for records that
 did not finish. Run history lives in the run store; point every worker to the same one to see all
-runs in one dashboard (a shared Postgres store is tracked in
-[#32](https://github.com/arimayuji/agentl/issues/32)).
+runs in one dashboard: set `AGENTL_DB=postgresql://...` on every worker
+([Run store](cli.md#run-store)).
 
 ## cron
 
