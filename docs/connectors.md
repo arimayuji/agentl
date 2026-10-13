@@ -5,18 +5,54 @@ Connectors are used with `use:` and configured with `with:`. List what is instal
 
 ## Files
 
-| Connector | Parameters | Extra |
-|---|---|---|
-| `csv.read` | `path` (glob), `delimiter`, `encoding` | |
-| `csv.write` | `path`, `delimiter` | |
-| `json.read` | `path` (glob, `.json` or `.jsonl`), `key` | |
-| `json.write` | `path` (`.json` or `.jsonl`) | |
-| `excel.read` | `path`, `sheet`, `header_row` | `excel` |
-| `pdf.read` | `path` or upstream records with `field` (default `path`) | `pdf` |
-| `docx.read` | `path` or upstream records with `field` | `office` |
+Every reader takes its input from one of:
 
-`pdf.read` returns one record per file with `path`, `pages` and `text`. `docx.read` returns `path`,
-`text` and `tables`.
+- `path`: a local file or glob (`data/**/*.csv`),
+- `url`: an `http(s)` address, downloaded first (with `headers` for authentication),
+- upstream records with a `path` field (local paths or URLs).
+
+### Any file: `file.read`
+
+```yaml
+- id: inbox
+  use: file.read
+  with: { path: "inbox/**/*" }
+```
+
+`file.read` picks the reader by extension, expands **ZIP** and **GZ** archives (up to two levels)
+and reads each inner file with its own reader. Records get `_file` (and `_archive` when they came
+from one). Unsupported files are skipped with a warning, or fail the step with
+`on_unsupported: error`. Archives are extracted safely: paths escaping the archive are rejected and
+the expanded size is capped by `max_extract_bytes` (1 GiB by default).
+
+### Support matrix
+
+| Format | Connector | Record shape | Extra |
+|---|---|---|---|
+| CSV, TSV | `csv.read` | one record per row (delimiter detected) | |
+| JSON, JSONL, NDJSON | `json.read` (`key: data.items`) | one record per item | |
+| TXT, MD, LOG | `txt.read` (`lines: true` for one per line) | `path`, `text` | |
+| XLSX, XLSM | `excel.read` (`sheet`, `header_row`) | one record per row | `excel` |
+| XLS (legacy Excel) | `excel.read` | one record per row | `xls` |
+| Parquet | `parquet.read` (`columns`) | one record per row | `parquet` |
+| PDF | `pdf.read` | `path`, `pages`, `text` | `pdf` |
+| DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
+| DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
+| XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
+| HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
+| ZIP, GZ | `file.read` | records of the inner files | |
+
+Writers: `csv.write` and `json.write` (`.json` or `.jsonl`).
+
+### Example: CSV straight from a URL
+
+```yaml
+- id: sales
+  use: csv.read
+  with:
+    url: https://example.com/exports/sales.csv
+    headers: { Authorization: "Bearer ${API_TOKEN}" }
+```
 
 ## HTTP
 
