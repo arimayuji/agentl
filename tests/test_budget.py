@@ -84,3 +84,31 @@ def test_usd_budget_and_cost_reporting(run):
 def test_usd_budget_requires_a_price():
     with pytest.raises(SpecError, match="price"):
         pipeline({"max_usd": 1.0})
+
+
+def test_spend_per_step_in_events_and_dashboard(tmp_path):
+    from agentl.dashboard import run_detail
+    from agentl.store import Store
+
+    spec = parse(
+        {
+            "name": "two",
+            "llm": {
+                "default": {"provider": "metered", "model": "m", "price": {"input": 3.0, "output": 15.0}}
+            },
+            "steps": [
+                {"id": "src", "fn": "tests.test_budget:rows", "with": {"n": 2}},
+                {"id": "a", "agent": "A.", "input": "src", "output": {"ok": "bool"}},
+                {"id": "b", "agent": "B.", "input": "a", "output": {"ok": "bool"}},
+                {"id": "c", "use": "select", "input": "b"},
+            ],
+        }
+    )
+    with Store(tmp_path / "db.sqlite") as store:
+        result = Runner(spec, store=store, use_cache=False).run()
+        detail = run_detail(store, result.run_id)
+    assert result.spend["a"] == {"input_tokens": 2000, "output_tokens": 1000, "cost_usd": 0.021}
+    assert set(result.spend) == {"a", "b"}  # only agent steps
+    assert detail["spend"]["steps"]["b"]["cost_usd"] == pytest.approx(0.021)
+    assert detail["spend"]["total"] == {"input_tokens": 4000, "output_tokens": 2000, "cost_usd": 0.042}
+    assert result.summary()["spend"]["a"]["input_tokens"] == 2000

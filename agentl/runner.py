@@ -36,6 +36,7 @@ class RunResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
@@ -94,6 +95,15 @@ class Runner:
             )
         except Exception as e:
             return f"(summary unavailable: {e})"
+
+    def _record_spend(self, step: StepSpec, before: tuple[int, int, float], result: RunResult) -> None:
+        if step.kind != "agent":
+            return
+        result.spend[step.id] = {
+            "input_tokens": result.input_tokens - before[0],
+            "output_tokens": result.output_tokens - before[1],
+            "cost_usd": round(result.cost_usd - before[2], 6),
+        }
 
     # budget -------------------------------------------------------------
     def _charge(self, result: RunResult, spec: LLMSpec, input_tokens: int, output_tokens: int) -> None:
@@ -203,9 +213,11 @@ class Runner:
                 step = self.spec.step(step_id)
                 self._emit(run_id, "step.started", step_id, kind=step.kind)
                 t0 = time.time()
+                before = (result.input_tokens, result.output_tokens, result.cost_usd)
                 try:
                     out = self._run_step(run_id, step, result.outputs, result)
                 except Exception as e:
+                    self._record_spend(step, before, result)
                     if isinstance(e, BudgetExceeded):
                         self._emit(
                             run_id,
@@ -216,11 +228,23 @@ class Runner:
                             output_tokens=result.output_tokens,
                             cost_usd=round(result.cost_usd, 6),
                         )
-                    self._emit(run_id, "step.failed", step_id, error=f"{type(e).__name__}: {e}")
+                    self._emit(
+                        run_id,
+                        "step.failed",
+                        step_id,
+                        error=f"{type(e).__name__}: {e}",
+                        **result.spend.get(step_id, {}),
+                    )
                     raise
                 result.outputs[step_id] = out
+                self._record_spend(step, before, result)
                 self._emit(
-                    run_id, "step.succeeded", step_id, records=len(out), seconds=round(time.time() - t0, 3)
+                    run_id,
+                    "step.succeeded",
+                    step_id,
+                    records=len(out),
+                    seconds=round(time.time() - t0, 3),
+                    **result.spend.get(step_id, {}),
                 )
                 if not out and not step.inputs:
                     self._emit(run_id, "source.empty", step_id)

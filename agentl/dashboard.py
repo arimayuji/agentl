@@ -24,11 +24,13 @@ main{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px;padding
 .s-succeeded{color:var(--ok)}.s-failed{color:var(--bad)}.s-running{color:var(--run)}
 small,.muted{color:var(--muted)}table{border-collapse:collapse;width:100%}
 td{padding:4px 8px;border-top:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
-pre{white-space:pre-wrap;margin:0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
 </style></head><body>
 <header><h1>agentl</h1><small>local runs, refreshed every 2 s</small></header>
 <main><section class="card" id="runs"></section>
-<section><div class="card" id="diagram"></div><div class="card" style="margin-top:16px"><table id="events"></table></div></section></main>
+<section><div class="card" id="diagram"></div>
+<div class="card" style="margin-top:16px" id="spend-card" hidden><b>Spend</b><table id="spend"></table></div>
+<div class="card" style="margin-top:16px"><table id="events"></table></div></section></main>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
 <script>
 mermaid.initialize({startOnLoad:false,theme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'});
@@ -42,6 +44,11 @@ async function tick(){
   if(!sel)return;
   const d=await (await fetch('/api/runs/'+sel)).json();
   if(d.diagram!==lastDiagram){lastDiagram=d.diagram;const {svg}=await mermaid.render('g'+Date.now(),d.diagram);document.getElementById('diagram').innerHTML=svg;}
+  const sp=d.spend,rows=Object.entries(sp.steps),num=n=>Number(n).toLocaleString(),usd=n=>'$'+Number(n).toFixed(4);
+  document.getElementById('spend-card').hidden=!rows.length;
+  document.getElementById('spend').innerHTML='<tr><td class="muted">step</td><td class="muted">input tokens</td><td class="muted">output tokens</td><td class="muted">cost</td></tr>'+
+    rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${num(v.input_tokens)}</td><td>${num(v.output_tokens)}</td><td>${usd(v.cost_usd)}</td></tr>`).join('')+
+    `<tr><td><b>total</b></td><td><b>${num(sp.total.input_tokens)}</b></td><td><b>${num(sp.total.output_tokens)}</b></td><td><b>${usd(sp.total.cost_usd)}</b></td></tr>`;
   document.getElementById('events').innerHTML=d.events.map(e=>`<tr><td><small>${new Date(e.ts*1000).toLocaleTimeString()}</small></td>
     <td>${esc(e.type)}</td><td>${esc(e.step)}</td><td><pre>${esc(JSON.stringify(e.data))}</pre></td></tr>`).join('');
 }
@@ -71,7 +78,22 @@ def run_detail(store: Store, run_id: str) -> dict | None:
         diagram += f"\n  classDef {name} {style}"
     for step, st in _status(events).items():
         diagram += f"\n  class {step} {st}"
-    return {**run, "diagram": diagram, "events": events}
+    return {**run, "diagram": diagram, "events": events, "spend": spend(events)}
+
+
+def spend(events: list[dict]) -> dict:
+    """Tokens and cost per agent step, plus the run total, from the run's events."""
+    steps: dict[str, dict] = {}
+    for e in events:
+        if e["step"] and e["type"] in ("step.succeeded", "step.failed") and "input_tokens" in e["data"]:
+            d = e["data"]
+            steps[e["step"]] = {k: d.get(k, 0) for k in ("input_tokens", "output_tokens", "cost_usd")}
+    total = {
+        "input_tokens": sum(s["input_tokens"] for s in steps.values()),
+        "output_tokens": sum(s["output_tokens"] for s in steps.values()),
+        "cost_usd": round(sum(s["cost_usd"] for s in steps.values()), 6),
+    }
+    return {"steps": steps, "total": total}
 
 
 def serve(store: Store, host: str = "127.0.0.1", port: int = 7070) -> None:
