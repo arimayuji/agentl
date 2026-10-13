@@ -1,5 +1,10 @@
 # Notifications
 
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/notify.jpg" aria-label="One event fanned out to several channels">
+  <source src="../assets/clips/notify.webm" type="video/webm">
+  <source src="../assets/clips/notify.mp4" type="video/mp4">
+</video>
+
 Rules subscribe to runner [events](concepts.md#events) and post to channels.
 
 ```yaml
