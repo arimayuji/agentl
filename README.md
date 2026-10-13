@@ -1,8 +1,15 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="media/brand/assets/agentl-wordmark-dark.svg">
-    <img src="media/brand/assets/agentl-wordmark-light.svg" alt="agentl" height="72">
-  </picture>
+  <a href="https://agentl.com.br">
+    <img src="media/brand/assets/agentl-social-1280x640.png" alt="agentl: Agentic ETL for Python" width="820">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://agentl.com.br"><b>Website</b></a> ·
+  <a href="https://agentl.com.br/getting-started/">Getting started</a> ·
+  <a href="https://agentl.com.br/connectors/">Connectors</a> ·
+  <a href="https://pypi.org/project/agentl/">PyPI</a> ·
+  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
 </p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
@@ -13,8 +20,6 @@
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
 
 > Status: early (v0.1). The API may change.
-
-**Documentation: [agentl.com.br](https://agentl.com.br)**
 
 ## Install
 
