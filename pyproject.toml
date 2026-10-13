@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentl"
+dynamic = ["version"]
+description = "Agentic ETL for Python: YAML pipelines where each step is a connector, a function or an LLM agent."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Yuji Arima" }]
+keywords = ["etl", "data-pipeline", "llm", "agents", "ai", "yaml", "data-engineering"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
+]
+dependencies = ["pyyaml>=6", "pydantic>=2"]
+
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1"]
+pdf = ["pypdf>=4"]
+office = ["openpyxl>=3.1", "python-docx>=1.1"]
+anthropic = ["anthropic>=0.70"]
+all = ["openpyxl>=3.1", "pypdf>=4", "python-docx>=1.1", "anthropic>=0.70"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "types-PyYAML", "pre-commit>=3", "openpyxl>=3.1", "pypdf>=4", "python-docx>=1.1"]
+
+[project.scripts]
+agentl = "agentl.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/arimayuji/agentl"
+Repository = "https://github.com/arimayuji/agentl"
+Issues = "https://github.com/arimayuji/agentl/issues"
+Changelog = "https://github.com/arimayuji/agentl/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "agentl/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["agentl", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E741", "RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+"agentl/dashboard.py" = ["E501"]  # inline HTML page
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["agentl"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["agentl"]
+omit = ["agentl/dashboard.py"]
