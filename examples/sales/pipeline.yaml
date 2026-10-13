@@ -1,0 +1,28 @@
+# CSV over HTTP -> pandas transform -> Postgres upsert.
+# agentl run examples/sales/pipeline.yaml  (needs agentl-etl[pandas,postgres])
+name: sales
+steps:
+  - id: raw
+    use: csv.read
+    with:
+      url: ${SALES_URL:-https://example.com/exports/sales.csv}
+
+  - id: clean
+    fn: steps:clean
+    input: raw
+
+  - id: save
+    use: postgres.write
+    input: clean
+    with:
+      dsn: ${DATABASE_URL}
+      table: sales
+      mode: upsert
+      key: order_id
+
+notify:
+  channels:
+    console: {}
+  rules:
+    - on: [run.failed, source.empty]
+      to: [console]

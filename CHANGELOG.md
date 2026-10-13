@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Guide "Migrate a pandas pipeline" and `examples/sales` (CSV over HTTP to Postgres upsert) (#11).
+- `agentl run`/`validate` find `fn:` modules next to the pipeline file and in the working directory.
 - `agentl.pandas`: `@dataframe` turns `fn(df) -> DataFrame` into a step, plus `to_df` and
   `to_records`; `agentl-etl[pandas]` extra (#8).
 - `postgres.read` and `postgres.write` (`append`, `replace`, `upsert` on `key`), with typed

@@ -57,3 +57,36 @@ def test_bad_args():
         get("postgres.write")([{"id": 1}], dsn=DSN, table="x", mode="upsert")
     with pytest.raises(ValueError, match="mode"):
         get("postgres.write")([{"id": 1}], dsn=DSN, table="x", mode="merge")
+
+
+def test_sales_example_is_idempotent(tmp_path, monkeypatch):
+    """examples/sales: CSV over HTTP -> pandas step -> Postgres upsert, run twice."""
+    import http.server
+    import pathlib
+    import threading
+    from functools import partial
+
+    pytest.importorskip("pandas")
+    from agentl.cli import main
+
+    example = pathlib.Path(__file__).parents[1] / "examples" / "sales"
+    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(example))
+    handler.log_message = lambda *a: None  # type: ignore[attr-defined]
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(DSN) as conn:
+        conn.execute("DROP TABLE IF EXISTS sales")
+    monkeypatch.setenv("SALES_URL", f"http://127.0.0.1:{httpd.server_address[1]}/sales.csv")
+    monkeypatch.setenv("DATABASE_URL", DSN)
+    try:
+        for _ in range(2):
+            assert main(["run", str(example / "pipeline.yaml"), "--db", str(tmp_path / "s.db")]) == 0
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    rows = get("postgres.read")(None, dsn=DSN, query="SELECT * FROM sales ORDER BY order_id")
+    assert rows == [
+        {"order_id": 1, "country": "BR", "total": 21.0},
+        {"order_id": 2, "country": "US", "total": 99.0},
+    ]
