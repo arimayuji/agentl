@@ -16,6 +16,13 @@ a function or an LLM agent, and follow every run in a live diagram.</p>
 
 </div>
 
+<video class="launch-video" autoplay muted loop playsinline preload="metadata"
+  poster="assets/agentl-launch-poster.jpg" aria-label="agentl launch video">
+  <source src="assets/agentl-launch.mp4" type="video/mp4">
+</video>
+
+## From install to production
+
 <div class="agt-terminal" role="img" aria-label="Terminal demo: install agentl, validate and run a pipeline, open the dashboard">
   <div class="agt-bar"><span></span><span></span><span></span></div>
   <div class="agt-body"></div>

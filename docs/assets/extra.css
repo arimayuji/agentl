@@ -16,3 +16,5 @@
 .agt-out { color: #8b949e; } .agt-out.ok { color: #7ee787; } .agt-out.warn { color: #e3b341; } .agt-out.link { color: #79c0ff; }
 .agt-body > div:last-child::after { content: "▋"; color: #7ee787; animation: agt-blink 1s steps(1) infinite; }
 @keyframes agt-blink { 50% { opacity: 0; } }
+.md-typeset .launch-video { display: block; width: 100%; max-width: 64rem; margin: 1rem auto 2.5rem;
+  border-radius: .9rem; box-shadow: 0 20px 60px rgba(0,0,0,.35); background: #07070b; aspect-ratio: 16 / 9; }
