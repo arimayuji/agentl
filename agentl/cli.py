@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import graph, registry
@@ -16,6 +17,17 @@ def _print_event(event: dict) -> None:
     step = f" [{event['step']}]" if event.get("step") else ""
     data = {k: v for k, v in event["data"].items() if v not in (None, "")}
     print(f"{event['type']}{step} {json.dumps(data, default=str) if data else ''}".rstrip())
+
+
+def _listeners(a: argparse.Namespace) -> list:
+    from . import observability
+
+    out: list = [observability.JsonLogs() if a.log_format == "json" else _print_event]
+    if a.otel:
+        out.append(observability.OpenTelemetry())
+    if a.sentry:
+        out.append(observability.Sentry(os.environ.get("SENTRY_DSN")))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("pipeline")
     r.add_argument("--no-cache", action="store_true")
     r.add_argument("--show", metavar="STEP", help="print the output records of a step")
+    r.add_argument(
+        "--log-format",
+        choices=["text", "json"],
+        default=os.environ.get("AGENTL_LOG_FORMAT", "text"),
+        help="event output: text (default) or one JSON object per line on stderr ($AGENTL_LOG_FORMAT)",
+    )
+    r.add_argument(
+        "--otel", action="store_true", help="emit OpenTelemetry traces and metrics (agentl-etl[otel])"
+    )
+    r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
 
     v = cmd("validate", "check a pipeline without running it")
     v.add_argument("pipeline")
@@ -54,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "run":
             spec = load(a.pipeline)
             with open_store(a.db) as store:
-                runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=[_print_event])
+                runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))

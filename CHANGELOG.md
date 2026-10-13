@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Observability: `JsonLogs`, `OpenTelemetry` (a trace per run, a span per step, metrics) and
+  `Sentry` listeners; CLI flags `--log-format json`, `--otel`, `--sentry`. Events now carry
+  `pipeline` and `ts`. Extras `otel`, `sentry` (#28).
 - Spend per agent step: tokens and `cost_usd` in `step.succeeded` / `step.failed` events, in
   `RunResult.spend` and in a Spend table on the dashboard (#17).
 
