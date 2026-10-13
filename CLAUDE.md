@@ -13,3 +13,4 @@ Rules
 3. Secrets only through environment variables.
 
 Commands: `python -m venv .venv && .venv/bin/pip install -e '.[dev]' && .venv/bin/pytest -q`
+4. Commits, PRs, issues and comments carry no AI attribution: no `Co-Authored-By`, no session links, no "Generated with" footers.
