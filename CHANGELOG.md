@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `email.read` (IMAP: messages, bodies and attachments, with `explode` into one record per
+  attachment for `file.read`) and `email.mark` (flag or move messages at the end of a pipeline) (#13).
 - Notification channels `teams`, `discord`, `telegram`, `email` (SMTP), `pagerduty` (trigger and
   resolve) and `opsgenie`; `webhook` accepts `headers`; `register_channel` for custom channels (#27).
 - Observability: `JsonLogs`, `OpenTelemetry` (a trace per run, a span per step, metrics) and
