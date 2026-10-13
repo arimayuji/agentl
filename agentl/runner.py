@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -16,7 +17,7 @@ from pydantic import ValidationError
 
 from . import graph, llm, registry
 from .notify import Notifier
-from .spec import PipelineSpec, StepSpec
+from .spec import LLMSpec, PipelineSpec, StepSpec
 from .store import Store
 
 Records = list[dict[str, Any]]
@@ -32,6 +33,11 @@ class RunResult:
     error: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class BudgetExceeded(RuntimeError):
+    """The run reached `budget.max_tokens` or `budget.max_usd`."""
 
 
 def _hash(*parts: Any) -> str:
@@ -51,6 +57,7 @@ class Runner:
         self.use_cache = use_cache
         self.listeners = list(listeners or [])
         self._providers: dict[str, llm.Provider] = {}
+        self._spend = threading.Lock()
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
     # events -------------------------------------------------------------
@@ -77,6 +84,29 @@ class Runner:
         except Exception as e:
             return f"(summary unavailable: {e})"
 
+    # budget -------------------------------------------------------------
+    def _charge(self, result: RunResult, spec: LLMSpec, input_tokens: int, output_tokens: int) -> None:
+        with self._spend:
+            result.input_tokens += input_tokens
+            result.output_tokens += output_tokens
+            result.cost_usd += spec.cost(input_tokens, output_tokens)
+
+    def _check_budget(self, result: RunResult) -> None:
+        with self._spend:
+            reason = self._over_budget(result)
+        if reason:
+            raise BudgetExceeded(reason)
+
+    def _over_budget(self, result: RunResult) -> str | None:
+        b = self.spec.budget
+        if b is None:
+            return None
+        if b.max_tokens is not None and result.input_tokens + result.output_tokens >= b.max_tokens:
+            return f"max_tokens {b.max_tokens} reached ({result.input_tokens + result.output_tokens} used)"
+        if b.max_usd is not None and result.cost_usd >= b.max_usd:
+            return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
+        return None
+
     # steps --------------------------------------------------------------
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
@@ -84,28 +114,29 @@ class Runner:
         llm_spec = self.spec.llm[step.llm]
         cacheable = self.use_cache and step.cached
 
-        def one(rec: dict) -> tuple[dict | None, dict | None, int, int]:
-            key = _hash("agent", step.agent, step.output, llm_spec.model_dump(), rec)
+        def one(rec: dict) -> tuple[dict | None, dict | None]:
+            key = _hash("agent", step.agent, step.output, llm_spec.model_dump(exclude={"price"}), rec)
             if cacheable and (hit := self.store.cache_get(key)) is not None:
-                return {**rec, **hit}, None, 0, 0
+                return {**rec, **hit}, None
             last: Exception | None = None
             for _ in range(2):  # one retry on invalid output
+                self._check_budget(result)
                 try:
                     res = prov.structured(step.agent or "", rec, schema)
-                    out = res.value.model_dump()
-                    if cacheable:
-                        self.store.cache_set(key, out)
-                    return {**rec, **out}, None, res.input_tokens, res.output_tokens
                 except (ValidationError, ValueError, RuntimeError) as e:
                     last = e
-            return None, {**rec, "_error": str(last)}, 0, 0
+                    continue
+                self._charge(result, llm_spec, res.input_tokens, res.output_tokens)
+                out = res.value.model_dump()
+                if cacheable:
+                    self.store.cache_set(key, out)
+                return {**rec, **out}, None
+            return None, {**rec, "_error": str(last)}
 
         ok: Records = []
         bad: Records = []
         with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
-            for good, rejected, tin, tout in pool.map(one, records):
-                result.input_tokens += tin
-                result.output_tokens += tout
+            for good, rejected in pool.map(one, records):
                 if good is not None:
                     ok.append(good)
                 elif rejected is not None:
@@ -164,6 +195,16 @@ class Runner:
                 try:
                     out = self._run_step(run_id, step, result.outputs, result)
                 except Exception as e:
+                    if isinstance(e, BudgetExceeded):
+                        self._emit(
+                            run_id,
+                            "budget.exceeded",
+                            step_id,
+                            reason=str(e),
+                            input_tokens=result.input_tokens,
+                            output_tokens=result.output_tokens,
+                            cost_usd=round(result.cost_usd, 6),
+                        )
                     self._emit(run_id, "step.failed", step_id, error=f"{type(e).__name__}: {e}")
                     raise
                 result.outputs[step_id] = out
@@ -183,6 +224,7 @@ class Runner:
             seconds=round(time.time() - started, 3),
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
+            cost_usd=round(result.cost_usd, 6),
             rejected=sum(len(v) for v in result.rejected.values()),
             **({"error": result.error} if result.error else {}),
         )

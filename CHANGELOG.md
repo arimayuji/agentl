@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `budget:` per run (`max_tokens`, `max_usd`) with a `budget.exceeded` event, `price:` per LLM and
+  `cost_usd` in run results and events (#17).
 - LLM providers `openai`, `ollama` and `openai-compatible` (vLLM, LM Studio, Groq, ...), with strict
   JSON-schema output, retries and token usage. Standard library only, no new dependency (#16).
 
