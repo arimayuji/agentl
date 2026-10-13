@@ -101,6 +101,10 @@ agentl diagram examples/sales/pipeline.yaml
 
 Run it twice: the table keeps one row per `order_id`, with the latest values.
 
+!!! tip "upsert or replace"
+    `upsert` keeps rows that disappear from the source. For tables recomputed in full (aggregates,
+    snapshots) use `mode: replace`.
+
 ## 6. What to do next
 
 - Swap `console` for `slack` or `webhook` in `notify` ([Notifications](notifications.md)).

@@ -86,7 +86,23 @@ def clean(df, min_total=0):
 ```
 
 The step receives a DataFrame (a dict of DataFrames keyed by step id when it has several inputs)
-and returns a DataFrame or Series. Results go back to records with plain Python values: NaN, NaT and
+and returns a DataFrame or Series. JSON values keep their types; CSV values are strings. Results go back to records with plain Python values: NaN, NaT and
 NA become `None`, numpy scalars become `int`/`float`, timestamps become `datetime`, and a
 non-default index (for example after `groupby`) becomes columns. `agentl.pandas.to_df` and
 `to_records` are available for manual conversion.
+
+Several inputs:
+
+```python
+@dataframe
+def revenue(dfs):
+    orders = dfs["orders"].astype({"amount": float})
+    df = orders.merge(dfs["users"], left_on="user_id", right_on="id")
+    return df.groupby("country", as_index=False)["amount"].sum()
+```
+
+```yaml
+- id: revenue
+  fn: steps:revenue
+  input: [orders, users]
+```

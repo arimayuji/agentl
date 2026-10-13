@@ -8,11 +8,18 @@ from ..registry import connector
 from ._util import single
 
 
+def _names(value: str | list[str] | None) -> list[str]:
+    """Accept `on: id` as well as `on: [id, date]`."""
+    return [value] if isinstance(value, str) else list(value or [])
+
+
 @connector("select")
-def select(input: Any, fields: list[str] | None = None, rename: dict[str, str] | None = None) -> list[dict]:
+def select(
+    input: Any, fields: str | list[str] | None = None, rename: dict[str, str] | None = None
+) -> list[dict]:
     out = []
     for r in single(input):
-        row = {k: r.get(k) for k in fields} if fields else dict(r)
+        row = {k: r.get(k) for k in _names(fields)} if fields else dict(r)
         for old, new in (rename or {}).items():
             if old in row:
                 row[new] = row.pop(old)
@@ -22,7 +29,7 @@ def select(input: Any, fields: list[str] | None = None, rename: dict[str, str] |
 
 @connector("filter")
 def filter_(
-    input: Any, where: dict[str, Any] | None = None, not_empty: list[str] | None = None
+    input: Any, where: dict[str, Any] | None = None, not_empty: str | list[str] | None = None
 ) -> list[dict]:
     rows = single(input)
     where = where or {}
@@ -30,12 +37,14 @@ def filter_(
         r
         for r in rows
         if all(r.get(k) == v for k, v in where.items())
-        and all(r.get(k) not in (None, "") for k in (not_empty or []))
+        and all(r.get(k) not in (None, "") for k in _names(not_empty))
     ]
 
 
 @connector("dedupe")
-def dedupe(input: Any, on: list[str]) -> list[dict]:
+def dedupe(input: Any, on: str | list[str]) -> list[dict]:
+    """Keep the first record for each `on` key, in input order."""
+    on = _names(on)
     seen, out = set(), []
     for r in single(input):
         key = tuple(r.get(k) for k in on)
