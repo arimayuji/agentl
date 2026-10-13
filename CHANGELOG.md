@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `aws.lambda`: invoke a Lambda function once or once per record (payload templating, `items`,
+  `keep_input`, async `Event`), with function errors surfaced. Extra `aws` (#15).
+
 ## [0.4.0] - 2026-10-13
 
 ### Added

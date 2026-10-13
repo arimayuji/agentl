@@ -101,6 +101,39 @@ Other databases will ship as plugins.
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 
+## AWS Lambda
+
+Call a Lambda function as a step: once, or once per upstream record. Install with
+`pip install 'agentl-etl[aws]'`; credentials come from the standard AWS chain (environment
+variables, profile, instance or task role).
+
+```yaml
+- id: export
+  use: aws.lambda
+  with: { function: billing-export, payload: { month: "2026-10" }, items: data.rows }
+
+- id: enrich
+  use: aws.lambda
+  input: customers
+  with:
+    function: score-customer
+    payload: { customer_id: "{id}" }   # filled from each record
+    keep_input: true                   # output records keep the customer's fields
+    concurrency: 8
+```
+
+| Parameter | Notes |
+|---|---|
+| `function`, `qualifier` | function name or ARN; version or alias |
+| `payload` | JSON payload; with upstream records `{field}` is filled per record, and without `payload` the record itself is sent |
+| `items` | dotted path to the list inside the response |
+| `keep_input` | merge the input record into each output record |
+| `invocation_type` | `RequestResponse` (default) or `Event` (fire and forget, returns `status_code`) |
+| `region`, `endpoint_url`, `concurrency` | client settings; parallel invocations (default 4) |
+
+The JSON response becomes records: a list as is, an object as one record, anything else as
+`{"value": ...}`. A function error fails the step with the function's error message.
+
 ## Browser (Playwright)
 
 For pages that only work in a real browser: content rendered by JavaScript, logins, download
