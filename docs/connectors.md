@@ -101,6 +101,42 @@ Other databases will ship as plugins.
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 
+## Email (IMAP)
+
+```yaml
+- id: invoices
+  use: email.read
+  with:
+    host: imap.gmail.com
+    user: ${IMAP_USER}
+    password: ${IMAP_PASSWORD}     # an app password for Gmail and Outlook
+    folder: INBOX
+    search: 'FROM "billing@vendor.com" UNSEEN'
+    explode: true                  # one record per attachment, with `path`
+    extensions: [csv, xlsx, pdf]
+
+- id: rows
+  use: file.read                   # reads each attachment by its type
+  input: invoices
+
+# ... transform and load ...
+
+- id: done
+  use: email.mark                  # last step: only runs when everything before worked
+  input: invoices
+  with: { host: imap.gmail.com, user: ${IMAP_USER}, password: ${IMAP_PASSWORD}, move_to: Processed }
+```
+
+| Connector | Parameters |
+|---|---|
+| `email.read` | `host`, `user`, `password`, `port` (993), `ssl` (true), `folder`, `search` (IMAP syntax, default `UNSEEN`), `limit` (newest N), `attachments` (true), `explode`, `extensions`, `mark_seen` (false) |
+| `email.mark` | same connection settings; `seen` (true), `flags`, `move_to`. Takes upstream records with `uid` and `folder` |
+
+Each message record has `uid`, `folder`, `message_id`, `from`, `to`, `cc`, `subject`, `date`,
+`text`, `html` and `attachments` (`path`, `filename`, `content_type`, `size`). Messages are read
+without changing their flags. Attachment names come from the sender, so only a safe base name is
+kept and files are saved under the run's temporary folder. Standard library only.
+
 ## PostgreSQL
 
 ```yaml
