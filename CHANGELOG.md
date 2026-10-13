@@ -11,6 +11,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Notification channels `teams`, `discord`, `telegram`, `email` (SMTP), `pagerduty` (trigger and
+  resolve) and `opsgenie`; `webhook` accepts `headers`; `register_channel` for custom channels (#27).
 - Observability: `JsonLogs`, `OpenTelemetry` (a trace per run, a span per step, metrics) and
   `Sentry` listeners; CLI flags `--log-format json`, `--otel`, `--sentry`. Events now carry
   `pipeline` and `ts`. Extras `otel`, `sentry` (#28).
