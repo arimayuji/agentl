@@ -28,6 +28,7 @@ compare runs on the same machine, not across machines.
 | `http.get fan-out` | 461 req/s at concurrency 16 (5.2x vs 1) | 1000 requests to a local server with 10 ms latency |
 | `agent step` | 1,471 records/s at concurrency 32 | 500 records, fake provider with 20 ms latency. agentl overhead is about 0.3 ms per record |
 | `agent cache re-run` | 31x faster, 0 tokens | Same 500 records again: every call is a cache hit |
+| `chunked` | +790 MB all at once, +61 MB with `chunk_size: 50000` (and 2x faster) | 1M rows (70 MB CSV) through `csv.read` → `select` → `sqlite.write`; peak RSS growth of a fresh process |
 | `parallel steps` | 1.08 s one at a time, 0.51 s in parallel | Two independent 0.5 s sources and a step on one of them, `max_parallel_steps` 1 vs 4 |
 | `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20`, 0.50 in batch mode | 500 records, fake provider with a 400-token fixed prefix (see below) |
 

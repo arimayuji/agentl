@@ -7,7 +7,7 @@ import hashlib
 import importlib.util
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -19,6 +19,15 @@ Connector = Callable[..., Records]
 _CONNECTORS: dict[str, Connector] = {}
 _loaded = False
 
+# Chunked execution (`chunk_size`). A stream reader yields lists of records; a stream writer takes
+# an iterator of lists and writes them in one file or transaction; a row-wise connector gives the
+# same answer on each chunk as on the whole input, so the runner may call it chunk by chunk.
+StreamReader = Callable[..., Iterator[Records]]
+StreamWriter = Callable[..., Records]
+_STREAM_READERS: dict[str, StreamReader] = {}
+_STREAM_WRITERS: dict[str, StreamWriter] = {}
+_ROWWISE: set[str] = set()
+
 
 def connector(name: str) -> Callable[[Connector], Connector]:
     def deco(fn: Connector) -> Connector:
@@ -26,6 +35,37 @@ def connector(name: str) -> Callable[[Connector], Connector]:
         return fn
 
     return deco
+
+
+def stream_reader(name: str) -> Callable[[StreamReader], StreamReader]:
+    """`fn(input, chunk_size, **with) -> Iterator[Records]` for connector `name`."""
+
+    def deco(fn: StreamReader) -> StreamReader:
+        _STREAM_READERS[name] = fn
+        return fn
+
+    return deco
+
+
+def stream_writer(name: str) -> Callable[[StreamWriter], StreamWriter]:
+    """`fn(chunks: Iterator[Records], **with) -> Records` for connector `name`."""
+
+    def deco(fn: StreamWriter) -> StreamWriter:
+        _STREAM_WRITERS[name] = fn
+        return fn
+
+    return deco
+
+
+def rowwise(name: str) -> None:
+    """Declare that connector `name` handles each record on its own (like `select` or `filter`)."""
+    _ROWWISE.add(name)
+
+
+def streaming(name: str) -> tuple[StreamReader | None, StreamWriter | None, bool]:
+    """(stream reader, stream writer, row-wise) for connector `name`."""
+    _load()
+    return _STREAM_READERS.get(name), _STREAM_WRITERS.get(name), name in _ROWWISE
 
 
 _LOAD_LOCK = threading.RLock()

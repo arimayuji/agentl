@@ -17,6 +17,34 @@ def contacts(input, since=None):
     return [{"id": 1, "email": "a@b.com"}]
 ```
 
+### Chunked execution
+
+With `chunk_size` (see [Large inputs](concepts.md#large-inputs-chunk_size)), the runner streams a
+chain only through connectors that say they can. Add these next to the normal function, which
+stays the one used without `chunk_size`:
+
+```python
+from agentl.registry import rowwise, stream_reader, stream_writer
+
+
+@stream_reader("crm.contacts")
+def contacts_chunks(input, chunk_size, since=None):
+    for page in fetch_pages(since, page_size=chunk_size):
+        yield page  # a list of records per chunk
+
+
+@stream_writer("crm.upsert")
+def upsert_chunks(chunks, list_id):
+    n = 0
+    for rows in chunks:  # one iterator of lists, in one session or transaction
+        send(list_id, rows)
+        n += len(rows)
+    return [{"written": n}]
+
+
+rowwise("crm.enrich")  # same answer per chunk as on the whole input
+```
+
 ### Publishing a connector package
 
 Register through the `agentl.connectors` entry point group so users only need to install it:
