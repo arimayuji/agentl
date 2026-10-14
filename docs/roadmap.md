@@ -30,7 +30,6 @@ Priorities change with feedback, so dates are intentionally left out.
 
 | Feature | Issue |
 |---|---|
-| Triggers: schedules, webhooks and file arrivals | [#20](https://github.com/arimayuji/agentl/issues/20) |
 | Queues and streams: Kafka, RabbitMQ, SQS, Pub/Sub, MQTT | [#25](https://github.com/arimayuji/agentl/issues/25) |
 | Cloud integrations: secrets managers, serverless runs, AWS / GCP / Azure services | [#29](https://github.com/arimayuji/agentl/issues/29) |
 

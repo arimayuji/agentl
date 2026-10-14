@@ -221,8 +221,43 @@ class NotifySpec(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
 
 
+class TriggerSpec(BaseModel):
+    """What starts a run under `agentl serve`: a cron schedule, a webhook path or new files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cron: str | None = None  # "0 7 * * 1-5", local time unless `timezone`
+    timezone: str | None = None
+    webhook: str | None = None  # "/hooks/invoices"
+    secret: str | None = None  # webhook: Bearer token or HMAC-SHA256 signature key
+    files: str | None = None  # glob, local or remote: "inbox/*.csv", "s3://bucket/in/*.xlsx"
+    every: str | float = "1m"  # files: how often to look
+    storage_options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one(self) -> TriggerSpec:
+        kinds = [k for k in ("cron", "webhook", "files") if getattr(self, k)]
+        if len(kinds) != 1:
+            raise ValueError("a trigger has exactly one of cron, webhook or files")
+        if self.cron:
+            from .triggers import Cron
+
+            Cron(self.cron)
+        if self.webhook and not self.webhook.startswith("/"):
+            raise ValueError(f"webhook path must start with '/': {self.webhook}")
+        if self.secret and not self.webhook:
+            raise ValueError("secret belongs to webhook triggers")
+        return self
+
+    @property
+    def kind(self) -> str:
+        return "cron" if self.cron else "webhook" if self.webhook else "files"
+
+
 class PipelineSpec(BaseModel):
     name: str
+    # Under `agentl serve`: what starts a run. A `use: trigger` step gets what started it.
+    trigger: list[TriggerSpec] = Field(default_factory=list)
     llm: dict[str, LLMSpec] = Field(default_factory=lambda: {"default": LLMSpec()})
     steps: list[StepSpec]
     notify: NotifySpec | None = None

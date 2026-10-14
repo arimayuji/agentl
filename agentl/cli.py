@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
     st.add_argument("--json", action="store_true", help="print the report as JSON")
 
+    sv = cmd("serve", "run pipelines on their triggers: schedules, webhooks and new files")
+    sv.add_argument("pipelines", nargs="+")
+    sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
+    sv.add_argument("--port", type=int, default=7071)
+
     cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
 
     ds = cmd("dashboard", "open the local dashboard")
@@ -148,6 +153,15 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 report = stats.compute(store, time.time() - parse_duration(a.since), a.pipeline)
             print(json.dumps(report, indent=2, default=str) if a.json else stats.text(report))
+            return 0
+        if a.cmd == "serve":
+            from .triggers import Service
+
+            specs = [load(p) for p in a.pipelines]
+            for spec in specs:
+                assist.check(spec)
+            with open_store(a.db) as store:
+                Service(specs, store).serve(a.host, a.port)
             return 0
         if a.cmd == "mcp":
             from .mcp_server import serve as serve_mcp

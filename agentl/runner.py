@@ -132,8 +132,10 @@ class Runner:
         store: Store | None = None,
         use_cache: bool = True,
         listeners: list[Listener] | None = None,
+        trigger: list[dict] | None = None,
     ):
         self.spec = spec
+        self.trigger = list(trigger or [])  # what started this run; a `use: trigger` step reads it
         self.store = store or open_store()
         self.use_cache = use_cache
         self.listeners = list(listeners or [])
@@ -479,6 +481,9 @@ class Runner:
                 raise ValueError("agent steps take a single input; join the inputs first")
             # A source agent step (no input) runs once; an empty upstream means nothing to do.
             return self._run_agent(run_id, step, [{}] if data is None else data, result)
+
+        if step.use == "trigger":
+            return [dict(r) for r in self.trigger]
 
         if step.id in self._arrow_out or _is_table(data):
             return self._run_arrow(step, data)
