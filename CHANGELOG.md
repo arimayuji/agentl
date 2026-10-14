@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Independent steps run in parallel: a step starts as soon as its inputs are done, up to
+  `max_parallel_steps` (default 4) at once. After a failure no new step starts and the running ones
+  finish. `parallel steps` benchmark.
 - Batch mode for agent steps (`mode: batch`): the step goes through Anthropic Message Batches or the
   OpenAI Batch API, with polling (`batch_poll_seconds`, `batch_timeout_seconds`), resume of a pending
   batch after a stopped run, normal-call retry for requests the batch could not answer, and
@@ -30,6 +33,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Changed
 
+- Steps no longer wait for unrelated steps. Set `max_parallel_steps: 1` to run one step at a time as
+  before. `fn:` steps now run in worker threads.
+- Spend per step is counted per call instead of from run totals, so it stays right when agent steps
+  overlap.
 - New dashboard: the pipeline graph is drawn by agentl (no Mermaid, no CDN, works offline), with live
   step status, records, duration and cost on each node; KPIs (duration, steps, records, rejected,
   tokens, cost), spend per step, an events timeline with an issues filter, light and dark themes.
@@ -41,6 +48,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Fixed
 
+- The connector registry loads once under a lock, so steps starting together never see it half
+  filled.
 - `python -m benchmarks --only` with no matching scenario now says so instead of crashing; the docs
   showed the wrong syntax for it.
 

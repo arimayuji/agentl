@@ -22,7 +22,22 @@ steps:
   - { id: ab, use: join, input: [a, b], with: { left: a, right: b, on: id } }
 ```
 
-The runner executes steps in dependency order and refuses cycles.
+The runner executes steps in dependency order and refuses cycles. A step starts as soon as all its
+inputs are done, so independent branches run at the same time: above, `a` and `b` are read together
+and `ab` starts when both finish.
+
+```yaml
+max_parallel_steps: 4   # default; 1 runs one step at a time, in declaration order
+```
+
+- Ready steps start in declaration order, up to the limit.
+- If a step fails, no new step starts. Steps already running finish, then the run fails with the
+  first error.
+- Results are the same as running one at a time. Events of each step keep their order; events of
+  steps running together interleave in the order they happened.
+- Steps run in threads. A `fn:` step that changes shared global state should take a lock, or set
+  `max_parallel_steps: 1`.
+- Spend and budget are counted per step and for the run, whichever steps overlap.
 
 ## Extract, transform and load sections
 

@@ -28,16 +28,24 @@ def connector(name: str) -> Callable[[Connector], Connector]:
     return deco
 
 
+_LOAD_LOCK = threading.RLock()
+
+
 def _load() -> None:
+    """Imports the built-in connectors and the entry points once. Locked and marked loaded only at
+    the end: steps run in parallel threads, and none may see a half-filled registry."""
     global _loaded
     if _loaded:
         return
-    _loaded = True
-    import_module("agentl.connectors")
-    from importlib.metadata import entry_points
+    with _LOAD_LOCK:
+        if _loaded:
+            return
+        import_module("agentl.connectors")
+        from importlib.metadata import entry_points
 
-    for ep in entry_points(group="agentl.connectors"):
-        _CONNECTORS.setdefault(ep.name, ep.load())
+        for ep in entry_points(group="agentl.connectors"):
+            _CONNECTORS.setdefault(ep.name, ep.load())
+        _loaded = True
 
 
 def get(name: str) -> Connector:
