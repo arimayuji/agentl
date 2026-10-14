@@ -28,6 +28,49 @@ runs in one dashboard: set `AGENTL_DB=postgresql://...` on every worker
 
 `agentl run` exits with 1 when the run fails, so cron mail and wrappers notice it.
 
+## Sources with no fixed publishing time
+
+A portal that posts yesterday's file sometime between 6 and 11 am, an API that updates "in the
+morning": a fixed cron either runs too early, on stale data, or too late. Schedule the run at the
+earliest time and let a `wait_until` step hold the pipeline until the data is there:
+
+```yaml
+steps:
+  - id: portal
+    use: http.get
+    with: { url: https://portal.example.com/api/daily }
+  - id: wait_report
+    wait_until:
+      step: portal                       # re-run this step...
+      condition: "max(date) == today"    # ...until this holds
+      every: 15m
+      timeout: 5h
+      on_timeout: fail                   # or continue with the last data
+  - id: save
+    use: postgres.write
+    input: wait_report
+    with: { dsn: "${PG_DSN}", table: daily_report }
+
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+  rules:
+    - on: wait.timeout                   # "the portal had not published by 11 am"
+      to: [slack]
+```
+
+| Condition | Holds when |
+| --- | --- |
+| `rows > 0` (default) | the source returned at least one record; any of `> >= < <= == !=` with a whole number |
+| `max(date) == today` | an aggregate of a field (`max`, `min`, `sum`, `count`) compared with a number, a quoted string, `today` or `yesterday`. Dates compare on their first 10 characters, so `2026-10-14T06:30` counts as today |
+| `changed` | the records differ from the last run where this wait succeeded |
+
+The first check uses the source's normal output; each later one re-runs the source step (without
+its cache). Each check emits `wait.polled`; then `wait.done`, or `wait.timeout` when the next
+check would pass `timeout`. With `on_timeout: fail` the run fails before the data reaches the next
+step; with `continue` it goes on with the last data it got. The run process stays alive while it
+waits, so give your scheduler's job timeout room for it.
+
 ## GitHub Actions
 
 ```yaml

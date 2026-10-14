@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import checks, graph, llm, registry
+from . import checks, graph, llm, registry, waits
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
@@ -111,6 +111,10 @@ class Outputs(dict):
 
 class CheckFailed(RuntimeError):
     """A check step with `on_fail: stop` found problems; the data was not passed on."""
+
+
+class WaitTimeout(RuntimeError):
+    """A `wait_until` step with `on_timeout: fail` ran out of time before its condition held."""
 
 
 class BudgetExceeded(RuntimeError):
@@ -462,6 +466,9 @@ class Runner:
         elif refs:
             data = {r: outputs[r] for r in refs}
 
+        if step.kind == "wait":
+            return self._run_wait(run_id, step, outputs, [] if data is None else data, result)
+
         if step.kind == "check":
             if isinstance(data, dict):
                 raise ValueError("check steps take a single input")
@@ -530,6 +537,50 @@ class Runner:
             self._emit(run_id, "check.passed", step.id, **data)
             self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
         return records
+
+    # waits ------------------------------------------------------------------
+    def _run_wait(
+        self, run_id: str, step: StepSpec, outputs: dict[str, Records], records: Any, result: RunResult
+    ) -> Records:
+        """Re-run the source step every `every` until the condition holds or `timeout` passes.
+        The first poll is the source's normal output. Emits `wait.polled` for each poll, then
+        `wait.done` or `wait.timeout`."""
+        w = step.wait_until
+        assert w is not None
+        source = next(s for s in self.spec.steps if s.id == w.step).model_copy(update={"cache": False})
+        every, timeout = checks.parse_duration(w.every), checks.parse_duration(w.timeout)
+        memory = _hash("wait-last", self.spec.name, step.id)
+        last = self.store.cache_get(memory)
+        started = time.monotonic()
+        attempt = 0
+        while True:
+            attempt += 1
+            rows = records.to_pylist() if _is_table(records) else list(records)
+            ok = waits.holds(w.condition, rows, last)
+            self._emit(run_id, "wait.polled", step.id, attempt=attempt, rows=len(rows), satisfied=ok)
+            waited = round(time.monotonic() - started, 3)
+            if ok:
+                self._emit(run_id, "wait.done", step.id, attempts=attempt, seconds=waited, rows=len(rows))
+                self.store.cache_set(memory, waits.fingerprint(rows))
+                return rows
+            if waited + every > timeout:
+                self._emit(
+                    run_id,
+                    "wait.timeout",
+                    step.id,
+                    attempts=attempt,
+                    seconds=waited,
+                    condition=w.condition,
+                    on_timeout=w.on_timeout,
+                )
+                if w.on_timeout == "fail":
+                    raise WaitTimeout(
+                        f"'{w.condition}' did not hold for step '{w.step}' after {attempt} poll(s) "
+                        f"in {w.timeout}"
+                    )
+                return rows
+            time.sleep(every)
+            records = self._run_step(run_id, source, outputs, result)
 
     # arrow fast path ------------------------------------------------------
     def _arrow_plan(self, chains: dict[str, list[StepSpec]]) -> set[str]:
