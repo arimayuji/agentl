@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -301,6 +302,8 @@ class Service:
         service = self
 
         class Hook(BaseHTTPRequestHandler):
+            timeout = 30  # a client that stops sending is dropped instead of holding a thread
+
             def log_message(self, *a: Any) -> None:
                 pass
 
@@ -322,7 +325,12 @@ class Service:
                 if route is None:
                     return self._send(404, {"error": "no webhook at this path"})
                 spec, t = route
-                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    n = -1
+                if n < 0:
+                    return self._send(400, {"error": "bad Content-Length"})
                 if n > 10 * 1024 * 1024:
                     return self._send(413, {"error": "body over 10 MB"})
                 body = self.rfile.read(n) if n else b""
@@ -340,6 +348,13 @@ class Service:
     def serve(self, host: str, port: int, interval: float = 1.0) -> None:
         srv = None
         if self.routes:
+            open_hooks = [p for p, (_, t) in self.routes.items() if not t.secret]
+            if open_hooks and host not in ("127.0.0.1", "localhost", "::1"):
+                print(
+                    f"warning: webhooks without a secret are open to anyone who can reach {host}: "
+                    f"{', '.join(sorted(open_hooks))}. Set `secret:` on them.",
+                    file=sys.stderr,
+                )
             srv = ThreadingHTTPServer((host, port), self.handler())
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             print(f"agentl serve: webhooks on http://{host}:{port} ({', '.join(sorted(self.routes))})")

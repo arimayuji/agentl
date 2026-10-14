@@ -15,9 +15,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
 
+import yaml
+
 from . import assist, graph, registry
 from .mcp import PROTOCOL_VERSION
-from .spec import PipelineSpec, SpecError, load
+from .spec import PipelineSpec, SpecError, _Loader, load
 from .store import open_store
 
 _PIPELINE = {
@@ -26,26 +28,77 @@ _PIPELINE = {
 }
 
 
-def _spec(pipeline: str) -> PipelineSpec:
+class _Placeholders(dict):
+    """Environment for validate/diagram: every ${VAR} reads as <VAR>, so a tool answer can never
+    carry the value of an environment variable back to the client."""
+
+    def __contains__(self, key: object) -> bool:
+        return True
+
+    def __getitem__(self, key: str) -> str:
+        return f"<{key}>"
+
+
+def _neutral(text: str) -> str:
+    from .secrets import SECRET
+
+    return SECRET.sub(lambda m: f"<{m.group(1)}>", text)
+
+
+def _spec(pipeline: str, real_env: bool = False) -> PipelineSpec:
+    """A pipeline from a file path or inline YAML. Only `run_pipeline` reads the real environment
+    and secret references; validate and diagram see placeholders."""
     if "\n" not in pipeline and Path(pipeline).is_file():
-        spec = load(pipeline)
+        if real_env:
+            spec = load(pipeline)
+        else:
+            from .spec import parse
+
+            spec = parse(
+                yaml.load(_neutral(Path(pipeline).read_text(encoding="utf-8")), Loader=_Loader),
+                env=_Placeholders(),
+            )
+            spec.base_dir = str(Path(pipeline).resolve().parent)
         assist.check(spec)
         return spec
     if "\n" not in pipeline:
         raise FileNotFoundError(f"no pipeline file '{pipeline}'")
-    return assist.validate_text(pipeline)
+    if real_env:
+        raise ValueError("run_pipeline takes a pipeline file, not YAML text")
+    return assist.validate_text(_neutral(pipeline), env=_Placeholders())
+
+
+def code_in(spec: PipelineSpec) -> list[str]:
+    """What in a pipeline would run code on this machine: `fn:` steps, agent tools that are
+    Python functions, and MCP servers started as local commands."""
+    found = [f"step '{s.id}' runs {s.fn}" for s in spec.steps if s.fn]
+    for s in spec.steps:
+        for t in s.tools:
+            name = t if isinstance(t, str) else next(iter(t))
+            if name.startswith("fn:"):
+                found.append(f"step '{s.id}' uses tool {name}")
+    found += [f"mcp server '{n}' runs {m.command[0]}" for n, m in spec.mcp.items() if m.command]
+    return found
 
 
 class Server:
-    def __init__(self, db: str | None = None):
+    """`root`: run_pipeline only runs files under this folder (default: the working directory).
+    `allow_code`: let run_pipeline run pipelines with `fn:` steps, Python tools or local MCP
+    commands; off by default, since a client steered by prompt injection could otherwise run code."""
+
+    def __init__(self, db: str | None = None, root: str | None = None, allow_code: bool = False):
         self.db = db
+        self.root = Path(root or ".").resolve()
+        self.allow_code = allow_code
         self.tools: dict[str, tuple[dict, Callable[[dict], Any]]] = {}
         add = self._add
         add("validate", "Check a pipeline without running it.", {"pipeline": _PIPELINE}, self.validate)
         add("diagram", "The pipeline as a Mermaid diagram.", {"pipeline": _PIPELINE}, self.diagram)
         add(
             "run_pipeline",
-            "Run a pipeline file and return its status, spend and how many records each step produced.",
+            "Run a pipeline file and return its status, spend and how many records each step produced. "
+            "Pipelines that run Python code (fn: steps, Python tools, local MCP servers) need the "
+            "server started with --allow-code.",
             {
                 "pipeline": {"type": "string", "description": "path to a pipeline YAML file"},
                 "no_cache": {"type": "boolean", "description": "ignore cached agent answers"},
@@ -115,7 +168,18 @@ class Server:
     def run_pipeline(self, args: dict) -> dict:
         from .runner import Runner
 
-        spec = _spec(args["pipeline"])
+        path = Path(args["pipeline"])
+        if "\n" in args["pipeline"] or not path.is_file():
+            raise ValueError("run_pipeline takes the path of a pipeline file, not YAML text")
+        if not path.resolve().is_relative_to(self.root):
+            raise ValueError(f"run_pipeline only runs files under {self.root}")
+        spec = _spec(str(path), real_env=True)
+        code = code_in(spec)
+        if code and not self.allow_code:
+            raise ValueError(
+                "this pipeline runs code on this machine (" + "; ".join(code[:3]) + "). "
+                "Run it with `agentl run`, or start the server with `agentl mcp --allow-code`."
+            )
         with open_store(self.db) as store:
             r = Runner(spec, store=store, use_cache=not args.get("no_cache")).run()
         return {
@@ -228,6 +292,6 @@ class _RpcError(Exception):
         self.code = code
 
 
-def serve(db: str | None = None) -> None:
+def serve(db: str | None = None, root: str | None = None, allow_code: bool = False) -> None:
     registry.names()  # load connectors before the first request
-    Server(db).serve()
+    Server(db, root, allow_code).serve()

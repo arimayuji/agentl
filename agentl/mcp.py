@@ -106,7 +106,9 @@ class _Http(_Transport):
     """Streamable HTTP: JSON-RPC over POST; the answer is JSON or a short SSE stream."""
 
     def __init__(self, url: str, headers: dict[str, str], timeout: float):
-        self.url = url
+        from .netguard import require_http
+
+        self.url = require_http(url, "mcp server url")
         self.headers = headers
         self.timeout = timeout
         self.session: str | None = None

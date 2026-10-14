@@ -110,7 +110,20 @@ def test_mcp_server_round_trip_with_our_own_client(tmp_path):
     db = str(tmp_path / "runs.db")
     client = MCPClient(
         "agentl",
-        MCPServerSpec(command=[sys.executable, "-m", "agentl.cli", "mcp", "--db", db], timeout=60),
+        MCPServerSpec(
+            command=[
+                sys.executable,
+                "-m",
+                "agentl.cli",
+                "mcp",
+                "--db",
+                db,
+                "--allow-code",
+                "--root",
+                str(tmp_path),
+            ],
+            timeout=60,
+        ),
     )
     try:
         tools = {t["name"]: t for t in client.list_tools()}
@@ -139,3 +152,48 @@ def test_mcp_server_protocol_errors():
     assert s.handle({"jsonrpc": "2.0", "id": 1, "method": "nope"})["error"]["code"] == -32601
     res = s.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "x"}})
     assert res["error"]["code"] == -32602
+
+
+def test_mcp_run_pipeline_guards(tmp_path, monkeypatch):
+    from agentl.mcp_server import Server
+
+    monkeypatch.setenv("AGENTL_TEST_TOKEN", "s3cret-value")
+    code = tmp_path / "code.yaml"
+    code.write_text("name: c\nsteps:\n  - id: say\n    fn: tests.test_assist:noisy\n")
+    plain = tmp_path / "plain.yaml"
+    (tmp_path / "in.csv").write_text("a\n1\n")
+    plain.write_text(
+        f"name: p\nsteps:\n  - id: r\n    use: csv.read\n    with: {{path: '{tmp_path / 'in.csv'}'}}\n"
+    )
+    s = Server(str(tmp_path / "runs.db"), root=str(tmp_path))
+
+    def call(name, **args):
+        res = s.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
+        )
+        return res["result"]["isError"], res["result"]["content"][0]["text"]
+
+    err, text = call("run_pipeline", pipeline=str(code))
+    assert err and "runs code on this machine" in text and "--allow-code" in text
+    err, text = call("run_pipeline", pipeline=GOOD)
+    assert err and "not YAML text" in text
+    err, text = call("run_pipeline", pipeline=str(plain))
+    assert not err and '"succeeded"' in text
+    outside = Server(str(tmp_path / "runs.db"), root=str(tmp_path / "sub"))
+    res = outside.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "run_pipeline", "arguments": {"pipeline": str(plain)}},
+        }
+    )
+    assert res["result"]["isError"] and "only runs files under" in res["result"]["content"][0]["text"]
+    # validate never echoes environment values or reads secrets
+    err, text = call(
+        "validate", pipeline="name: ${AGENTL_TEST_TOKEN}\nsteps:\n  - id: a\n    use: csv.read\n"
+    )
+    assert not err and "s3cret-value" not in text and "<AGENTL_TEST_TOKEN>" in text
+    err, text = call("validate", pipeline="name: x ${aws-sm:prod/db}\nsteps:\n  - id: a\n    use: csv.read\n")
+    assert not err and "<aws-sm>" in text
+    assert Server(None).allow_code is False

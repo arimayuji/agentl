@@ -288,6 +288,10 @@ class OpenAICompatibleProvider:
     def __init__(self, spec: LLMSpec):
         opts = dict(spec.options)
         self.base_url = str(opts.pop("base_url", self.base_url)).rstrip("/")
+        if self.base_url:
+            from .netguard import require_http
+
+            require_http(self.base_url, f"llm provider '{spec.provider}' base_url")
         if not self.base_url:
             raise ValueError(f"llm provider '{spec.provider}' needs options.base_url")
         env = opts.pop("api_key_env", self.api_key_env)

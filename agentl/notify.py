@@ -54,6 +54,10 @@ def format_text(event: dict, pipeline: str) -> str:
 def _post(url: str, payload: dict, headers: dict | None = None) -> None:
     import urllib.request  # channels load their clients only when they send
 
+    from .netguard import require_http
+
+    require_http(url, "notification url")
+
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, default=str).encode(),

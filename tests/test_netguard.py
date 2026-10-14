@@ -88,3 +88,22 @@ def test_connectors_use_the_guard(guarded):
         get("csv.read")(None, url="http://127.0.0.1/data.csv")
     with pytest.raises(netguard.BlockedURL):
         get("http.get")([{"host": "10.0.0.1"}], url="http://{host}/x")
+
+
+def test_dns_rebinding_is_refused_at_connect_time(guarded, monkeypatch):
+    """The name resolves to a public address for the check, then to the metadata address: the
+    connection must use what was checked, so the second answer is refused, not connected to."""
+    answers = iter(["93.184.216.34", "169.254.169.254"])
+    monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", (next(answers), 80))])
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    with pytest.raises(netguard.BlockedURL, match=r"169\.254\.169\.254"):
+        netguard.urlopen(urllib.request.Request("http://rebind.example.com/"), timeout=5)
+
+
+def test_pinned_connection_still_fetches(guarded, monkeypatch, redirector):
+    monkeypatch.setenv("AGENTL_ALLOW_HOSTS", "127.0.0.1")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    with pytest.raises(netguard.BlockedURL):  # the redirect target is still refused
+        netguard.urlopen(urllib.request.Request(redirector + "/x"), timeout=5)

@@ -45,8 +45,14 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `list_connectors` | Installed connectors and their parameters |
 
 `run_pipeline` is the only tool marked as not read-only, so clients that ask before side effects
-ask before running a pipeline. It runs with your environment and permissions: only connect
-clients you trust.
+ask before running a pipeline. It runs with your environment and permissions, so it is limited:
+
+- it only runs pipeline files under the folder the server started in (`--root` to change it), never
+  YAML text sent by the client;
+- it refuses pipelines that run code on your machine (`fn:` steps, Python tools, local MCP server
+  commands) unless you start the server with `agentl mcp --allow-code`;
+- `validate` and `diagram` see `${VAR}` and secret references as placeholders, so their answers
+  never carry a value from your environment back to the model.
 
 ## Prompts
 
