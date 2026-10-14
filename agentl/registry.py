@@ -9,7 +9,6 @@ import sys
 import threading
 from collections.abc import Callable
 from importlib import import_module
-from importlib.metadata import entry_points
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -35,6 +34,8 @@ def _load() -> None:
         return
     _loaded = True
     import_module("agentl.connectors")
+    from importlib.metadata import entry_points
+
     for ep in entry_points(group="agentl.connectors"):
         _CONNECTORS.setdefault(ep.name, ep.load())
 

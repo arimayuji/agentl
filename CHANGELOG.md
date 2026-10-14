@@ -9,12 +9,21 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Reproducible benchmarks (`python -m benchmarks`): import time, CSV, transforms, SQLite, Postgres
+  upsert, HTTP fan-out, agent step throughput and cache re-run. Results and method on the new
+  Performance docs page; CI runs them on tags and weekly.
+- Footprint tests: the core stays at `pyyaml` + `pydantic`, and `import agentl` loads no heavy module.
+
 ### Changed
 
 - New dashboard: the pipeline graph is drawn by agentl (no Mermaid, no CDN, works offline), with live
   step status, records, duration and cost on each node; KPIs (duration, steps, records, rejected,
   tokens, cost), spend per step, an events timeline with an issues filter, light and dark themes.
   It follows the newest run until you pick one.
+- Faster `import agentl` (about 209 ms to 158 ms): `urllib`, `smtplib`, `ssl` and entry points are
+  imported only when used.
 
 ## [0.5.1] - 2026-10-14
 

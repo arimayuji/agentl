@@ -225,3 +225,4 @@ __marimo__/
 
 # docs build
 site/
+benchmarks/results-*.json
