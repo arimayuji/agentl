@@ -6,6 +6,8 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.5.1**: security hardening: URL guard against SSRF, untrusted record data in prompts, SBOM and
+  build provenance on releases, pinned actions and OpenSSF Scorecard.
 - **0.5.0**: AWS Lambda connector, Bedrock provider, HTTP pagination, the `examples/invoices` migration
   example, and correct cost accounting for invalid LLM answers.
 - **0.4.0**: browser (Playwright) and email (IMAP) connectors, Teams/Discord/Telegram/email/

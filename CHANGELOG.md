@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-14
+
 ### Security
 
 - URL fetches (`url:` on readers, `http.get`, `http.post`) refuse non-public addresses (loopback,
@@ -141,7 +143,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/arimayuji/agentl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/arimayuji/agentl/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/arimayuji/agentl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/arimayuji/agentl/compare/v0.2.0...v0.3.0
