@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..registry import connector
+from ..registry import connector, rowwise
 from ._util import single
 
 
@@ -39,6 +39,10 @@ def filter_(
         if all(r.get(k) == v for k, v in where.items())
         and all(r.get(k) not in (None, "") for k in _names(not_empty))
     ]
+
+
+rowwise("select")
+rowwise("filter")
 
 
 @connector("dedupe")

@@ -39,6 +39,37 @@ max_parallel_steps: 4   # default; 1 runs one step at a time, in declaration ord
   `max_parallel_steps: 1`.
 - Spend and budget are counted per step and for the run, whichever steps overlap.
 
+## Large inputs: chunk_size
+
+By default every step gets and returns all its records in memory. For big files and tables, set
+`chunk_size` and the runner streams linear chains a chunk at a time:
+
+```yaml
+chunk_size: 50000
+steps:
+  - { id: read, use: csv.read, with: { path: big.csv } }
+  - { id: paid, use: filter, input: read, with: { where: { status: paid } } }
+  - { id: tag, agent: Classify the line., input: paid, output: { category: str } }
+  - { id: save, use: postgres.write, input: tag, with: { dsn: "${PG_DSN}", table: lines } }
+```
+
+- A chain starts at a source that can stream (`csv.read`, `sqlite.read`, `postgres.read` with a
+  server-side cursor), goes through steps that work record by record (`select`, `filter`, agent
+  steps) and can end in a writer that appends per chunk (`csv.write`, `json.write` for `.jsonl`,
+  `sqlite.write`, `postgres.write`), all in one file or transaction.
+- Each step in the chain must have that single input and be its only consumer. Anything else is a
+  boundary where records are collected as usual: `dedupe`, `join`, `concat`, `fn:` steps, agent
+  steps with `mode: batch`, or a step whose output feeds two steps.
+- Only the last step of a chain keeps its output in `RunResult.outputs`. The `step.succeeded` event
+  of every step still has its record count, plus `chunked: true`.
+- Agent steps keep their per-record cache, budget and rejects; `item.rejected` is emitted per chunk.
+- Writers take the columns from the first chunk. `sqlite.write` and `postgres.write` add a column
+  that appears later (typed from that chunk in Postgres); `csv.write` fails instead of dropping it.
+- Without `chunk_size` nothing changes.
+
+Measured: 1M rows (70 MB CSV) to SQLite grows the process by 790 MB all at once and by 61 MB in
+50k chunks; 3M rows in 50k chunks stays at 62 MB. See [Performance](performance.md).
+
 ## Extract, transform and load sections
 
 If you prefer the classic shape, use sections instead of `steps`. Inside `transform` and `load`, a step

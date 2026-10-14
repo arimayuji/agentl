@@ -15,12 +15,12 @@ import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from ..registry import connector, require
+from ..registry import connector, require, stream_reader, stream_writer
 from ._util import is_remote, origin, paths, single, tmpdir, upload
 
 log = logging.getLogger("agentl.files")
@@ -29,7 +29,7 @@ Records = list[dict]
 
 
 # ---------------------------------------------------------------- per-file readers
-def read_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:
+def iter_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Iterator[dict]:
     with p.open(newline="", encoding=encoding, errors="replace") as f:
         sample = f.read(64 * 1024)
         f.seek(0)
@@ -38,7 +38,12 @@ def read_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_
                 delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
             except csv.Error:
                 delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
-        return [dict(row) for row in csv.DictReader(f, delimiter=delimiter)]
+        for row in csv.DictReader(f, delimiter=delimiter):
+            yield dict(row)
+
+
+def read_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:
+    return list(iter_csv(p, delimiter, encoding))
 
 
 def read_json(p: Path, key: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:
@@ -337,6 +342,28 @@ def csv_read(
     )
 
 
+@stream_reader("csv.read")
+def csv_read_chunks(
+    input: Any = None,
+    chunk_size: int = 50_000,
+    path: str | None = None,
+    url: str | None = None,
+    headers: dict | None = None,
+    storage_options: dict | None = None,
+    delimiter: str | None = None,
+    encoding: str = "utf-8",
+) -> Iterator[Records]:
+    chunk: Records = []
+    for p in paths(input, path, "path", url, headers, storage_options):
+        for row in iter_csv(p, delimiter, encoding):
+            chunk.append(row)
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+    if chunk:
+        yield chunk
+
+
 @connector("json.read")
 def json_read(
     input: Any = None,
@@ -462,31 +489,66 @@ def _target(path: str) -> Path:
     return local
 
 
-@connector("csv.write")
-def csv_write(input: Any, path: str, delimiter: str = ",", storage_options: dict | None = None) -> Records:
-    rows = single(input)
+@stream_writer("csv.write")
+def csv_write_chunks(
+    chunks: Iterable[Records], path: str, delimiter: str = ",", storage_options: dict | None = None
+) -> Records:
+    """The header comes from the first chunk with records. A column that first appears in a later
+    chunk is an error rather than silently dropped: select the fields, or use a bigger chunk."""
     local = _target(path)
-    fields: list[str] = []
-    for r in rows:
-        fields.extend(k for k in r if k not in fields)
+    written = 0
+    w: csv.DictWriter | None = None
     with open(local, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields, delimiter=delimiter)
-        w.writeheader()
-        w.writerows(rows)
+        for rows in chunks:
+            if w is None:
+                if not rows:
+                    continue
+                fields: list[str] = []
+                for r in rows:
+                    fields.extend(k for k in r if k not in fields)
+                w = csv.DictWriter(f, fieldnames=fields, delimiter=delimiter)
+                w.writeheader()
+            try:
+                w.writerows(rows)
+            except ValueError as e:
+                raise ValueError(f"csv.write: {e} (column not in the first chunk)") from e
+            written += len(rows)
+        if w is None:
+            csv.writer(f).writerow([])
     if is_remote(path):
         upload(local, path, storage_options)
-    return [{"path": path, "written": len(rows)}]
+    return [{"path": path, "written": written}]
+
+
+@connector("csv.write")
+def csv_write(input: Any, path: str, delimiter: str = ",", storage_options: dict | None = None) -> Records:
+    return csv_write_chunks([single(input)], path, delimiter, storage_options)
+
+
+@stream_writer("json.write")
+def json_write_chunks(chunks: Iterable[Records], path: str, storage_options: dict | None = None) -> Records:
+    """`.jsonl` is written chunk by chunk; a `.json` array needs every record, so it is collected."""
+    if not path.endswith(".jsonl"):
+        return json_write([r for rows in chunks for r in rows], path, storage_options)
+    local = _target(path)
+    written = 0
+    with open(local, "w", encoding="utf-8") as f:
+        for rows in chunks:
+            f.writelines(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
+            written += len(rows)
+    if is_remote(path):
+        upload(local, path, storage_options)
+    return [{"path": path, "written": written}]
 
 
 @connector("json.write")
 def json_write(input: Any, path: str, storage_options: dict | None = None) -> Records:
     rows = single(input)
+    if path.endswith(".jsonl"):
+        return json_write_chunks([rows], path, storage_options)
     local = _target(path)
     with open(local, "w", encoding="utf-8") as f:
-        if path.endswith(".jsonl"):
-            f.writelines(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
-        else:
-            json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
+        json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
     if is_remote(path):
         upload(local, path, storage_options)
     return [{"path": path, "written": len(rows)}]

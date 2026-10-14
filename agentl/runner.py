@@ -10,7 +10,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -311,7 +311,7 @@ class Runner:
             elif rejected is not None:
                 bad.append(rejected)
         if bad:
-            result.rejected[step.id] = bad
+            result.rejected.setdefault(step.id, []).extend(bad)  # chunked steps add per chunk
             self._emit(
                 run_id,
                 "item.rejected",
@@ -394,11 +394,143 @@ class Runner:
         if not out and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
 
+    # chunked execution ----------------------------------------------------
+    def _chains(self) -> dict[str, list[StepSpec]]:
+        """With `chunk_size`, the linear chains the runner can stream: a source with a stream
+        reader, then steps that each have that one input and are its only consumer (row-wise
+        connectors and agent steps), optionally ending in a stream writer. Keyed by the source id.
+        Anything else (dedupe, join, fn steps, fan-out) is a boundary where records are collected."""
+        if not self.spec.chunk_size:
+            return {}
+        consumers: dict[str, list[StepSpec]] = {s.id: [] for s in self.spec.steps}
+        for s in self.spec.steps:
+            for ref in s.inputs:
+                consumers[ref].append(s)
+        chains = {}
+        for head in self.spec.steps:
+            if not head.use or head.inputs or registry.streaming(head.use)[0] is None:
+                continue
+            chain, cur = [head], head
+            while len(consumers[cur.id]) == 1:
+                nxt = consumers[cur.id][0]
+                if nxt.inputs != [cur.id]:
+                    break
+                if nxt.kind == "agent":
+                    if nxt.mode == "batch":
+                        break  # one provider batch per chunk would defeat the point
+                elif nxt.use:
+                    _, writer, row = registry.streaming(nxt.use)
+                    if writer is not None:
+                        chain.append(nxt)
+                        break
+                    if not row:
+                        break
+                else:
+                    break
+                chain.append(nxt)
+                cur = nxt
+            if len(chain) > 1:
+                chains[head.id] = chain
+        return chains
+
+    def _run_chain(self, run_id: str, chain: list[StepSpec], result: RunResult) -> None:
+        """Runs a chain from `_chains` chunk by chunk: one chunk per step in memory at a time, and
+        only the last step's output is kept."""
+        size = self.spec.chunk_size or 1
+        head, last = chain[0], chain[-1]
+        for step in chain:
+            if step.kind == "agent":
+                with self._spend:
+                    result.spend[step.id] = dict.fromkeys(
+                        ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls"), 0
+                    ) | {"cost_usd": 0.0}
+            self._emit(run_id, "step.started", step.id, kind=step.kind, chunk_size=size)
+        counts = dict.fromkeys((s.id for s in chain), 0)
+        failing: list[str] = []
+        t0 = time.time()
+
+        def source() -> Iterator[Records]:
+            reader = registry.streaming(head.use or "")[0]
+            assert reader is not None
+            try:
+                for chunk in reader(None, chunk_size=size, **head.with_):
+                    counts[head.id] += len(chunk)
+                    yield chunk
+            except Exception:
+                failing.append(head.id)
+                raise
+
+        def stage(chunks: Iterator[Records], step: StepSpec) -> Iterator[Records]:
+            fn = None if step.kind == "agent" else registry.get(step.use or "")
+            try:
+                for chunk in chunks:
+                    if fn is None:
+                        out = self._run_agent(run_id, step, chunk, result)
+                    else:
+                        out = list(fn(chunk, **step.with_) or [])
+                    counts[step.id] += len(out)
+                    yield out
+            except Exception:
+                failing.append(step.id)  # an upstream failure is already first in the list
+                raise
+
+        chunks = source()
+        for step in chain[1:-1]:
+            chunks = stage(chunks, step)
+        writer = registry.streaming(last.use)[1] if last.use else None
+        try:
+            if writer is not None:
+                try:
+                    out = list(writer(chunks, **last.with_) or [])
+                except Exception:
+                    failing.append(last.id)
+                    raise
+                counts[last.id] = len(out)
+            else:
+                out = [r for chunk in stage(chunks, last) for r in chunk]
+        except Exception as e:
+            culprit = failing[0] if failing else last.id
+            if isinstance(e, BudgetExceeded):
+                with self._spend:
+                    totals = (result.input_tokens, result.output_tokens, round(result.cost_usd, 6))
+                self._emit(
+                    run_id,
+                    "budget.exceeded",
+                    culprit,
+                    reason=str(e),
+                    input_tokens=totals[0],
+                    output_tokens=totals[1],
+                    cost_usd=totals[2],
+                )
+            for step in chain:
+                if step.id == culprit:
+                    error = f"{type(e).__name__}: {e}"
+                else:
+                    error = f"stopped: step '{culprit}' failed"
+                self._emit(run_id, "step.failed", step.id, error=error, **self._step_spend(step, result))
+            raise
+        result.outputs[last.id] = out
+        seconds = round(time.time() - t0, 3)
+        for step in chain:
+            self._emit(
+                run_id,
+                "step.succeeded",
+                step.id,
+                records=counts[step.id],
+                seconds=seconds,
+                chunked=True,
+                **self._step_spend(step, result),
+            )
+        if counts[head.id] == 0:
+            self._emit(run_id, "source.empty", head.id)
+
     def _run_graph(self, run_id: str, result: RunResult) -> None:
         """Starts each step as soon as its inputs are done, up to `max_parallel_steps` at once,
         picking ready steps in declaration order. After a failure no new step starts; the ones
         already running finish, then the first error is raised."""
-        pending = graph.order(self.spec)
+        chains = self._chains()
+        inside = {s.id for chain in chains.values() for s in chain[1:]}
+        pending = [i for i in graph.order(self.spec) if i not in inside]
         deps = {s.id: set(s.inputs) for s in self.spec.steps}
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
@@ -409,8 +541,11 @@ class Runner:
                 if failure is None:
                     for step_id in [i for i in pending if deps[i] <= done][: limit - len(running)]:
                         pending.remove(step_id)
-                        step = self.spec.step(step_id)
-                        running[pool.submit(self._run_one, run_id, step, result)] = step_id
+                        if step_id in chains:
+                            future = pool.submit(self._run_chain, run_id, chains[step_id], result)
+                        else:
+                            future = pool.submit(self._run_one, run_id, self.spec.step(step_id), result)
+                        running[future] = step_id
                 if not running:
                     break
                 finished, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -418,7 +553,7 @@ class Runner:
                     step_id = running.pop(future)
                     error = future.exception()
                     if error is None:
-                        done.add(step_id)
+                        done.update(s.id for s in chains.get(step_id, [self.spec.step(step_id)]))
                     elif failure is None:
                         failure = error
         if failure is not None:

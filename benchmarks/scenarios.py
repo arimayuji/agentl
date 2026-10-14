@@ -363,6 +363,65 @@ def parallel_steps(scale: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------- chunked execution
+_CHUNK_CHILD = """
+import resource, sys, time
+from agentl import parse
+from agentl.runner import Runner
+from agentl.store import Store
+src, db, chunk = sys.argv[1], sys.argv[2], sys.argv[3]
+base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+spec = parse({
+    "name": "chunk", "chunk_size": int(chunk) or None,
+    "steps": [
+        {"id": "read", "use": "csv.read", "with": {"path": src}},
+        {"id": "slim", "use": "select", "input": "read", "with": {"fields": ["id", "name", "amount"]}},
+        {"id": "save", "use": "sqlite.write", "input": "slim",
+         "with": {"db": db, "table": "t", "mode": "replace"}},
+    ],
+})
+t0 = time.perf_counter()
+with Store(db + ".state") as store:
+    r = Runner(spec, store=store, use_cache=False).run()
+assert r.status == "succeeded", r.error
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+scale = 1 if sys.platform == "darwin" else 1024  # macOS reports bytes, Linux KiB
+print((peak - base) * scale / 2**20, time.perf_counter() - t0)
+"""
+
+
+def chunked(scale: float) -> dict:
+    """csv.read -> select -> sqlite.write on a large CSV, all at once vs 50k records at a time.
+    Each mode runs in a fresh process; memory is the growth of its peak RSS during the run."""
+    try:
+        import resource  # noqa: F401
+    except ImportError as e:
+        raise Skip("needs the resource module (Linux or macOS)") from e
+    n = int(1_000_000 * scale)
+    d = _tmp()
+    src = d / "big.csv"
+    with open(src, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "name", "amount", "notes"])
+        for i in range(n):
+            w.writerow([i, f"customer {i % 5000}", f"{i * 1.5:.2f}", "x" * 40])
+    out = {"records": n, "csv_mb": round(src.stat().st_size / 2**20, 1)}
+    for label, chunk in (("all_at_once", 0), ("chunk_50k", 50_000)):
+        res = subprocess.run(
+            [sys.executable, "-c", _CHUNK_CHILD, str(src), str(d / f"{label}.db"), str(chunk)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        mb, s = map(float, res.stdout.split())
+        out[f"{label}_mb"] = round(mb)
+        out[f"{label}_s"] = round(s, 2)
+    return {
+        "summary": f"peak +{out['all_at_once_mb']} MB all at once, +{out['chunk_50k_mb']} MB in 50k chunks",
+        **out,
+    }
+
+
 ALL = [
     ("import", import_time),
     ("csv.read", csv_read),
@@ -374,4 +433,5 @@ ALL = [
     ("agent cache re-run", agent_cache),
     ("agent call shapes", agent_call_shapes),
     ("parallel steps", parallel_steps),
+    ("chunked", chunked),
 ]

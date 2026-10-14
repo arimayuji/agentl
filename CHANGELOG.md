@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `chunk_size` on the pipeline: linear chains (a streaming reader, row-wise steps and agent steps,
+  a writer that appends) run chunk by chunk with bounded memory. Streaming readers: `csv.read`,
+  `sqlite.read`, `postgres.read` (server-side cursor). Streaming writers: `csv.write`, `json.write`
+  (`.jsonl`), `sqlite.write`, `postgres.write`. Plugins opt in with `stream_reader`,
+  `stream_writer` and `rowwise` from `agentl.registry`. `chunked` benchmark.
+
 - Independent steps run in parallel: a step starts as soon as its inputs are done, up to
   `max_parallel_steps` (default 4) at once. After a failure no new step starts and the running ones
   finish. `parallel steps` benchmark.
@@ -32,6 +38,9 @@ They are always listed under **Changed** or **Removed**.
 - Footprint tests: the core stays at `pyyaml` + `pydantic`, and `import agentl` loads no heavy module.
 
 ### Changed
+
+- `sqlite.write` and `postgres.write` add columns that are new to an existing table instead of
+  failing on them.
 
 - Steps no longer wait for unrelated steps. Set `max_parallel_steps: 1` to run one step at a time as
   before. `fn:` steps now run in worker threads.
