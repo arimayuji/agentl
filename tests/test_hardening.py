@@ -53,3 +53,18 @@ def test_open_webhook_on_a_public_host_warns(tmp_path, capsys, monkeypatch):
         svc.stop()  # serve returns right away
         svc.serve("0.0.0.0", 0, interval=0.01)
     assert "webhooks without a secret are open" in capsys.readouterr().err
+
+
+def test_xml_entity_bombs_are_refused(tmp_path):
+    from agentl.registry import get
+
+    bomb = tmp_path / "bomb.xml"
+    bomb.write_text(
+        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "aaaaaaaaaa">'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]><r><i v="&b;"/></r>'
+    )
+    with pytest.raises(ValueError, match="entity declarations"):
+        get("xml.read")(None, path=str(bomb))
+    ok = tmp_path / "ok.xml"
+    ok.write_text('<r><i id="1"><name>a</name></i></r>')
+    assert get("xml.read")(None, path=str(ok)) == [{"id": "1", "name": "a"}]

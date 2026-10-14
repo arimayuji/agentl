@@ -142,7 +142,12 @@ def read_xml(p: Path, items: str | None = None, **_: Any) -> Records:
 
     Attributes and simple child elements become fields.
     """
-    root = ET.parse(p).getroot()  # stdlib parser: no external entities
+    data = p.read_bytes()
+    # The stdlib parser never fetches external entities, but it does expand internal ones, so a
+    # small file can blow up into gigabytes ("billion laughs"). Data files do not need them.
+    if b"<!ENTITY" in data:
+        raise ValueError(f"{p.name}: XML with entity declarations (<!ENTITY) is not read")
+    root = ET.fromstring(data)
     nodes = [e for e in root.iter() if _local(e.tag) == items] if items else list(root)
     out = []
     for node in nodes:

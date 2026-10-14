@@ -51,4 +51,7 @@ pip download agentl-etl==<version> --no-deps -d dist
 gh attestation verify dist/agentl_etl-<version>-py3-none-any.whl --repo arimayuji/agentl
 ```
 
+The signed Sigstore bundle is also attached to each GitHub release as
+`agentl-etl-<version>.sigstore.json`, for verifying offline (`--bundle`).
+
 All GitHub Actions are pinned by commit SHA, and the repository is scored by OpenSSF Scorecard.

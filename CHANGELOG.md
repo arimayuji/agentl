@@ -21,6 +21,11 @@ They are always listed under **Changed** or **Removed**.
 - Config URLs (LLM `base_url`, MCP `url`, notification webhooks) must be http(s); webhooks reject
   a bad `Content-Length`, time out idle clients and warn when served open on a public address;
   zip extraction counts the bytes actually written.
+- XML files with entity declarations are refused (no "billion laughs" expansion).
+- Property tests (Hypothesis) on the spec, cron, wait conditions, webhook bodies and auth, and the
+  URL guard.
+- The release workflow installs its tools from a hash-locked `requirements/release.txt` and
+  attaches the signed provenance bundle (`*.sigstore.json`) to each GitHub release.
 
 ### Added
 
