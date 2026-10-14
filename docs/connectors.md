@@ -48,6 +48,7 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
 | HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
+| HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
 | ZIP, GZ | `file.read` | records of the inner files | |
 
 Writers: `csv.write`, `json.write` (`.json` or `.jsonl`), `parquet.write` (`compression`, needs
@@ -235,12 +236,51 @@ Click a download button and read the file:
 | `url` | page to open; with upstream records it runs once per record and fills `{field}` |
 | `steps` | `goto`, `fill` + `value`, `click`, `press` + `key`, `select` + `value`, `check`, `wait_for`, `wait` (ms) |
 | `wait_for` | CSS selector to wait for before extracting |
-| `selector`, `extract`, `table` | what to extract: `table` rows (header from the first row), `text`, `html`, `links` (`text`, `href`) |
+| `selector`, `extract`, `table` | what to extract: `table` rows (header from the first row), `text`, `html`, `links` (`text`, `href`), `markdown` (see below) |
+| `evidence`, `evidence_keep_days` | keep the HTML, Markdown and a full-page screenshot of every page (see below) |
+| `retry_if_empty` | load the page again up to N times when the extraction gave nothing |
 | `download` | selector of a link or button that downloads a file; returns `{path, filename}` |
 | `timeout`, `headless`, `executable_path`, `user_agent` | browser settings (`AGENTL_BROWSER_EXECUTABLE` also sets the browser binary) |
 
 Every record gets `_url`. Keep credentials in environment variables, and check the site's terms
 before automating it.
+
+## Web pages as Markdown
+
+Raw HTML is a poor input for an agent step: menus, footers, cookie banners and scripts cost tokens
+and confuse the model. `format: markdown` on `html.read` (and `extract: markdown` on
+`browser.scrape`) gives one record per page with `title` and `markdown`: the main content with
+headings, lists, tables and links (made absolute), and nothing else. It uses
+[trafilatura](https://trafilatura.readthedocs.io): `pip install 'agentl-etl[web]'`.
+
+```yaml
+- id: pages
+  use: html.read
+  input: urls                     # records with a `path` field holding URLs
+  with:
+    format: markdown
+    retry_if_empty: 2             # read again when a page gives no content
+    evidence: true                # keep what the run saw
+    evidence_keep_days: 30
+- id: summary
+  agent: Summarize the price changes on this page.
+  input: pages
+  output: { summary: str, prices_up: bool }
+```
+
+**Evidence.** Scraping breaks quietly: a late render, a layout change, a login wall. With
+`evidence: true` (or a folder path) every page read is kept under
+`.agentl/evidence/<date>/<time>-<page>.html`, with the `.md` next to it and, for
+`browser.scrape`, a full-page `.png` screenshot. The paths are in the record
+(`_evidence_html`, `_evidence_markdown`, `_evidence_screenshot`), so the step output says where
+to look. `evidence_keep_days` deletes older date folders at the start of the step.
+A page that is still empty after `retry_if_empty` comes back as a record with an empty
+`markdown` (`_empty: true` in the browser) and its evidence, instead of disappearing.
+
+Pages that need clicks or forms still go through `browser.scrape` with `steps`. For an agent that
+navigates on its own, give an agent step a browser MCP server as a tool (for example
+[Playwright MCP](https://github.com/microsoft/playwright-mcp), see
+[Tools and MCP servers](agents.md#tools-and-mcp-servers)) rather than scripting every click.
 
 ## Email (IMAP)
 

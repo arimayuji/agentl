@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `format: markdown` on `html.read` and `extract: markdown` on `browser.scrape`: the page's main
+  content as clean Markdown (`agentl-etl[web]`, trafilatura). `evidence` keeps the HTML, the
+  Markdown and a screenshot of every page, with `evidence_keep_days`; `retry_if_empty` reads a page again.
 - `agentl mcp`: an MCP server over stdio with `validate`, `diagram`, `run_pipeline`, `list_runs`,
   `get_run`, `list_failures`, `doctor` and `list_connectors`, for Claude Code, Claude Desktop and Cursor.
 - `agentl new "description"`: an LLM writes the pipeline YAML, validation errors go back to it, and

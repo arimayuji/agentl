@@ -255,6 +255,26 @@ MCP server (`mcp:crm`) only brings its read-only tools.
     only the tools it needs, prefer `allow_hosts`, and never pass secrets the model could echo into
     a tool argument.
 
+### A browser as a tool
+
+For pages an agent has to explore (search, follow links, paginate), use an existing browser MCP
+server instead of a scraping script:
+
+```yaml
+mcp:
+  browser: { command: [npx, -y, "@playwright/mcp@latest", --headless] }
+steps:
+  - id: find
+    agent: Open the supplier's site and find the current price list URL.
+    input: suppliers
+    tools: [mcp:browser]
+    max_tool_calls: 15
+    output: { price_list_url: str? }
+```
+
+Browser MCP tools that click and type are usually not marked read-only, so list the ones you
+allow in `write_tools`. Pages the agent reads are untrusted input: see below.
+
 ## Security: untrusted data in prompts
 
 Records often come from places you do not control: web pages, emails, PDFs. A record can contain
