@@ -8,6 +8,7 @@ agentl runs
 agentl connectors
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
+agentl stats [PIPELINE] [--since 30d] [--json]
 agentl mcp
 agentl dashboard [--host 127.0.0.1] [--port 7070]
 ```
@@ -60,6 +61,31 @@ agentl doctor 20261014-091203-ab12cd --suggest --pipeline invoices.yaml
 `doctor` reads the run store: the step that failed, its error, check findings, rejected records
 and the steps that finished. No LLM is called unless you pass `--suggest`, which adds a suggested
 fix (with `--pipeline`, the model also sees the YAML).
+
+## Track record
+
+```bash
+agentl stats                     # every pipeline, last 30 days
+agentl stats daily-sales --since 90d
+agentl stats --json              # the same report as JSON
+```
+
+```text
+daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
+  duration: median 41.2s, p95 63.0s
+  cost: 1.8400 USD
+  last run: 20261014-090012-1a2b3c succeeded
+  failures by reason:
+      3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
+      1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
+  run days, oldest first (. all ok, x some failed): ....x.......x..x.....
+```
+
+Failures are grouped by the step that failed first and the error with what changes between runs
+taken out (numbers, ids, paths, URLs), so the same timeout on different days counts as one
+reason. Pass the run id to `agentl doctor` for the details. The dashboard shows the same numbers
+for the last 30 days, and the MCP server has a `pipeline_stats` tool. Everything is computed from
+the run store; nothing extra is recorded.
 
 ## Diagram
 

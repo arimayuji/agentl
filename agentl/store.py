@@ -114,6 +114,23 @@ class Store:
             (limit,),
         )
 
+    def history(self, since: float, pipeline: str | None = None) -> list[dict]:
+        """Every run started at or after `since` (epoch seconds), oldest first."""
+        where = "started >= ?" + (" AND pipeline = ?" if pipeline else "")
+        params: tuple = (since, pipeline) if pipeline else (since,)
+        cols = "id, pipeline, status, started, finished, error"
+        return self._query(f"SELECT {cols} FROM {{runs}} WHERE {where} ORDER BY started", params)
+
+    def events_of(self, since: float, types: tuple[str, ...]) -> list[dict]:
+        """Events of the given types recorded at or after `since`, for aggregate views."""
+        marks = ", ".join("?" for _ in types)
+        rows = self._query(
+            "SELECT run_id, ts, type, step, data FROM {events} "
+            f"WHERE ts >= ? AND type IN ({marks}) ORDER BY id",
+            (since, *types),
+        )
+        return [{**r, "data": self._load(r["data"])} for r in rows]
+
     def run(self, run_id: str) -> dict | None:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
         return rows[0] if rows else None

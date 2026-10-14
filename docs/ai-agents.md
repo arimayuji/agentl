@@ -41,6 +41,7 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `list_runs`, `get_run` | Recent runs; one run with its events |
 | `list_failures` | Recent failed runs with the failing step and error |
 | `doctor` | Why a run failed, as text |
+| `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline |
 | `list_connectors` | Installed connectors and their parameters |
 
 `run_pipeline` is the only tool marked as not read-only, so clients that ask before side effects
