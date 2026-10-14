@@ -28,9 +28,7 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Later
 
-| Feature | Issue |
-|---|---|
-| Cloud integrations: secrets managers, serverless runs, AWS / GCP / Azure services | [#29](https://github.com/arimayuji/agentl/issues/29) |
+Everything on the earlier list has shipped. Ideas and requests go to [issues](https://github.com/arimayuji/agentl/issues).
 
 ## Missing something?
 

@@ -306,9 +306,17 @@ class PipelineSpec(BaseModel):
 
 
 def interpolate(value: Any, env: Mapping[str, str] | None = None) -> Any:
-    """Replace ${VAR} and ${VAR:-default} recursively. Missing vars raise."""
+    """Replace ${VAR} and ${VAR:-default} recursively, and secret references such as
+    ${aws-sm:prod/pg_dsn} (see agentl.secrets). Missing vars raise."""
     env = os.environ if env is None else env
     if isinstance(value, str):
+        from . import secrets
+
+        if found := secrets.SECRET.search(value):
+            try:
+                value = secrets.substitute(value)
+            except Exception as e:
+                raise SpecError(f"could not read secret {found.group(0)!r}: {e}") from e
 
         def sub(m: re.Match) -> str:
             name, default = m.group(1), m.group(2)

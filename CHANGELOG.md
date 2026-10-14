@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Secret references resolved at load time and kept out of the run store: `${aws-sm:...}`
+  (with `#key` for JSON secrets), `${ssm:...}`, `${gcp-sm:...}`, `${azure-kv:...}`.
+- `provider: azure-openai` (Azure OpenAI v1 API). New Cloud page with deployment recipes for
+  Cloud Run jobs, Azure Container Apps jobs and AWS.
 - Queues and streams: `kafka.consume` / `kafka.produce`, `sqs.receive` / `sqs.send`,
   `rabbitmq.consume` / `rabbitmq.publish`, `pubsub.pull` / `pubsub.publish`. Consumers read a
   micro-batch and acknowledge it only after the run succeeds (at-least-once); connectors can
