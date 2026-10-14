@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
 ### Security
 
 - `agentl mcp`: `run_pipeline` only runs pipeline files under `--root` (default: the working
@@ -297,7 +299,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/arimayuji/agentl/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/arimayuji/agentl/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arimayuji/agentl/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/arimayuji/agentl/compare/v0.5.0...v0.5.1

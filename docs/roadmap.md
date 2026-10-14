@@ -6,6 +6,11 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.7.0**: agent tools and MCP servers, data checks, Excel and versioned outputs, web pages as
+  Markdown, `agentl mcp` / `new` / `doctor` / `stats` / `serve` (schedules, webhooks, new files),
+  `wait_until`, Google Sheets and Drive, SharePoint and OneDrive, GraphQL, Kafka / SQS / RabbitMQ /
+  Pub/Sub, secret references for AWS / GCP / Azure, Azure OpenAI, benchmarks against plain Python,
+  evals, before-and-after cases and a security hardening pass.
 - **0.6.1**: fixes copying and pickling `RunResult` and outputs that could show Arrow tables.
 - **0.6.0**: performance: reproducible benchmarks, prompt caching, several records per call and
   batch mode for agent steps, independent steps in parallel, chunked streaming for large inputs and
