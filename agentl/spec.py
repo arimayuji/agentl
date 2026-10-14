@@ -39,6 +39,8 @@ class PriceSpec(BaseModel):
 
     input: float = Field(ge=0)
     output: float = Field(ge=0)
+    cache_read: float | None = Field(default=None, ge=0)  # cached input; default: same as input
+    cache_write: float | None = Field(default=None, ge=0)  # input written to the cache; default: input
 
 
 class LLMSpec(BaseModel):
@@ -48,10 +50,17 @@ class LLMSpec(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     price: PriceSpec | None = None
 
-    def cost(self, input_tokens: int, output_tokens: int) -> float:
-        if self.price is None:
+    def cost(self, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float:
+        """`input_tokens` is all input; `cache_read` and `cache_write` are the parts of it that hit
+        or filled the provider's prompt cache, priced separately when the price says so."""
+        p = self.price
+        if p is None:
             return 0.0
-        return (input_tokens * self.price.input + output_tokens * self.price.output) / 1_000_000
+        read = p.input if p.cache_read is None else p.cache_read
+        write = p.input if p.cache_write is None else p.cache_write
+        plain = max(0, input_tokens - cache_read - cache_write)
+        usd = plain * p.input + cache_read * read + cache_write * write + output_tokens * p.output
+        return usd / 1_000_000
 
 
 class BudgetSpec(BaseModel):
@@ -75,6 +84,7 @@ class StepSpec(BaseModel):
     output: dict[str, str] | None = None
     llm: str = "default"
     concurrency: int = 4
+    records_per_call: int = Field(default=1, ge=1, le=200)
     cache: bool | None = None  # default: True for agent steps
 
     @model_validator(mode="after")
@@ -84,6 +94,8 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
+        if self.records_per_call > 1 and "index" in (self.output or {}):
+            raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
         return self
 
     @property

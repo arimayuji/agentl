@@ -181,16 +181,30 @@ def http_fanout(scale: float) -> dict:
 
 # ---------------------------------------------------------------- agent steps
 class _FakeLLM:
-    """Fixed latency, fixed token usage: measures agentl's overhead and concurrency, not a model."""
+    """Fixed latency and a simple token model: measures agentl's overhead, concurrency and how the
+    call shape changes tokens, not a model. Each call pays a 400-token prefix (system, instruction,
+    schema) plus 60 input and 40 output tokens per record. With `options.prompt_cache` the prefix
+    is reported as a cache read after the first call, the way providers do."""
 
     latency = 0.02
+    prefix, per_in, per_out = 400, 60, 40
 
     def __init__(self, spec):
-        pass
+        self.cache = bool(spec.options.get("prompt_cache"))
+        self.warm = False
 
     def structured(self, instruction, record, schema):
         time.sleep(self.latency)
-        return Result(schema.model_validate({"category": "software", "ok": True}), 400, 40)
+        recs = record.get("records")
+        n = len(recs) if recs is not None else 1
+        tin, tout = self.prefix + n * self.per_in, n * self.per_out
+        read = self.prefix if self.cache and self.warm else 0
+        self.warm = True
+        answer = {"category": "software", "ok": True}
+        if recs is None:
+            return Result(schema.model_validate(answer), tin, tout, read)
+        items = [{"index": r["index"], **answer} for r in recs]
+        return Result(schema.model_validate({"items": items}), tin, tout, read)
 
     def text(self, instruction, content):
         return ""
@@ -199,11 +213,13 @@ class _FakeLLM:
 register_provider("bench-fake", _FakeLLM)
 
 
-def _agent_spec(concurrency: int):
+def _agent_spec(concurrency: int, per_call: int = 1, prompt_cache: bool = False):
+    price = {"input": 3.0, "output": 15.0, "cache_read": 0.3}
+    opts = {"prompt_cache": True} if prompt_cache else {}
     return parse(
         {
             "name": "bench",
-            "llm": {"provider": "bench-fake", "model": "m", "price": {"input": 3.0, "output": 15.0}},
+            "llm": {"provider": "bench-fake", "model": "m", "price": price, "options": opts},
             "steps": [
                 {"id": "src", "fn": "benchmarks.scenarios:_rows"},
                 {
@@ -211,6 +227,7 @@ def _agent_spec(concurrency: int):
                     "agent": "Classify.",
                     "input": "src",
                     "concurrency": concurrency,
+                    "records_per_call": per_call,
                     "output": {"category": "str", "ok": "bool"},
                 },
             ],
@@ -262,6 +279,44 @@ def agent_cache(scale: float) -> dict:
     }
 
 
+def agent_call_shapes(scale: float) -> dict:
+    """Same 500 records, concurrency 8: one record per call, prompt caching, 20 records per call."""
+    global _N_AGENT
+    _N_AGENT = int(500 * scale)
+    d = _tmp()
+    out = {}
+    for name, kw in (
+        ("default", {}),
+        ("prompt_cache", {"prompt_cache": True}),
+        ("per_call_20", {"per_call": 20}),
+    ):
+        with Store(d / f"{name}.db") as store:
+            r, s = _timed(
+                lambda kw=kw, store=store: Runner(_agent_spec(8, **kw), store=store, use_cache=False).run()
+            )
+        assert r.status == "succeeded", r.error
+        out[name] = {
+            "calls": r.llm_calls,
+            "tokens": r.input_tokens + r.output_tokens,
+            "cached_tokens": r.cache_read_tokens,
+            "cost_usd": round(r.cost_usd, 4),
+            "seconds": round(s, 2),
+        }
+    base, cache, many = (
+        out["default"]["cost_usd"],
+        out["prompt_cache"]["cost_usd"],
+        out["per_call_20"]["cost_usd"],
+    )
+    return {
+        "summary": (
+            f"{base} USD; prompt cache {cache} ({base / cache:.1f}x less), "
+            f"20 per call {many} ({base / many:.1f}x less)"
+        ),
+        "records": _N_AGENT,
+        **out,
+    }
+
+
 ALL = [
     ("import", import_time),
     ("csv.read", csv_read),
@@ -271,4 +326,5 @@ ALL = [
     ("http.get fan-out", http_fanout),
     ("agent step", agent_step),
     ("agent cache re-run", agent_cache),
+    ("agent call shapes", agent_call_shapes),
 ]

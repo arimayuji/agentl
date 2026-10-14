@@ -36,8 +36,10 @@ def schema_model(name: str, fields: dict[str, str]) -> type[BaseModel]:
 @dataclass
 class Result:
     value: BaseModel
-    input_tokens: int = 0
+    input_tokens: int = 0  # all input tokens, cached ones included
     output_tokens: int = 0
+    cache_read_tokens: int = 0  # part of input_tokens read from the provider's prompt cache
+    cache_write_tokens: int = 0  # part of input_tokens written to it
 
 
 class InvalidOutput(ValueError):
@@ -64,12 +66,23 @@ SYSTEM = (
 )
 
 
-def user_message(instruction: str, record: dict) -> str:
-    """The instruction, then the record as JSON inside a <record> block. Angle brackets in the data
-    are written as JSON unicode escapes (same values once parsed), so a record cannot close the
-    block early or fake another one."""
+def message_parts(instruction: str, record: dict) -> tuple[str, str]:
+    """(instruction part, record part) of the user message. The first is the same for every record
+    of a step, so providers can cache it; the second is the record as JSON inside a <record> block.
+    Angle brackets in the data are written as JSON unicode escapes (same values once parsed), so a
+    record cannot close the block early or fake another one."""
     data = json.dumps(record, ensure_ascii=False, default=str).replace("<", "\\u003c").replace(">", "\\u003e")
-    return f"Instruction: {instruction}\n\n<record>\n{data}\n</record>"
+    return f"Instruction: {instruction}", f"<record>\n{data}\n</record>"
+
+
+def user_message(instruction: str, record: dict) -> str:
+    return "\n\n".join(message_parts(instruction, record))
+
+
+def _cache_option(spec: LLMSpec, default: bool) -> tuple[bool, dict[str, Any]]:
+    """Pops `options.prompt_cache` so it is not sent to the API."""
+    opts = dict(spec.options)
+    return bool(opts.pop("prompt_cache", default)), opts
 
 
 class AnthropicProvider:
@@ -80,27 +93,36 @@ class AnthropicProvider:
             raise ImportError("pip install 'agentl-etl[anthropic]'") from e
         self.client = anthropic.Anthropic()
         self.spec = spec
+        # Prompt caching: the system prompt, schema and instruction are a stable prefix, marked
+        # with cache_control. Prefixes shorter than the model's minimum are simply not cached.
+        self.cache, self.options = _cache_option(spec, default=True)
 
     def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
-        msg = user_message(instruction, record)
+        head, body = message_parts(instruction, record)
+        head_block: dict[str, Any] = {"type": "text", "text": head}
+        if self.cache:
+            head_block["cache_control"] = {"type": "ephemeral"}
         resp = self.client.messages.parse(
             model=self.spec.model,
             max_tokens=self.spec.max_tokens,
             system=SYSTEM,
-            messages=[{"role": "user", "content": msg}],
+            messages=[{"role": "user", "content": [head_block, {"type": "text", "text": body}]}],
             output_format=schema,
-            **self.spec.options,
+            **self.options,
         )
         if resp.stop_reason == "refusal":
             raise RuntimeError("model refused this record")
-        return Result(resp.parsed_output, resp.usage.input_tokens, resp.usage.output_tokens)
+        u = resp.usage
+        read = getattr(u, "cache_read_input_tokens", 0) or 0
+        write = getattr(u, "cache_creation_input_tokens", 0) or 0
+        return Result(resp.parsed_output, u.input_tokens + read + write, u.output_tokens, read, write)
 
     def text(self, instruction: str, content: str) -> str:
         resp = self.client.messages.create(
             model=self.spec.model,
             max_tokens=self.spec.max_tokens,
             messages=[{"role": "user", "content": f"{instruction}\n\n{content}"}],
-            **self.spec.options,
+            **self.options,
         )
         return "".join(b.text for b in resp.content if b.type == "text")
 
@@ -121,14 +143,22 @@ class EchoProvider:
 
 def _strict_schema(schema: type[BaseModel]) -> dict:
     """JSON schema in the shape strict structured outputs expect: every field
-    required (optional ones are nullable) and no extra properties."""
+    required (optional ones are nullable) and no extra properties, nested models included."""
     js = schema.model_json_schema()
-    js["required"] = list(js.get("properties", {}))
-    js["additionalProperties"] = False
-    for prop in js.get("properties", {}).values():
-        prop.pop("default", None)
-        prop.pop("title", None)
-    js.pop("title", None)
+
+    def strict(obj: dict) -> None:
+        obj["required"] = list(obj.get("properties", {}))
+        obj["additionalProperties"] = False
+        for prop in obj.get("properties", {}).values():
+            prop.pop("default", None)
+            prop.pop("title", None)
+            if "properties" in prop.get("items", {}):
+                strict(prop["items"])
+        obj.pop("title", None)
+
+    strict(js)
+    for sub in js.get("$defs", {}).values():
+        strict(sub)
     return js
 
 
@@ -197,11 +227,13 @@ class OpenAICompatibleProvider:
             raise RuntimeError(f"model refused this record: {message['refusal']}")
         usage = resp.get("usage") or {}
         tin, tout = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        # OpenAI caches long prompt prefixes on its own and reports the hits here.
+        read = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
         try:
             value = schema.model_validate_json(message.get("content") or "{}")
         except ValidationError as e:
             raise InvalidOutput(str(e), tin, tout) from e
-        return Result(value, tin, tout)
+        return Result(value, tin, tout, read)
 
     def text(self, instruction: str, content: str) -> str:
         resp = self._chat([{"role": "user", "content": f"{instruction}\n\n{content}"}])
@@ -230,7 +262,8 @@ class BedrockProvider:
     that support tool use. Structured output uses a forced tool whose input schema is the step's
     output schema. Needs `agentl-etl[aws]`; credentials and region come from the AWS chain.
 
-    `options`: `region`, `endpoint_url`, `temperature`, `top_p`."""
+    `options`: `region`, `endpoint_url`, `temperature`, `top_p`, `prompt_cache` (adds a cache
+    point after the instruction; off by default because not every Bedrock model supports it)."""
 
     TOOL = "record_output"
 
@@ -244,7 +277,7 @@ class BedrockProvider:
             import boto3
         except ImportError as e:
             raise ImportError("pip install 'agentl-etl[aws]'") from e
-        opts = dict(spec.options)
+        self.cache, opts = _cache_option(spec, default=False)
         self.client = boto3.client(
             "bedrock-runtime",
             region_name=opts.pop("region", None),
@@ -262,7 +295,11 @@ class BedrockProvider:
         )
 
     def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
-        msg = user_message(instruction, record)
+        head, body = message_parts(instruction, record)
+        content: list[dict] = [{"text": head}]
+        if self.cache:
+            content.append({"cachePoint": {"type": "default"}})
+        content.append({"text": body})
         tool = {
             "toolSpec": {
                 "name": self.TOOL,
@@ -271,12 +308,13 @@ class BedrockProvider:
             }
         }
         resp = self._converse(
-            [{"role": "user", "content": [{"text": msg}]}],
+            [{"role": "user", "content": content}],
             system=[{"text": SYSTEM}],
             toolConfig={"tools": [tool], "toolChoice": {"tool": {"name": self.TOOL}}},
         )
         usage = resp.get("usage") or {}
-        tin, tout = usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+        read, write = usage.get("cacheReadInputTokens", 0), usage.get("cacheWriteInputTokens", 0)
+        tin, tout = usage.get("inputTokens", 0) + read + write, usage.get("outputTokens", 0)
         if resp.get("stopReason") == "guardrail_intervened":
             raise InvalidOutput("bedrock guardrail blocked this record", tin, tout)
         for block in resp["output"]["message"]["content"]:
@@ -285,7 +323,7 @@ class BedrockProvider:
                     value = schema.model_validate(block["toolUse"]["input"])
                 except ValidationError as e:
                     raise InvalidOutput(str(e), tin, tout) from e
-                return Result(value, tin, tout)
+                return Result(value, tin, tout, read, write)
         raise InvalidOutput("model did not return the structured output", tin, tout)
 
     def text(self, instruction: str, content: str) -> str:

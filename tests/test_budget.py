@@ -107,7 +107,13 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
     with Store(tmp_path / "db.sqlite") as store:
         result = Runner(spec, store=store, use_cache=False).run()
         detail = run_detail(store, result.run_id)
-    assert result.spend["a"] == {"input_tokens": 2000, "output_tokens": 1000, "cost_usd": 0.021}
+    assert result.spend["a"] == {
+        "input_tokens": 2000,
+        "output_tokens": 1000,
+        "cache_read_tokens": 0,
+        "llm_calls": 2,
+        "cost_usd": 0.021,
+    }
     assert set(result.spend) == {"a", "b"}  # only agent steps
     assert detail["spend"]["steps"]["b"]["cost_usd"] == pytest.approx(0.021)
     assert detail["spend"]["total"] == {"input_tokens": 4000, "output_tokens": 2000, "cost_usd": 0.042}

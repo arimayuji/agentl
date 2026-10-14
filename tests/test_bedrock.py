@@ -87,3 +87,47 @@ def test_invalid_output_is_rejected_in_a_pipeline(stub, tmp_path):
 
 def rows(input=None):
     return [{"i": 0}, {"i": 1}]
+
+
+def test_prompt_cache_adds_a_cache_point(stub):
+    stub.add_response(
+        "converse",
+        {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"toolUse": {"toolUseId": "t1", "name": "record_output", "input": {"ok": True}}}
+                    ],
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+                "inputTokens": 10,
+                "outputTokens": 2,
+                "totalTokens": 1212,
+                "cacheReadInputTokens": 1200,
+                "cacheWriteInputTokens": 0,
+            },
+            "metrics": {"latencyMs": 5},
+        },
+        {
+            "modelId": MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": "Instruction: Check."},
+                        {"cachePoint": {"type": "default"}},
+                        {"text": '<record>\n{"x": 1}\n</record>'},
+                    ],
+                }
+            ],
+            "inferenceConfig": {"maxTokens": 4096},
+            "system": ANY,
+            "toolConfig": ANY,
+        },
+    )
+    prov = provider(LLMSpec(provider="bedrock", model=MODEL, options={"prompt_cache": True}))
+    out = prov.structured("Check.", {"x": 1}, schema_model("o", {"ok": "bool"}))
+    assert (out.input_tokens, out.cache_read_tokens) == (1210, 1200)
