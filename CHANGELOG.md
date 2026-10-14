@@ -11,6 +11,14 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Prompt caching for agent steps: the instruction is a stable prefix, marked with `cache_control` on
+  Anthropic (on by default) and a `cachePoint` on Bedrock (`options.prompt_cache: true`). Cache hits
+  are reported as `cache_read_tokens` (Anthropic, OpenAI, Bedrock) and priced with the new
+  `price.cache_read` / `price.cache_write`.
+- `records_per_call` on agent steps: several records per request, each item validated on its own;
+  bad or missing items fall back to a single-record call.
+- `llm_calls` and `cache_read_tokens` in `RunResult` and in each step's spend.
+- `agent call shapes` benchmark.
 - Reproducible benchmarks (`python -m benchmarks`): import time, CSV, transforms, SQLite, Postgres
   upsert, HTTP fan-out, agent step throughput and cache re-run. Results and method on the new
   Performance docs page; CI runs them on tags and weekly.
@@ -24,6 +32,13 @@ They are always listed under **Changed** or **Removed**.
   It follows the newest run until you pick one.
 - Faster `import agentl` (about 209 ms to 158 ms): `urllib`, `smtplib`, `ssl` and entry points are
   imported only when used.
+- Anthropic and Bedrock requests send the instruction and the record as two content blocks of the
+  user message (same text as before), so the instruction can be cached.
+
+### Fixed
+
+- `python -m benchmarks --only` with no matching scenario now says so instead of crashing; the docs
+  showed the wrong syntax for it.
 
 ## [0.5.1] - 2026-10-14
 

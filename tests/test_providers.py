@@ -15,7 +15,13 @@ from agentl.store import Store
 def fake_api():
     """A local OpenAI-style /chat/completions endpoint. Set `state["reply"]` to a
     content string, or `state["status"]` to fail the next calls."""
-    state: dict = {"requests": [], "reply": "{}", "status": [], "refusal": None}
+    state: dict = {
+        "requests": [],
+        "reply": "{}",
+        "status": [],
+        "refusal": None,
+        "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+    }
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -30,7 +36,7 @@ def fake_api():
                 self.wfile.write(b'{"error": "boom"}')
                 return
             msg = {"role": "assistant", "content": state["reply"], "refusal": state["refusal"]}
-            out = {"choices": [{"message": msg}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}
+            out = {"choices": [{"message": msg}], "usage": state["usage"]}
             data = json.dumps(out).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -152,3 +158,15 @@ def test_record_is_delimited_untrusted_data(fake_api):
     prov.structured("Check it.", evil, schema_model("o", {"ok": "bool"}))
     sent = fake_api["requests"][-1]["body"]["messages"]
     assert sent[0]["content"] == SYSTEM and sent[1]["content"] == msg
+
+
+def test_openai_cached_tokens_are_reported(fake_api):
+    fake_api["reply"] = '{"ok": true}'
+    fake_api["usage"] = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 5,
+        "prompt_tokens_details": {"cached_tokens": 1536},
+    }
+    prov = provider(spec(options={"base_url": fake_api["url"]}))
+    out = prov.structured("x", {}, schema_model("o", {"ok": "bool"}))
+    assert (out.input_tokens, out.cache_read_tokens) == (2000, 1536)

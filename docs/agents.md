@@ -103,6 +103,54 @@ llm:
 
 Notify on it like any event: `on: [budget.exceeded]`.
 
+## Cutting cost and latency
+
+Two options change how an agent step talks to the model. Neither changes the per-record cache:
+a record answered once is not sent again, whatever the setting.
+
+### Prompt caching
+
+The system prompt, the output schema and the step's instruction are the same for every record, so
+they go first and the record goes last. Providers can then reuse that prefix:
+
+| Provider | What agentl does | Turn off / on |
+| --- | --- | --- |
+| `anthropic` | Marks the instruction with `cache_control` | `options: { prompt_cache: false }` |
+| `openai`, `openai-compatible` | Nothing to mark: OpenAI caches long prefixes on its own | n/a |
+| `bedrock` | Adds a `cachePoint` after the instruction | `options: { prompt_cache: true }` (off by default: not every Bedrock model supports it) |
+
+Providers only cache prefixes above a minimum size (around 1,000 tokens or more, depending on the
+model), so a short instruction is not cached. Cache hits are reported as `cache_read_tokens` in
+`RunResult`, `RunResult.spend` and the step events. Give them their price to see the saving:
+
+```yaml
+price: { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 }   # example values
+```
+
+Without `cache_read` / `cache_write`, cached tokens are priced as normal input, so `max_usd`
+never undercounts.
+
+### Several records per call
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  input: expenses
+  records_per_call: 20
+  output: { category: str }
+```
+
+The step sends 20 records in one request (as a list, each with an `index`) and expects one item per
+record back. The fixed part of the prompt is paid once per call instead of once per record.
+
+- Each item is validated on its own. An item that is missing, duplicated or invalid is retried as a
+  single-record call; the other items of the call are kept.
+- Each record is still cached on its own, with the same key as `records_per_call: 1`.
+- Budget and spend count each call once. `llm_calls` in `RunResult.spend` shows how many were made.
+- Bigger groups mean longer answers per call and more to redo when a call fails. Start around
+  10 to 20, and lower it if items come back wrong. The output schema cannot have a field named
+  `index`.
+
 ## Security: untrusted data in prompts
 
 Records often come from places you do not control: web pages, emails, PDFs. A record can contain

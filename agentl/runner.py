@@ -3,6 +3,7 @@ record, emits events to the store, the dashboard and notifications."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from . import graph, llm, registry
 from .notify import Notifier
@@ -35,6 +36,8 @@ class RunResult:
     error: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0  # part of input_tokens served from provider prompt caches
+    llm_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
 
@@ -103,21 +106,39 @@ class Runner:
         except Exception as e:
             return f"(summary unavailable: {e})"
 
-    def _record_spend(self, step: StepSpec, before: tuple[int, int, float], result: RunResult) -> None:
+    @staticmethod
+    def _counters(result: RunResult) -> tuple[int, int, int, int, float]:
+        return (
+            result.input_tokens,
+            result.output_tokens,
+            result.cache_read_tokens,
+            result.llm_calls,
+            result.cost_usd,
+        )
+
+    def _record_spend(self, step: StepSpec, before: tuple, result: RunResult) -> None:
         if step.kind != "agent":
             return
+        now = self._counters(result)
         result.spend[step.id] = {
-            "input_tokens": result.input_tokens - before[0],
-            "output_tokens": result.output_tokens - before[1],
-            "cost_usd": round(result.cost_usd - before[2], 6),
+            "input_tokens": now[0] - before[0],
+            "output_tokens": now[1] - before[1],
+            "cache_read_tokens": now[2] - before[2],
+            "llm_calls": now[3] - before[3],
+            "cost_usd": round(now[4] - before[4], 6),
         }
 
     # budget -------------------------------------------------------------
-    def _charge(self, result: RunResult, spec: LLMSpec, input_tokens: int, output_tokens: int) -> None:
+    def _charge(self, result: RunResult, spec: LLMSpec, usage: Any) -> None:
+        """`usage` is an `llm.Result` or an exception carrying the tokens of a failed call."""
+        tin, tout = getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0)
+        read, write = getattr(usage, "cache_read_tokens", 0), getattr(usage, "cache_write_tokens", 0)
         with self._spend:
-            result.input_tokens += input_tokens
-            result.output_tokens += output_tokens
-            result.cost_usd += spec.cost(input_tokens, output_tokens)
+            result.input_tokens += tin
+            result.output_tokens += tout
+            result.cache_read_tokens += read
+            result.llm_calls += 1
+            result.cost_usd += spec.cost(tin, tout, read, write)
 
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
@@ -141,11 +162,18 @@ class Runner:
         prov = self._provider(step.llm)
         llm_spec = self.spec.llm[step.llm]
         cacheable = self.use_cache and step.cached
+        llm_key = llm_spec.model_dump(exclude={"price"})
+
+        def key(rec: dict) -> str:
+            # records_per_call is not part of the key: the answer per record is the same.
+            return _hash("agent", step.agent, step.output, llm_key, rec)
+
+        def done(rec: dict, out: dict) -> tuple[dict, None]:
+            if cacheable:
+                self.store.cache_set(key(rec), out)
+            return {**rec, **out}, None
 
         def one(rec: dict) -> tuple[dict | None, dict | None]:
-            key = _hash("agent", step.agent, step.output, llm_spec.model_dump(exclude={"price"}), rec)
-            if cacheable and (hit := self.store.cache_get(key)) is not None:
-                return {**rec, **hit}, None
             last: Exception | None = None
             for _ in range(2):  # one retry on invalid output
                 self._check_budget(result)
@@ -153,26 +181,64 @@ class Runner:
                     res = prov.structured(step.agent or "", rec, schema)
                 except (ValidationError, ValueError, RuntimeError) as e:
                     # Invalid answers still cost tokens: count them for budget and spend.
-                    self._charge(
-                        result, llm_spec, getattr(e, "input_tokens", 0), getattr(e, "output_tokens", 0)
-                    )
+                    self._charge(result, llm_spec, e)
                     last = e
                     continue
-                self._charge(result, llm_spec, res.input_tokens, res.output_tokens)
-                out = res.value.model_dump()
-                if cacheable:
-                    self.store.cache_set(key, out)
-                return {**rec, **out}, None
+                self._charge(result, llm_spec, res)
+                return done(rec, res.value.model_dump())
             return None, {**rec, "_error": str(last)}
 
+        batch_schema = _batch_schema(step.id, schema)
+
+        def many(group: list[dict]) -> list[tuple[dict | None, dict | None]]:
+            """One call for the whole group. Items that come back missing, duplicated or invalid
+            fall back to one call per record, so a bad item never drops its neighbours."""
+            outs: dict[int, dict] = {}
+            self._check_budget(result)
+            payload = {"records": [{"index": i, "record": r} for i, r in enumerate(group)]}
+            try:
+                res = prov.structured(_batch_instruction(step.agent or "", len(group)), payload, batch_schema)
+            except (ValidationError, ValueError, RuntimeError) as e:
+                self._charge(result, llm_spec, e)
+            else:
+                self._charge(result, llm_spec, res)
+                seen: set[int] = set()
+                for item in res.value.model_dump()["items"]:
+                    i = item.pop("index", None)
+                    if not isinstance(i, int) or i in seen or not 0 <= i < len(group):
+                        outs.pop(i, None)
+                        continue
+                    seen.add(i)
+                    with contextlib.suppress(ValidationError):
+                        outs[i] = schema.model_validate(item).model_dump()
+            return [done(r, outs[i]) if i in outs else one(r) for i, r in enumerate(group)]
+
+        slots: list[tuple[dict | None, dict | None] | None] = [None] * len(records)
+        todo: list[int] = []
+        for i, rec in enumerate(records):
+            if cacheable and (hit := self.store.cache_get(key(rec))) is not None:
+                slots[i] = ({**rec, **hit}, None)
+            else:
+                todo.append(i)
+        size = step.records_per_call
+        groups = [todo[n : n + size] for n in range(0, len(todo), size)]
+        with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
+            if size == 1:
+                answers = pool.map(lambda g: [one(records[g[0]])], groups)
+            else:
+                answers = pool.map(lambda g: many([records[i] for i in g]), groups)
+            for g, answer in zip(groups, answers, strict=True):
+                for i, a in zip(g, answer, strict=True):
+                    slots[i] = a
         ok: Records = []
         bad: Records = []
-        with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
-            for good, rejected in pool.map(one, records):
-                if good is not None:
-                    ok.append(good)
-                elif rejected is not None:
-                    bad.append(rejected)
+        for slot in slots:
+            assert slot is not None
+            good, rejected = slot
+            if good is not None:
+                ok.append(good)
+            elif rejected is not None:
+                bad.append(rejected)
         if bad:
             result.rejected[step.id] = bad
             self._emit(
@@ -224,7 +290,7 @@ class Runner:
                 step = self.spec.step(step_id)
                 self._emit(run_id, "step.started", step_id, kind=step.kind)
                 t0 = time.time()
-                before = (result.input_tokens, result.output_tokens, result.cost_usd)
+                before = self._counters(result)
                 try:
                     out = self._run_step(run_id, step, result.outputs, result)
                 except Exception as e:
@@ -275,6 +341,23 @@ class Runner:
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+
+def _batch_schema(step_id: str, schema: type[BaseModel]) -> type[BaseModel]:
+    """The provider is asked for items in the step's schema (plus `index`), but the batch accepts
+    any objects: each item is validated on its own, so one bad item does not void the batch."""
+    item = create_model(f"{step_id}_item", __base__=schema, index=(int, ...)).model_json_schema()
+    item.pop("title", None)
+    items = Field(..., json_schema_extra={"items": item})
+    return create_model(f"{step_id}_batch", items=(list[dict[str, Any]], items))
+
+
+def _batch_instruction(instruction: str, n: int) -> str:
+    return (
+        f'{instruction}\n\nThe record holds a list of {n} records under "records", each with an '
+        '"index". Apply the instruction to each record on its own and answer with exactly one '
+        f'item per record in "items", with the same index ({n} items).'
+    )
 
 
 class PipelineFailed(RuntimeError):

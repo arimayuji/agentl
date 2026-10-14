@@ -36,6 +36,10 @@ def main() -> int:
         except scenarios.Skip as e:
             results.append({"scenario": name, "skipped": str(e)})
 
+    if not results:
+        names = ", ".join(name for name, _ in scenarios.ALL)
+        print(f"no scenario matched; available: {names}", file=sys.stderr)
+        return 2
     width = max(len(r["scenario"]) for r in results)
     py, arch, cpus = platform.python_version(), platform.machine(), os.cpu_count()
     print(f"\nagentl {agentl.__version__} · Python {py} · {arch} · {cpus} CPUs\n")
