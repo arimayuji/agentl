@@ -37,7 +37,7 @@ def test_cron_matching():
 
 
 def test_spec_validation():
-    with pytest.raises(ValueError, match="exactly one of cron, webhook or files"):
+    with pytest.raises(ValueError, match="exactly one of cron, webhook, files or every"):
         parse(
             {
                 "name": "x",

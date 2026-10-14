@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Queues and streams: `kafka.consume` / `kafka.produce`, `sqs.receive` / `sqs.send`,
+  `rabbitmq.consume` / `rabbitmq.publish`, `pubsub.pull` / `pubsub.publish`. Consumers read a
+  micro-batch and acknowledge it only after the run succeeds (at-least-once); connectors can
+  register this with `registry.after_run`. New trigger `every:` for back-to-back runs.
 - `trigger:` in the pipeline (`cron`, `webhook` with `secret`, `files` with a cursor in the run
   store) and `agentl serve` to run pipelines on them; a `use: trigger` step gets what started the
   run. Runs of one pipeline queue instead of overlapping.

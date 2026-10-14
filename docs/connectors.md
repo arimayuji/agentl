@@ -461,6 +461,46 @@ Credentials: an app registration with the Graph application permission `Sites.Re
 `Sites.Selected` granted on the site), through `MS_TENANT_ID`, `MS_CLIENT_ID` and
 `MS_CLIENT_SECRET`; or a ready token in `MS_ACCESS_TOKEN`. Standard library only.
 
+## Queues and streams
+
+Kafka, Amazon SQS, RabbitMQ and Google Pub/Sub, as micro-batches:
+
+```yaml
+name: invoice-events
+trigger:
+  - every: 30s                      # with agentl serve: run again, never two at once
+steps:
+  - id: events
+    use: kafka.consume
+    with: { brokers: "${KAFKA_BROKERS}", topic: invoices, group: agentl, max_records: 5000, max_seconds: 10 }
+  - id: classify
+    agent: Classify the cost center of this invoice line.
+    input: events
+    output: { cost_center: str }
+  - id: save
+    use: postgres.write
+    input: classify
+    with: { dsn: "${PG_DSN}", table: invoice_lines, mode: upsert, key: [topic, partition, offset] }
+```
+
+A consumer reads up to `max_records` messages or for `max_seconds`, whichever comes first. It
+acknowledges them only when the whole run succeeded: Kafka offsets are committed, SQS messages
+deleted, RabbitMQ and Pub/Sub messages acked. If any step fails, nothing is acknowledged and the
+broker delivers the messages again (at-least-once). Make the load idempotent, as the upsert on
+`topic, partition, offset` above does. A failed acknowledgement fails the run (`ack.failed`).
+
+| Read | Write | Install | Records read |
+| --- | --- | --- | --- |
+| `kafka.consume` (`brokers`, `topic`, `group`, `offset_reset`, `config`) | `kafka.produce` (`key` field, waits for delivery) | `[kafka]` | `value`, `key`, `topic`, `partition`, `offset`, `timestamp`, `headers` |
+| `sqs.receive` (`queue_url`, `release_on_failure`) | `sqs.send` (10 per request; FIFO `group_id`, `dedup_field`) | `[aws]` | `body`, `message_id`, `attributes` |
+| `rabbitmq.consume` (`url`, `queue`; requeued on failure) | `rabbitmq.publish` (persistent, publisher confirms) | `[rabbitmq]` | `body`, `routing_key`, `headers` |
+| `pubsub.pull` (`subscription`; deadline reset on failure) | `pubsub.publish` (waits for message ids) | `[pubsub]` | `data`, `attributes`, `message_id`, `publish_time` |
+
+Message bodies are parsed as JSON when they are JSON (`format: auto`); `format: json` fails on
+anything else, `format: text` keeps the text. Writers send each record as JSON, or one field of
+it (`value`, `body`, `data`). MQTT is not covered: its brokers acknowledge on receipt, which does
+not fit the ack-after-success model.
+
 ## Remote storage
 
 Every reader, `file.read`, `csv.write`, `json.write` and `parquet.write` accept remote paths:

@@ -145,6 +145,7 @@ class Runner:
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
+        self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
     # events -------------------------------------------------------------
@@ -491,7 +492,11 @@ class Runner:
         key = _hash("step", step.model_dump(by_alias=True), data)
         if self.use_cache and step.cached and (hit := self.store.cache_get(key)) is not None:
             return hit
-        out = fn(data, **step.with_)
+        token = registry._AFTER_RUN.set(self._after_run)
+        try:
+            out = fn(data, **step.with_)
+        finally:
+            registry._AFTER_RUN.reset(token)
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
@@ -871,6 +876,7 @@ class Runner:
             if self._toolbox is not None:  # MCP servers started for this run
                 self._toolbox.close()
                 self._toolbox = None
+        self._finish_after_run(run_id, result)
         self.store.finish_run(run_id, result.status, result.error)
         self._emit(
             run_id,
@@ -883,6 +889,22 @@ class Runner:
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+    def _finish_after_run(self, run_id: str, result: RunResult) -> None:
+        """Acknowledge (on success) or release (on failure) what queue consumers read. A failed
+        acknowledgement fails the run: the messages will be delivered again."""
+        hooks, self._after_run = self._after_run, []
+        for on_success, on_failure in hooks:
+            try:
+                if result.status == "succeeded":
+                    on_success()
+                elif on_failure is not None:
+                    on_failure()
+            except Exception as e:
+                self._emit(run_id, "ack.failed", error=f"{type(e).__name__}: {e}")
+                if result.status == "succeeded":
+                    result.status = "failed"
+                    result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"
 
 
 def _review_instruction(review: str) -> str:

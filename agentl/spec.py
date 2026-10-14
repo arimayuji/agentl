@@ -231,14 +231,16 @@ class TriggerSpec(BaseModel):
     webhook: str | None = None  # "/hooks/invoices"
     secret: str | None = None  # webhook: Bearer token or HMAC-SHA256 signature key
     files: str | None = None  # glob, local or remote: "inbox/*.csv", "s3://bucket/in/*.xlsx"
-    every: str | float = "1m"  # files: how often to look
+    every: str | float = "1m"  # files: how often to look; alone: run again at this interval
     storage_options: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
         kinds = [k for k in ("cron", "webhook", "files") if getattr(self, k)]
+        if not kinds and "every" in self.model_fields_set:
+            kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, webhook or files")
+            raise ValueError("a trigger has exactly one of cron, webhook, files or every")
         if self.cron:
             from .triggers import Cron
 
@@ -251,7 +253,9 @@ class TriggerSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        return "cron" if self.cron else "webhook" if self.webhook else "files"
+        if self.cron or self.webhook or self.files:
+            return "cron" if self.cron else "webhook" if self.webhook else "files"
+        return "every"
 
 
 class PipelineSpec(BaseModel):
