@@ -101,10 +101,29 @@ def test_failure_stops_new_steps_and_lets_running_ones_finish(tmp_path):
     assert failed == ["a"]
 
 
+def meet(input=None, name="x"):
+    """Waits (up to 5 s) until another step is running too, so the overlap does not depend on how
+    fast a CI machine starts threads; then holds a little longer."""
+    with LOCK:
+        ACTIVE["now"] += 1
+        ACTIVE["max"] = max(ACTIVE["max"], ACTIVE["now"])
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with LOCK:
+                if ACTIVE["max"] >= 2:
+                    break
+            time.sleep(0.01)
+        time.sleep(0.05)
+    finally:
+        with LOCK:
+            ACTIVE["now"] -= 1
+    return [{"src": name}]
+
+
 def test_parallel_limit_is_respected(tmp_path):
     many = [
-        {"id": f"s{i}", "fn": "tests.test_parallel_steps:slow", "with": {"name": f"s{i}", "seconds": 0.2}}
-        for i in range(4)
+        {"id": f"s{i}", "fn": "tests.test_parallel_steps:meet", "with": {"name": f"s{i}"}} for i in range(4)
     ]
     spec = parse({"name": "lim", "max_parallel_steps": 2, "steps": many})
     r, _, _ = run(tmp_path, spec)
