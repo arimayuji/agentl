@@ -111,15 +111,31 @@ def google_token(access_token: str | None, credentials: str | None, scopes: list
     return _cached(("google", path, tuple(scopes)), fetch)
 
 
-def ms_token(access_token: str | None, tenant: str | None, token_url: str | None) -> str:
+def ms_token(
+    access_token: str | None,
+    tenant: str | None,
+    token_url: str | None,
+    scope: str = "https://graph.microsoft.com/.default",
+    client: tuple[str | None, str | None] | None = None,
+) -> str:
+    """A Microsoft Entra token: a ready one, or the client credentials flow. `client` overrides
+    the MS_CLIENT_ID / MS_CLIENT_SECRET pair (Key Vault passes the AZURE_* names)."""
     token = access_token or os.environ.get("MS_ACCESS_TOKEN")
     if token:
         return token
     tenant = tenant or os.environ.get("MS_TENANT_ID")
-    client_id, secret = os.environ.get("MS_CLIENT_ID"), os.environ.get("MS_CLIENT_SECRET")
+    client_id, secret = (
+        client
+        if client and all(client)
+        else (
+            os.environ.get("MS_CLIENT_ID"),
+            os.environ.get("MS_CLIENT_SECRET"),
+        )
+    )
     if not (tenant and client_id and secret):
         raise ValueError(
-            "Microsoft Graph needs MS_ACCESS_TOKEN, or MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET"
+            "Microsoft needs an access token, or a tenant id, client id and client secret "
+            "(MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET; AZURE_* for Key Vault)"
         )
     url = token_url or f"{MS_LOGIN}/{tenant}/oauth2/v2.0/token"
 
@@ -129,13 +145,13 @@ def ms_token(access_token: str | None, tenant: str | None, token_url: str | None
                 "grant_type": "client_credentials",
                 "client_id": client_id,
                 "client_secret": secret,
-                "scope": "https://graph.microsoft.com/.default",
+                "scope": scope,
             }
         ).encode()
         res = _call("POST", url, data=form, headers={"Content-Type": "application/x-www-form-urlencoded"})
         return res["access_token"], res.get("expires_in", 3600)
 
-    return _cached(("ms", url, client_id), fetch)
+    return _cached(("ms", url, client_id, scope), fetch)
 
 
 # ---------------------------------------------------------------- GraphQL

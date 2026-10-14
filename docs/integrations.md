@@ -10,6 +10,7 @@ what you use (`pip install 'agentl-etl[postgres,s3]'`).
 <div><span class="wordmark">OpenAI</span></div>
 <div><img src="../assets/logos/ollama.svg" alt="" loading="lazy"><span>Ollama</span></div>
 <div><span class="wordmark">Amazon Bedrock</span></div>
+<div><span class="wordmark">Azure OpenAI</span></div>
 <div><span class="wordmark">OpenAI-compatible (vLLM, LM Studio, Groq)</span></div>
 </div>
 

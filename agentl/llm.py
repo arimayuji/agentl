@@ -316,9 +316,7 @@ class OpenAICompatibleProvider:
         import urllib.error  # imported here: most pipelines never use this provider
         import urllib.request
 
-        headers = {"Content-Type": content_type or "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = {"Content-Type": content_type or "application/json", **self._auth()}
         raw = data.encode() if isinstance(data, str) else data
         for attempt in range(self.retries + 1):
             req = urllib.request.Request(f"{self.base_url}{path}", raw, headers, method=method)
@@ -334,6 +332,9 @@ class OpenAICompatibleProvider:
                     raise
             time.sleep(2**attempt)
         raise RuntimeError("unreachable")
+
+    def _auth(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     def _structured_body(self, instruction: str, record: dict, schema: type[BaseModel]) -> dict:
         msg = user_message(instruction, record)
@@ -481,6 +482,25 @@ class OpenAIProvider(OpenAICompatibleProvider):
         return out
 
 
+class AzureOpenAIProvider(OpenAICompatibleProvider):
+    """Azure OpenAI (Azure AI Foundry) through its v1 API. `model` is the deployment name.
+    `options.endpoint` (or AZURE_OPENAI_ENDPOINT), key in AZURE_OPENAI_API_KEY (`api_key_env`)."""
+
+    api_key_env = "AZURE_OPENAI_API_KEY"
+    key_required = True
+
+    def __init__(self, spec: LLMSpec):
+        opts = dict(spec.options)
+        endpoint = opts.pop("endpoint", None) or os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        if not endpoint and "base_url" not in opts:
+            raise ValueError("llm provider 'azure-openai' needs options.endpoint or AZURE_OPENAI_ENDPOINT")
+        opts.setdefault("base_url", f"{endpoint.rstrip('/')}/openai/v1")
+        super().__init__(spec.model_copy(update={"options": opts}))
+
+    def _auth(self) -> dict[str, str]:
+        return {"api-key": self.api_key} if self.api_key else {}
+
+
 class OllamaProvider(OpenAICompatibleProvider):
     """Local models through Ollama (https://ollama.com). No key, no cost."""
 
@@ -572,6 +592,7 @@ _PROVIDERS: dict[str, Callable[[LLMSpec], Provider]] = {
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,
     "openai-compatible": OpenAICompatibleProvider,
+    "azure-openai": AzureOpenAIProvider,
     "echo": EchoProvider,
 }
 
