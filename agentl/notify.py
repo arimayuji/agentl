@@ -6,11 +6,7 @@ import json
 import logging
 import operator
 import re
-import smtplib
-import ssl
-import urllib.request
 from collections.abc import Callable
-from email.message import EmailMessage
 
 from .spec import Channel, NotifySpec, Rule
 
@@ -56,6 +52,8 @@ def format_text(event: dict, pipeline: str) -> str:
 
 
 def _post(url: str, payload: dict, headers: dict | None = None) -> None:
+    import urllib.request  # channels load their clients only when they send
+
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, default=str).encode(),
@@ -159,6 +157,10 @@ def _opsgenie(cfg: dict, text: str, event: dict) -> None:
 
 def _email(cfg: dict, text: str, event: dict) -> None:
     """SMTP. cfg: host, port (587), user, password, from, to (str or list), starttls (true), ssl (false)."""
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+
     msg = EmailMessage()
     msg["Subject"] = _title(event)
     msg["From"] = cfg.get("from") or cfg.get("user")

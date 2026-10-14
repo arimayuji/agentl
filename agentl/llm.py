@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -162,6 +160,9 @@ class OpenAICompatibleProvider:
         self.spec = spec
 
     def _chat(self, messages: list[dict], **body: Any) -> dict:
+        import urllib.error  # imported here: most pipelines never use this provider
+        import urllib.request
+
         payload = {"model": self.spec.model, "messages": messages, "max_tokens": self.spec.max_tokens}
         payload.update(self.extra)
         payload.update(body)
