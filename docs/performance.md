@@ -34,6 +34,58 @@ compare runs on the same machine, not across machines.
 | `parallel steps` | 1.08 s one at a time, 0.51 s in parallel | Two independent 0.5 s sources and a step on one of them, `max_parallel_steps` 1 vs 4 |
 | `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20`, 0.50 in batch mode | 500 records, fake provider with a 400-token fixed prefix (see below) |
 
+## With agentl and without it
+
+`python -m benchmarks --compare` runs the same jobs written three ways: with agentl, in plain
+Python as a careful developer would write it, and with pandas where it fits. Each variant runs in
+a fresh process and the run fails unless every variant wrote the same data. The plain variants do
+not import agentl. Imports and setup happen before the measurement starts.
+
+```bash
+python -m benchmarks --compare            # full run, median of 3
+python -m benchmarks --compare --quick    # 10% of the data, one run
+```
+
+agentl 0.6.1, Python 3.13, x86_64, 4 CPUs (a shared cloud container). Peak MB is the growth of
+the process peak RSS during the job; read and written MB are bytes through system calls
+(`/proc/self/io`, Linux only), so they include the run state agentl keeps in SQLite.
+
+**CSV → drop empty notes → keep 3 columns → SQLite**, 1M rows (70 MB CSV)
+
+| Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
+| --- | --- | --- | --- | --- | --- |
+| agentl, `chunk_size: 50000` | 5.33 | 5.13 | 60 | 67.2 | 33.3 |
+| plain Python, `csv` + `sqlite3` in batches | 3.01 | 2.90 | 0 | 65.7 | 32.9 |
+| pandas, `read_csv` + `to_sql` | 4.00 | 3.88 | 156 | 65.8 | 32.9 |
+
+**One LLM call per record**, 500 records, fake provider with 20 ms latency
+
+| Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
+| --- | --- | --- | --- | --- | --- |
+| agentl, `concurrency: 8` | 1.37 | 0.14 | 0 | 0.9 | 0.4 |
+| agentl, second run (answers from the cache) | 0.03 | 0.02 | 0 | 0.1 | 0.3 |
+| plain Python, a loop | 10.10 | 0.03 | 0 | 0.0 | 0.0 |
+| plain Python, 8 threads | 1.28 | 0.05 | 0 | 0.0 | 0.0 |
+
+**CSV → pandas function → Parquet**, 500k rows
+
+| Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
+| --- | --- | --- | --- | --- | --- |
+| agentl, `@dataframe` with the Arrow path | 0.63 | 0.97 | 0 | 32.0 | 2.9 |
+| pandas only | 0.97 | 0.96 | 0 | 20.1 | 2.5 |
+
+What this says:
+
+- On plain record work agentl costs time: about 1.8x the hand-written loop and 1.3x pandas on the
+  CSV job, for streaming in bounded memory (60 MB against 156 MB for pandas), run state, retries
+  and the event log. A tight script that streams by hand is faster and uses less memory.
+- On LLM work the time is the provider's. agentl matches 8 hand-written threads and is 7x faster
+  than a loop; the gain over hand-written code is the cache (a re-run of unchanged records makes
+  no calls), budgets and spend tracking, not raw speed.
+- With pandas, the Arrow path reads CSV with pyarrow and was faster than `pd.read_csv` here; it
+  reads more bytes because of the run state.
+- Peak MB of 0 means the job did not grow the process past what imports and setup had used.
+
 ## Call shapes
 
 `agent call shapes` runs the same 500 records four ways (concurrency 8, price 3 / 15 / 0.30 per

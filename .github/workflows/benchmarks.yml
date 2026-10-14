@@ -22,7 +22,10 @@ jobs:
           python-version: "3.13"
       - run: pip install -e .
       - run: python -m benchmarks --quick --json benchmarks.json
+      - run: python -m benchmarks --compare --quick --json compare.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: benchmarks-${{ github.sha }}
-          path: benchmarks.json
+          path: |
+            benchmarks.json
+            compare.json

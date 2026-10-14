@@ -21,9 +21,13 @@ def main() -> int:
     p.add_argument("--quick", action="store_true", help="smaller inputs, for CI")
     p.add_argument("--json", metavar="PATH", help="also write the results as JSON")
     p.add_argument("--only", nargs="*", help="run only these scenarios")
+    p.add_argument("--compare", action="store_true", help="the same jobs with and without agentl")
     a = p.parse_args()
 
     import agentl
+
+    if a.compare:
+        return _compare(a)
 
     scale = 0.1 if a.quick else 1.0
     results = []
@@ -60,6 +64,29 @@ def main() -> int:
         }
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "results": results}, f, indent=2)
+    return 0
+
+
+def _compare(a: argparse.Namespace) -> int:
+    import agentl
+
+    from . import compare
+
+    results = compare.run_all(0.1 if a.quick else 1.0, repeat=1 if a.quick else 3)
+    py, arch, cpus = platform.python_version(), platform.machine(), os.cpu_count()
+    print(f"\nagentl {agentl.__version__} · Python {py} · {arch} · {cpus} CPUs")
+    print(compare.table(results))
+    if a.json:
+        meta = {
+            "agentl": agentl.__version__,
+            "python": py,
+            "machine": arch,
+            "cpus": cpus,
+            "date": time.strftime("%Y-%m-%d"),
+            "quick": a.quick,
+        }
+        with open(a.json, "w") as f:
+            json.dump({"meta": meta, "compare": results}, f, indent=2)
     return 0
 
 
