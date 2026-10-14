@@ -148,6 +148,8 @@ class PipelineSpec(BaseModel):
     max_parallel_steps: int = Field(default=4, ge=1, le=64)
     # Stream linear chains (reader -> row-wise steps -> writer) this many records at a time.
     chunk_size: int | None = Field(default=None, ge=1)
+    # Pass pyarrow Tables between steps that can take them. None: when pyarrow is installed.
+    arrow: bool | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 

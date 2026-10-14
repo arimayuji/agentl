@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Columnar fast path with Apache Arrow (`agentl-etl[arrow]`): `csv.read`, `parquet.read` and
+  `@dataframe` steps pass pyarrow Tables to `parquet.write`, `postgres.write` (append and replace,
+  via `COPY`) and `@dataframe` steps when every consumer can take one. Same results; `arrow: false`
+  turns it off. Benchmarks: CSV to pandas to Parquet 10x faster, Parquet to Postgres 22x faster.
+- `parquet.write` connector.
 - `chunk_size` on the pipeline: linear chains (a streaming reader, row-wise steps and agent steps,
   a writer that appends) run chunk by chunk with bounded memory. Streaming readers: `csv.read`,
   `sqlite.read`, `postgres.read` (server-side cursor). Streaming writers: `csv.write`, `json.write`

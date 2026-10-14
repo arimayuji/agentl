@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from ..registry import connector, require, stream_reader, stream_writer
+from ..registry import arrow_reader, arrow_writer, connector, require, stream_reader, stream_writer
 from ._util import is_remote, origin, paths, single, tmpdir, upload
 
 log = logging.getLogger("agentl.files")
@@ -364,6 +364,60 @@ def csv_read_chunks(
         yield chunk
 
 
+def _sniff(p: Path, delimiter: str | None, encoding: str) -> tuple[str, list[str], bool]:
+    """(delimiter, header, starts with a BOM) the way `iter_csv` sees them."""
+    with p.open(newline="", encoding=encoding, errors="replace") as f:
+        sample = f.read(64 * 1024)
+        if delimiter is None:
+            try:
+                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+            except csv.Error:
+                delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
+        header = next(csv.reader(sample.splitlines() or [""], delimiter=delimiter), [])
+    return delimiter, header, sample.startswith("\ufeff")
+
+
+@arrow_reader("csv.read")
+def csv_read_arrow(
+    input: Any = None,
+    path: str | None = None,
+    url: str | None = None,
+    headers: dict | None = None,
+    storage_options: dict | None = None,
+    delimiter: str | None = None,
+    encoding: str = "utf-8",
+) -> Any:
+    """pyarrow's CSV reader with every column as text, like `csv.read`. Falls back to the normal
+    reader (and returns records) for anything it would read differently: several files, another
+    encoding, a BOM, duplicate or ragged columns, invalid UTF-8."""
+    files = paths(input, path, "path", url, headers, storage_options)
+    if len(files) != 1 or encoding.lower().replace("-", "") != "utf8":
+        return csv_read(input, path, url, headers, storage_options, delimiter, encoding)
+    pa = require("pyarrow", "arrow")
+    pacsv = require("pyarrow.csv", "arrow")
+    p = files[0]
+    sep, header, bom = _sniff(p, delimiter, encoding)
+    if bom or not header or len(set(header)) != len(header) or "\n" in "".join(header):
+        return [r for r in iter_csv(p, delimiter, encoding)]
+    try:
+        table = pacsv.read_csv(
+            str(p),
+            read_options=pacsv.ReadOptions(use_threads=True),
+            parse_options=pacsv.ParseOptions(delimiter=sep, newlines_in_values=True),
+            convert_options=pacsv.ConvertOptions(
+                column_types={h: pa.string() for h in header},
+                strings_can_be_null=False,
+                quoted_strings_can_be_null=False,
+                null_values=[],
+            ),
+        )
+    except pa.ArrowInvalid:
+        return [r for r in iter_csv(p, delimiter, encoding)]
+    if table.column_names != header or any(t != pa.string() for t in table.schema.types):
+        return [r for r in iter_csv(p, delimiter, encoding)]
+    return table
+
+
 @connector("json.read")
 def json_read(
     input: Any = None,
@@ -419,6 +473,28 @@ def parquet_read(
     columns: list[str] | None = None,
 ) -> Records:
     return _each(read_parquet, input, path, url, headers, columns=columns, storage_options=storage_options)
+
+
+@arrow_reader("parquet.read")
+def parquet_read_arrow(
+    input: Any = None,
+    path: str | None = None,
+    url: str | None = None,
+    headers: dict | None = None,
+    storage_options: dict | None = None,
+    columns: list[str] | None = None,
+) -> Any:
+    pa = require("pyarrow", "arrow")
+    pq = require("pyarrow.parquet", "arrow")
+    tables = [
+        pq.read_table(str(p), columns=columns)
+        for p in paths(input, path, "path", url, headers, storage_options)
+    ]
+    if not tables:
+        return []
+    if len(tables) > 1 and any(t.schema != tables[0].schema for t in tables):
+        return [r for t in tables for r in t.to_pylist()]  # same as the normal reader
+    return pa.concat_tables(tables)
 
 
 @connector("pdf.read")
@@ -523,6 +599,38 @@ def csv_write_chunks(
 @connector("csv.write")
 def csv_write(input: Any, path: str, delimiter: str = ",", storage_options: dict | None = None) -> Records:
     return csv_write_chunks([single(input)], path, delimiter, storage_options)
+
+
+def _parquet_target(path: str, storage_options: dict | None, write: Callable[[Path], None]) -> None:
+    local = _target(path)
+    write(local)
+    if is_remote(path):
+        upload(local, path, storage_options)
+
+
+@connector("parquet.write")
+def parquet_write(
+    input: Any, path: str, compression: str = "snappy", storage_options: dict | None = None
+) -> Records:
+    """Write records to a Parquet file (local or remote). Needs `agentl-etl[parquet]`."""
+    pa = require("pyarrow", "parquet")
+    pq = require("pyarrow.parquet", "parquet")
+    rows = single(input)
+    _parquet_target(
+        path,
+        storage_options,
+        lambda p: pq.write_table(pa.Table.from_pylist(rows), str(p), compression=compression),
+    )
+    return [{"path": path, "written": len(rows)}]
+
+
+@arrow_writer("parquet.write")
+def parquet_write_arrow(
+    data: Any, path: str, compression: str = "snappy", storage_options: dict | None = None
+) -> Records:
+    pq = require("pyarrow.parquet", "arrow")
+    _parquet_target(path, storage_options, lambda p: pq.write_table(data, str(p), compression=compression))
+    return [{"path": path, "written": data.num_rows}]
 
 
 @stream_writer("json.write")

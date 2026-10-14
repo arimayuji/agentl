@@ -62,6 +62,48 @@ def rowwise(name: str) -> None:
     _ROWWISE.add(name)
 
 
+# Columnar fast path (`agentl-etl[arrow]`). An Arrow reader returns a pyarrow Table; an Arrow
+# writer takes one. The runner uses them only on edges where both ends can, and only when pyarrow
+# is installed; everywhere else records stay dicts.
+ArrowReader = Callable[..., Any]
+ArrowWriter = Callable[..., Records]
+_ARROW_READERS: dict[str, ArrowReader] = {}
+_ARROW_WRITERS: dict[str, tuple[ArrowWriter, Callable[[dict], bool]]] = {}
+
+
+def arrow_reader(name: str) -> Callable[[ArrowReader], ArrowReader]:
+    """`fn(input, **with) -> pyarrow.Table` for connector `name`."""
+
+    def deco(fn: ArrowReader) -> ArrowReader:
+        _ARROW_READERS[name] = fn
+        return fn
+
+    return deco
+
+
+def arrow_writer(
+    name: str, accepts: Callable[[dict], bool] | None = None
+) -> Callable[[ArrowWriter], ArrowWriter]:
+    """`fn(table, **with) -> Records` for connector `name`. `accepts(with_)` says whether this step's
+    settings can take a table (for example, not in upsert mode)."""
+
+    def deco(fn: ArrowWriter) -> ArrowWriter:
+        _ARROW_WRITERS[name] = (fn, accepts or (lambda _: True))
+        return fn
+
+    return deco
+
+
+def arrow_available() -> bool:
+    return importlib.util.find_spec("pyarrow") is not None
+
+
+def arrow(name: str) -> tuple[ArrowReader | None, tuple[ArrowWriter, Callable[[dict], bool]] | None]:
+    """(Arrow reader, (Arrow writer, accepts)) for connector `name`."""
+    _load()
+    return _ARROW_READERS.get(name), _ARROW_WRITERS.get(name)
+
+
 def streaming(name: str) -> tuple[StreamReader | None, StreamWriter | None, bool]:
     """(stream reader, stream writer, row-wise) for connector `name`."""
     _load()
