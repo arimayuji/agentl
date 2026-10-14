@@ -19,7 +19,19 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/arimayuji/agentl/badge)](https://scorecard.dev/viewer/?uri=github.com/arimayuji/agentl)
 
-Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
+**Agentic ETL in YAML.** Read files, APIs and databases, let an LLM classify or extract each
+record against a schema, check the data, and deliver it. Per-record cache, budgets, retries and a
+live dashboard come built in.
+
+<p align="center"><img src="media/demo.gif" alt="agentl run twice: the second run of the same data makes 0 model calls, then the dashboard" width="820"></p>
+
+- **Pay once per record:** a re-run of unchanged data makes no model calls, and a job that failed
+  halfway only pays for what did not finish ([before and after](https://agentl.com.br/cases/)).
+- **Data you can trust:** `check` steps with fixed rules and an agent review before delivery.
+- **Works where your data is:** CSV, Excel, PDF, SQL, Postgres, S3, SharePoint, Google Sheets,
+  Kafka, SQS, webhooks, and an MCP server for Claude Code and Cursor.
+- **Honest numbers:** [benchmarks](https://agentl.com.br/performance/) and
+  [evals](https://agentl.com.br/evals/) against plain Python, including where it loses.
 
 > Status: beta (v0.6). Minor releases may still change the API; every change is in the [changelog](CHANGELOG.md).
 
