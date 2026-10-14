@@ -268,6 +268,13 @@ class Service:
                     if current >= due:
                         self.next_cron[(name, i)] = Cron(t.cron).next_after(current)
                         self.submit(spec, [{"scheduled_at": due.isoformat()}], "cron")
+                elif t.kind == "every":
+                    q = self.queues.get(name)
+                    running = q is not None and q.unfinished_tasks > 0
+                    if running or wall < self.next_files.get((name, i), 0):
+                        continue  # back to back, never piling up
+                    self.next_files[(name, i)] = wall + parse_duration(t.every)
+                    self.submit(spec, [{"started_at": _dt.datetime.fromtimestamp(wall).isoformat()}], "every")
                 elif t.files:
                     if wall < self.next_files.get((name, i), 0):
                         continue
@@ -337,7 +344,10 @@ class Service:
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             print(f"agentl serve: webhooks on http://{host}:{port} ({', '.join(sorted(self.routes))})")
         for name, spec in self.specs.items():
-            kinds = ", ".join(t.cron or t.webhook or f"files {t.files}" for t in spec.trigger)
+            kinds = ", ".join(
+                t.cron or t.webhook or (f"files {t.files}" if t.files else f"every {t.every}")
+                for t in spec.trigger
+            )
             print(f"  {name}: {kinds}")
         try:
             while not self._stop.wait(interval):

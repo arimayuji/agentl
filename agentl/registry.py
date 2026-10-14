@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import importlib.util
 import sys
@@ -204,3 +205,19 @@ def require(module: str, extra: str) -> Any:
         return import_module(module)
     except ImportError as e:
         raise ImportError(f"this connector needs '{module}': pip install 'agentl-etl[{extra}]'") from e
+
+
+# ---------------------------------------------------------------- after the run
+# Queue consumers acknowledge messages only once the whole run succeeded (at-least-once). A
+# connector registers what to do then; the runner calls it when the run ends.
+_AFTER_RUN: contextvars.ContextVar[list | None] = contextvars.ContextVar("agentl_after_run", default=None)
+
+
+def after_run(on_success: Callable[[], None], on_failure: Callable[[], None] | None = None) -> None:
+    """Call `on_success` when the current run succeeds, `on_failure` otherwise. Outside a run (a
+    connector called directly), `on_success` runs at once: there is no later point to wait for."""
+    hooks = _AFTER_RUN.get()
+    if hooks is None:
+        on_success()
+    else:
+        hooks.append((on_success, on_failure))

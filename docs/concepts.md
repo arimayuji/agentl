@@ -124,5 +124,5 @@ Set `cache: true` on other steps to cache them too, or run with `--no-cache` to 
 ## Events
 
 Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
-`wait.polled`, `wait.done`, `wait.timeout`, `source.empty`, `run.succeeded` and `run.failed`. They feed the run store, the dashboard and
+`wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded` and `run.failed`. They feed the run store, the dashboard and
 [notifications](notifications.md).
