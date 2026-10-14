@@ -197,3 +197,39 @@ def test_arrow_true_without_pyarrow_is_a_clear_error(tmp_path, monkeypatch):
     with Store(tmp_path / "s.db") as store:
         r = Runner(spec, store=store).run()
     assert r.status == "failed" and "agentl-etl[arrow]" in r.error
+
+
+def test_outputs_never_leak_a_table(tmp_path):
+    import copy
+    import json
+    import pickle
+
+    src = make_csv(tmp_path / "in.csv")
+    r, runner = run(tmp_path, csv_pandas_parquet(src, str(tmp_path / "o.parquet")), True)
+    assert runner._arrow_out == {"read", "clean"}
+    for view in (
+        dict(r.outputs),
+        {**r.outputs},
+        copy.deepcopy(r.outputs),
+        pickle.loads(pickle.dumps(r.outputs)),
+        dict(r.outputs.items()),
+    ):
+        assert all(isinstance(v, list) for v in dict.values(view))
+    assert "pyarrow" not in repr(r.outputs) and "pyarrow" not in str(r.outputs)
+    assert json.loads(json.dumps(r.outputs))["read"][0]["id"] == "0"
+    assert all(isinstance(v, list) for v in dict.values(r.outputs))  # converted in place by now
+
+
+def test_run_result_copies_and_pickles_without_arrow(tmp_path):
+    import copy
+    import pickle
+
+    src = make_csv(tmp_path / "in.csv")
+    spec = parse(
+        {"name": "p", "arrow": False, "steps": [{"id": "s", "use": "csv.read", "with": {"path": src}}]}
+    )
+    with Store(tmp_path / "s.db") as store:
+        r = Runner(spec, store=store).run()
+    assert r.status == "succeeded" and len(r.outputs["s"]) == 50
+    assert copy.deepcopy(r).outputs == r.outputs
+    assert pickle.loads(pickle.dumps(r)).outputs == r.outputs

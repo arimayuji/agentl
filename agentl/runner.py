@@ -57,7 +57,8 @@ def _is_table(value: Any) -> bool:
 
 class Outputs(dict):
     """Step outputs. With the Arrow fast path a step's output can be a pyarrow Table internally;
-    reading it from here gives records, converted once on first access."""
+    every way of reading it (indexing, iteration, `dict(...)`, `{**...}`, `json.dumps`, `repr`,
+    copy and pickle) gives records, converted once on first access."""
 
     def __init__(self, *args: Any, **kw: Any):
         super().__init__(*args, **kw)
@@ -75,6 +76,18 @@ class Outputs(dict):
                     value = value.to_pylist()
                     super().__setitem__(key, value)
         return value
+
+    def __iter__(self) -> Any:
+        # Overriding __iter__ makes dict(...) and {**...} go through keys() and __getitem__
+        # instead of copying the raw values.
+        return iter(list(super().keys()))
+
+    def __reduce__(self) -> Any:
+        # copy and pickle: plain records, without the lock
+        return (Outputs, (dict(self.items()),))
+
+    def __repr__(self) -> str:
+        return repr(dict(self.items()))
 
     def get(self, key: str, default: Any = None) -> Any:
         return self[key] if key in self else default  # noqa: SIM401 (self.get would recurse)

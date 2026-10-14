@@ -9,6 +9,16 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-14
+
+### Fixed
+
+- `RunResult` could not be copied or pickled (`copy.deepcopy`, `pickle`, task queues that pickle
+  results), because the outputs mapping added in 0.6.0 held a lock.
+- With the Arrow fast path, `repr(result.outputs)`, `dict(result.outputs)` and
+  `{**result.outputs}` could show a pyarrow Table instead of records. Every way of reading outputs
+  now gives records.
+
 ## [0.6.0] - 2026-10-14
 
 ### Added
@@ -203,7 +213,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/arimayuji/agentl/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arimayuji/agentl/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/arimayuji/agentl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/arimayuji/agentl/compare/v0.4.0...v0.5.0
