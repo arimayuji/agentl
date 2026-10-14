@@ -21,7 +21,9 @@
 
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
 
-> Status: early (v0.1). The API may change.
+> Status: beta (v0.6). Minor releases may still change the API; every change is in the [changelog](CHANGELOG.md).
+
+**For AI agents:** the docs are at [agentl.com.br/llms.txt](https://agentl.com.br/llms.txt), and every docs page has a raw Markdown copy (`<page>/index.md`).
 
 ## Install
 

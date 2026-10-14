@@ -13,21 +13,26 @@ theme:
   icon:
     repo: fontawesome/brands/github
   favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: indigo
-      accent: teal
-      toggle: { icon: material/weather-night, name: Switch to dark mode }
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: teal
+      primary: custom
+      accent: custom
       toggle: { icon: material/weather-sunny, name: Switch to light mode }
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
   features:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - navigation.tabs.sticky
+    - announce.dismiss
     - navigation.footer
     - navigation.instant
     - search.suggest
@@ -42,6 +47,7 @@ extra_css:
 extra_javascript:
   - assets/terminal.js
   - assets/clips.js
+  - assets/site.js
 
 nav:
   - Home: index.md
@@ -99,6 +105,7 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra:
+  version_label: v0.6
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/arimayuji/agentl

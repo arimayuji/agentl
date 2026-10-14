@@ -14,6 +14,11 @@ They are always listed under **Changed** or **Removed**.
 - The quickstart example is now in English: `examples/quickstart.yaml` (was `examples/notas.yaml`)
   with `examples/data/invoices.csv` and `customers.json`, steps `invoices`, `customers`, `matched`,
   `classify` and `save`. The invoices example and tests use `tax_id` and `INV-` numbers.
+- New docs site design: dark first with the brand colors, a landing page with the launch video,
+  feature clips, benchmarks and a section for AI coding agents, and a cleaner header in both themes.
+- Every docs page has *Copy as Markdown*, *Ask Claude* and *Ask ChatGPT* buttons, and its Markdown is
+  published next to it (`<page>/index.md`, linked as `text/markdown`).
+- PyPI metadata: more keywords and classifiers, status Beta.
 
 ## [0.6.1] - 2026-10-14
 

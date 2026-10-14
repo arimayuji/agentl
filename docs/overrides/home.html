@@ -1,0 +1,185 @@
+{% extends "main.html" %}
+
+{# Landing page. The Markdown in docs/index.md only feeds search; everything visible is here. #}
+
+{% block tabs %}
+{{ super() }}
+<div class="agt-home">
+
+  <section class="agt-hero">
+    <div class="agt-wrap">
+      <a class="agt-pill" href="{{ 'changelog/' | url }}">
+        <span class="agt-pill-tag">{{ config.extra.version_label }}</span> Parallel steps, streaming and an Arrow fast path
+        <span aria-hidden="true">→</span>
+      </a>
+      <h1>ETL pipelines where any step<br>can be an <span class="agt-grad">LLM agent</span>.</h1>
+      <p class="agt-lede">Declare the pipeline in one YAML file. Connectors read and write your data, Python
+        functions transform it, and agent steps handle the parts that need judgement, with validated
+        output, per-record cache, cost budgets and a live dashboard.</p>
+      <div class="agt-install" data-copy="pip install agentl-etl">
+        <code><span class="agt-dollar">$</span> pip install agentl-etl</code>
+        <button type="button" class="agt-copy" aria-label="Copy install command">Copy</button>
+      </div>
+      <div class="agt-ctas">
+        <a class="agt-btn agt-btn-primary" href="{{ 'getting-started/' | url }}">Get started</a>
+        <a class="agt-btn" href="https://github.com/arimayuji/agentl">Star on GitHub</a>
+        <a class="agt-btn agt-btn-ghost" href="{{ 'ai-agents/' | url }}">Use with your AI agent</a>
+      </div>
+      <p class="agt-meta">MIT licensed · Python 3.10+ · core depends only on pyyaml and pydantic</p>
+    </div>
+  </section>
+
+  <section class="agt-stage">
+    <div class="agt-wrap">
+      <div class="agt-video-frame">
+        <video autoplay muted loop playsinline preload="metadata" poster="{{ 'assets/agentl-launch-poster.jpg' | url }}"
+          aria-label="agentl in 30 seconds">
+          <source src="{{ 'assets/agentl-launch.webm' | url }}" type="video/webm">
+          <source src="{{ 'assets/agentl-launch.mp4' | url }}" type="video/mp4">
+        </video>
+      </div>
+      <div class="agt-logos" aria-label="Works with">
+        <span>Works with</span>
+        <img src="{{ 'assets/logos/anthropic.svg' | url }}" alt="Anthropic" title="Anthropic">
+        <b>OpenAI</b>
+        <img src="{{ 'assets/logos/ollama.svg' | url }}" alt="Ollama" title="Ollama">
+        <b>Bedrock</b>
+        <img src="{{ 'assets/logos/postgresql.svg' | url }}" alt="PostgreSQL" title="PostgreSQL">
+        <img src="{{ 'assets/logos/snowflake.svg' | url }}" alt="Snowflake" title="Snowflake">
+        <img src="{{ 'assets/logos/apacheairflow.svg' | url }}" alt="Airflow" title="Airflow">
+        <img src="{{ 'assets/logos/apacheparquet.svg' | url }}" alt="Parquet" title="Parquet">
+        <a href="{{ 'integrations/' | url }}">and more →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="agt-section">
+    <div class="agt-wrap">
+      <p class="agt-kicker">One file</p>
+      <h2>The whole pipeline, readable in a code review.</h2>
+      <div class="agt-split">
+        <pre class="agt-code" aria-label="pipeline.yaml"><span class="c"># pipeline.yaml</span>
+<span class="k">name</span>: invoices
+<span class="k">llm</span>: { <span class="k">provider</span>: anthropic, <span class="k">model</span>: claude-opus-5-5 }
+
+<span class="k">steps</span>:
+  - <span class="k">id</span>: invoices
+    <span class="k">use</span>: csv.read
+    <span class="k">with</span>: { <span class="k">path</span>: data/invoices.csv }
+
+  - <span class="k">id</span>: classify
+    <span class="k">agent</span>: Classify the expense and flag odd ones.
+    <span class="k">input</span>: invoices
+    <span class="k">output</span>: { <span class="k">category</span>: str, <span class="k">review</span>: bool? }
+
+  - <span class="k">id</span>: save
+    <span class="k">use</span>: postgres.write
+    <span class="k">input</span>: classify
+    <span class="k">with</span>: { <span class="k">dsn</span>: <span class="s">${DATABASE_URL}</span>, <span class="k">table</span>: invoices }</pre>
+        <div class="agt-terminal" role="img" aria-label="Terminal demo: install agentl, validate and run a pipeline, open the dashboard">
+          <div class="agt-bar"><span></span><span></span><span></span></div>
+          <div class="agt-body"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="agt-section">
+    <div class="agt-wrap">
+      <p class="agt-kicker">Features</p>
+      <h2>Everything a production pipeline needs, nothing it does not.</h2>
+      <div class="agt-features">
+        {% for clip, title, text, link in [
+          ("agent", "Agents with a schema", "LLM steps run per record and must match the output schema. Bad answers are retried, then rejected, never guessed.", "agents/"),
+          ("files", "Read anything", "CSV, Excel, Parquet, JSON, PDF, Word, email, HTTP APIs with pagination, S3, GCS, SQL. Zip and gz expanded safely.", "connectors/"),
+          ("cache", "Cheap to re-run", "Agent answers are cached per record. A crash at record 4,000 resumes there and only pays for what changed.", "concepts/#cache-and-resume"),
+          ("budget", "Cost budgets", "max_usd and max_tokens stop the run before the next call that would go over. Spend per step on the dashboard.", "agents/#budget"),
+          ("observe", "See every run", "A live graph, JSON logs, OpenTelemetry traces, Prometheus metrics and Sentry. A local dashboard with no setup.", "observability/"),
+          ("notify", "Alerts that explain", "Slack, Teams, Discord, PagerDuty, email. Rules like rate > 0.05, deduplicated, with an LLM summary of what failed.", "notifications/"),
+        ] %}
+        <a class="agt-feature" href="{{ link | url }}">
+          <video class="feature-clip" muted loop playsinline preload="none" poster="{{ ('assets/clips/' ~ clip ~ '.jpg') | url }}" aria-hidden="true">
+            <source src="{{ ('assets/clips/' ~ clip ~ '.webm') | url }}" type="video/webm">
+            <source src="{{ ('assets/clips/' ~ clip ~ '.mp4') | url }}" type="video/mp4">
+          </video>
+          <h3>{{ title }}</h3>
+          <p>{{ text }}</p>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section class="agt-section">
+    <div class="agt-wrap">
+      <p class="agt-kicker">Performance</p>
+      <h2>Fast where it counts. Measured, reproducible.</h2>
+      <div class="agt-stats">
+        <div><strong>10x</strong><span>CSV → pandas → Parquet with the Arrow fast path</span></div>
+        <div><strong>22x</strong><span>Parquet → Postgres with COPY</span></div>
+        <div><strong>61 MB</strong><span>to stream 3M rows, instead of 790 MB for 1M at once</span></div>
+        <div><strong>31x</strong><span>faster re-runs from the per-record cache, 0 tokens</span></div>
+      </div>
+      <p class="agt-note">Run them yourself: <code>python -m benchmarks</code>. Method and caveats on the
+        <a href="{{ 'performance/' | url }}">performance page</a>.</p>
+    </div>
+  </section>
+
+  <section class="agt-section agt-ai">
+    <div class="agt-wrap">
+      <p class="agt-kicker">AI native</p>
+      <h2>Your coding agent already knows how to use it.</h2>
+      <div class="agt-ai-grid">
+        <div class="agt-card">
+          <h3>llms.txt</h3>
+          <p>The docs as one file for any model: <a href="{{ 'llms.txt' | url }}">llms.txt</a> and
+            <a href="{{ 'llms-full.txt' | url }}">llms-full.txt</a>.</p>
+        </div>
+        <div class="agt-card">
+          <h3>Every page as Markdown</h3>
+          <p>Each docs page has <em>Copy as Markdown</em>, <em>Ask Claude</em> and <em>Ask ChatGPT</em>
+            buttons, and a raw <code>index.md</code> next to it.</p>
+        </div>
+        <div class="agt-card">
+          <h3>AGENTS.md</h3>
+          <p>Layout, commands and rules for coding agents working on a pipeline or on agentl itself.</p>
+        </div>
+        <div class="agt-card">
+          <h3>YAML an agent can write</h3>
+          <p>Small, validated spec: <code>agentl validate</code> tells the agent exactly what to fix.</p>
+        </div>
+      </div>
+      <div class="agt-prompt" data-copy="Read https://agentl.com.br/llms.txt, then write an agentl pipeline (pipeline.yaml) that reads my data, cleans it and loads it into my database. Validate it with `agentl validate pipeline.yaml` and fix any error.">
+        <div class="agt-prompt-head"><span>Paste into Claude Code, Cursor or Codex</span>
+          <button type="button" class="agt-copy" aria-label="Copy prompt">Copy</button></div>
+        <p>Read https://agentl.com.br/llms.txt, then write an agentl pipeline (pipeline.yaml) that reads my
+          data, cleans it and loads it into my database. Validate it with <code>agentl validate pipeline.yaml</code>
+          and fix any error.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="agt-section">
+    <div class="agt-wrap agt-community">
+      <div>
+        <p class="agt-kicker">Open source</p>
+        <h2>Built in the open. Come build it with us.</h2>
+        <p class="agt-lede">Connectors, providers, docs and examples are the easiest way in. Every issue has the
+          context you need, and CI runs the same checks you run locally.</p>
+        <div class="agt-ctas">
+          <a class="agt-btn agt-btn-primary" href="https://github.com/arimayuji/agentl/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">Good first issues</a>
+          <a class="agt-btn" href="{{ 'community/' | url }}">Contributing guide</a>
+          <a class="agt-btn agt-btn-ghost" href="{{ 'roadmap/' | url }}">Roadmap</a>
+          <a class="agt-btn agt-btn-ghost" href="https://github.com/sponsors/arimayuji">Sponsor</a>
+        </div>
+      </div>
+      <a class="agt-contrib" href="https://github.com/arimayuji/agentl/graphs/contributors">
+        <img src="https://contrib.rocks/image?repo=arimayuji/agentl" alt="Contributors" loading="lazy">
+      </a>
+    </div>
+  </section>
+
+</div>
+{% endblock %}
+
+{% block content %}{% endblock %}

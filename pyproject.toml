@@ -10,9 +10,13 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Yuji Arima" }]
-keywords = ["etl", "data-pipeline", "llm", "agents", "ai", "yaml", "data-engineering"]
+keywords = [
+  "etl", "elt", "data-pipeline", "data-engineering", "llm", "agents", "ai-agents", "agentic",
+  "yaml", "pandas", "parquet", "arrow", "postgres", "pdf-extraction", "document-processing",
+  "anthropic", "claude", "openai", "ollama", "bedrock", "mcp", "airflow", "workflow",
+]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
@@ -23,6 +27,10 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Database",
+  "Topic :: Office/Business",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Distributed Computing",
+  "Topic :: Text Processing",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Typing :: Typed",
 ]

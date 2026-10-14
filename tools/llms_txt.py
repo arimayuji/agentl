@@ -40,6 +40,7 @@ def on_post_build(config: Any, **kwargs: Any) -> None:
         f"Full docs as one file: {base}/llms-full.txt",
     ]
     full = [index[0], "", index[2], ""]
+    site = Path(config["site_dir"])
     section = None
     for sec, title, path in pages:
         if sec != section:
@@ -47,8 +48,13 @@ def on_post_build(config: Any, **kwargs: Any) -> None:
             section = sec
         url = f"{base}/{path[:-3]}/".replace("/index/", "/")
         index.append(f"- [{title}]({url})")
-        full += [f"\n---\n\nSource: {url}\n", _clean((docs / path).read_text(encoding="utf-8"))]
+        text = _clean((docs / path).read_text(encoding="utf-8"))
+        full += [f"\n---\n\nSource: {url}\n", text]
+        # Each page as plain Markdown next to its HTML (<page>/index.md), for "Copy as Markdown",
+        # "Ask Claude" and any tool that prefers text/markdown.
+        out = site / path[:-3] / "index.md" if not path.endswith("index.md") else site / path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(f"{text}\n\nSource: {url}\n", encoding="utf-8")
 
-    site = Path(config["site_dir"])
     (site / "llms.txt").write_text("\n".join(index).strip() + "\n", encoding="utf-8")
     (site / "llms-full.txt").write_text("\n".join(full).strip() + "\n", encoding="utf-8")
