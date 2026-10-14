@@ -9,6 +9,21 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Security
+
+- URL fetches (`url:` on readers, `http.get`, `http.post`) refuse non-public addresses (loopback,
+  private, link-local/cloud metadata, reserved) and non-http(s) schemes, also after redirects.
+  Allow internal hosts with `AGENTL_ALLOW_HOSTS` or `AGENTL_ALLOW_PRIVATE_NETWORK=1` (#65).
+- Agent prompts put the record in a delimited `<record>` block marked as untrusted data, with
+  angle brackets escaped so it cannot break out (#64).
+- Releases ship a CycloneDX SBOM and a build provenance attestation; every GitHub Action is
+  pinned by commit SHA; OpenSSF Scorecard runs on main (#62, #63).
+
+### Changed
+
+- Pipelines that fetch from internal hosts (intranet APIs, `localhost` services) now need
+  `AGENTL_ALLOW_HOSTS` or `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
+
 ## [0.5.0] - 2026-10-13
 
 ### Added

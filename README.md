@@ -17,6 +17,7 @@
 [![PyPI](https://img.shields.io/pypi/v/agentl-etl)](https://pypi.org/project/agentl-etl/)
 [![Python](https://img.shields.io/pypi/pyversions/agentl-etl)](https://pypi.org/project/agentl-etl/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/arimayuji/agentl/badge)](https://scorecard.dev/viewer/?uri=github.com/arimayuji/agentl)
 
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
 

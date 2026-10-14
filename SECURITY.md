@@ -20,9 +20,26 @@ and an advisory, crediting you unless you prefer to stay anonymous.
 agentl runs pipelines you write. Some behaviour is by design and not a vulnerability:
 
 - `fn:` steps import and run Python code named in the YAML. Only run pipelines you trust.
-- Connectors read the files, URLs and databases the pipeline points to.
+- Connectors read the files, URLs and databases the pipeline points to. URL fetches (`url:` on
+  readers, `http.get`, `http.post`) refuse loopback, private, link-local (cloud metadata) and
+  reserved addresses, also after redirects, unless allowed with `AGENTL_ALLOW_HOSTS` or
+  `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
 - Agent steps send record contents to the configured LLM provider. Use a local provider
   for data that must not leave your machine.
 
-Issues such as secret leakage in logs, the dashboard or the run store, path or SQL injection
+Bypasses of the URL guard, and record data breaking out of the `<record>` block in agent prompts,
+are in scope. Issues such as secret leakage in logs, the dashboard or the run store, path or SQL injection
 in connectors, or the dashboard being reachable beyond `127.0.0.1` by default are in scope.
+
+## Verifying releases
+
+Releases are built in GitHub Actions and published to PyPI with trusted publishing (no stored
+token). Each release has a build provenance attestation and a CycloneDX SBOM attached to the
+GitHub release:
+
+```bash
+pip download agentl-etl==<version> --no-deps -d dist
+gh attestation verify dist/agentl_etl-<version>-py3-none-any.whl --repo arimayuji/agentl
+```
+
+All GitHub Actions are pinned by commit SHA, and the repository is scored by OpenSSF Scorecard.

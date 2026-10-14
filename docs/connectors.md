@@ -100,6 +100,11 @@ Query parameters go in `params` (also filled per record). To follow pages:
     items: items
 ```
 
+URL fetches refuse loopback, private, link-local (for example cloud metadata at
+`169.254.169.254`) and reserved addresses, including after redirects, so URLs that come from data
+or from an agent cannot reach internal services. For intranet pipelines set
+`AGENTL_ALLOW_HOSTS=host1,10.0.0.0/8` (host names or CIDRs), or `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
+
 Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
 returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
 responses.
