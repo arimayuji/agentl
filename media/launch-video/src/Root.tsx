@@ -12,6 +12,12 @@ const LaunchWithBlur: React.FC = () => (
   </CameraMotionBlur>
 );
 
+const XTeaserWithBlur: React.FC = () => (
+  <CameraMotionBlur samples={4} shutterAngle={180}>
+    <XTeaser />
+  </CameraMotionBlur>
+);
+
 const CompressWithBlur: React.FC = () => (
   <CameraMotionBlur samples={4} shutterAngle={180}>
     <Compress />
@@ -25,7 +31,7 @@ export const Root: React.FC = () => (
     {CLIPS.map(([id, Comp]) => (
       <Composition key={id} id={id} component={Comp} durationInFrames={CLIP_FRAMES} fps={CLIP_FPS} width={CLIP_W} height={CLIP_H} />
     ))}
-    <Composition id="XTeaser" component={XTeaser} durationInFrames={TEASER_FRAMES} fps={TEASER_FPS} width={TEASER_SIZE} height={TEASER_SIZE} />
+    <Composition id="XTeaser" component={XTeaserWithBlur} durationInFrames={TEASER_FRAMES} fps={TEASER_FPS} width={TEASER_SIZE} height={TEASER_SIZE} />
     <Composition id="LaunchPreview" component={Launch} durationInFrames={LAUNCH_FRAMES} fps={FPS} width={W} height={H} />
   </>
 );
