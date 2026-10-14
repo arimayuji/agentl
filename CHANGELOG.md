@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `wait_until` steps: re-run a source step every `every` until a condition holds (`rows > 0`,
+  `max(date) == today`, `changed`), for at most `timeout`, then fail or continue. Events
+  `wait.polled`, `wait.done` and `wait.timeout`.
 - `python -m evals`: accuracy per field on two small labeled datasets, tokens and USD per 1k
   records, and cache savings on reruns, for agentl, agentl with `records_per_call: 10` and a
   plain-Python baseline with the same model and prompt. See the Evals page.

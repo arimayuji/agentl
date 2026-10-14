@@ -96,6 +96,26 @@ class MCPServerSpec(BaseModel):
 _EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run")  # see checks.py
 
 
+class WaitSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: str
+    condition: str = "rows > 0"  # rows OP N, AGG(field) OP value, or changed
+    every: str | float = "15m"
+    timeout: str | float = "6h"
+    on_timeout: Literal["fail", "continue"] = "fail"
+
+    @model_validator(mode="after")
+    def _valid(self) -> WaitSpec:
+        from .checks import parse_duration
+        from .waits import parse_condition
+
+        parse_condition(self.condition)
+        if parse_duration(self.every) <= 0 or parse_duration(self.timeout) <= 0:
+            raise ValueError("wait_until: every and timeout must be positive")
+        return self
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -109,6 +129,9 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
+    # Wait for a source with no fixed publishing time: re-run `step` every `every` until
+    # `condition` holds, for at most `timeout`. See WaitSpec.
+    wait_until: WaitSpec | None = None
     input: str | list[str] | None = None
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
@@ -127,9 +150,11 @@ class StepSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
-        kinds = [k for k in ("use", "fn", "agent", "check") if getattr(self, k)]
+        kinds = [k for k in ("use", "fn", "agent", "check", "wait_until") if getattr(self, k)]
         if len(kinds) != 1:
-            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent/check")
+            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent/check/wait_until")
+        if self.wait_until and self.input is not None:
+            raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
         if self.check and not (self.expect or self.review):
@@ -162,11 +187,15 @@ class StepSpec(BaseModel):
 
     @property
     def kind(self) -> str:
+        if self.wait_until:
+            return "wait"
         return "use" if self.use else "fn" if self.fn else "check" if self.check else "agent"
 
     @property
     def inputs(self) -> list[str]:
         if self.input is None:
+            if self.wait_until:
+                return [self.wait_until.step]
             return [self.check] if self.check else []
         return [self.input] if isinstance(self.input, str) else list(self.input)
 

@@ -175,7 +175,7 @@ def parse_graph(diagram: str) -> dict:
     for line in diagram.splitlines():
         if m := _NODE.match(line):
             detail = m.group(3)
-            kind = detail if detail in ("agent", "check") else "fn" if ":" in detail else "use"
+            kind = detail if detail in ("agent", "check", "wait") else "fn" if ":" in detail else "use"
             nodes.append({"id": m.group(1), "detail": m.group(3), "kind": kind})
         elif m := _EDGE.match(line):
             edges.append([m.group(1), m.group(2)])
