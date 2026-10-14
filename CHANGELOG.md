@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl mcp`: an MCP server over stdio with `validate`, `diagram`, `run_pipeline`, `list_runs`,
+  `get_run`, `list_failures`, `doctor` and `list_connectors`, for Claude Code, Claude Desktop and Cursor.
+- `agentl new "description"`: an LLM writes the pipeline YAML, validation errors go back to it, and
+  the file is written only once it validates.
+- `agentl doctor [run_id]`: explains a failed run from the run store; `--suggest` asks an LLM for a fix.
 - `python -m benchmarks --compare`: the same jobs with agentl, in plain Python and with pandas, measuring time, CPU, peak memory and I/O, and failing unless every variant writes the same data. Results in the Performance page.
 - `excel.write`: an .xlsx ready to open (bold header, frozen first row, filter, fitted columns,
   numeric text as numbers), one sheet per input step.

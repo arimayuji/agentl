@@ -6,6 +6,9 @@ agentl validate PIPELINE
 agentl diagram PIPELINE
 agentl runs
 agentl connectors
+agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
+agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
+agentl mcp
 agentl dashboard [--host 127.0.0.1] [--port 7070]
 ```
 
@@ -33,6 +36,30 @@ in an existing database. They are created on first use; the user needs `CREATE` 
 `validate` parses the YAML, checks the graph and that every connector exists. It does not connect to
 databases or URLs. It does resolve `${VAR}`, so every variable without a default must be set; in CI,
 export placeholders (`DATABASE_URL=postgresql://ci@localhost/ci agentl validate ...`).
+
+## New pipeline from a description
+
+```bash
+agentl new "read invoices.csv, classify each line by cost center, write to Postgres" -o invoices.yaml
+```
+
+`new` sends the description and the list of installed connectors to an LLM, validates the YAML it
+answers and sends any validation error back for another try (3 attempts). The file is only written
+once it validates, and never over an existing file. The diagram goes to stderr. The model is
+`--provider` / `--model`, else `$AGENTL_PROVIDER` / `$AGENTL_MODEL`, else Anthropic with the
+default model (needs `ANTHROPIC_API_KEY`). Review the result before running it: it is a first
+draft, not a tested pipeline.
+
+## Doctor
+
+```bash
+agentl doctor                 # the latest failed run
+agentl doctor 20261014-091203-ab12cd --suggest --pipeline invoices.yaml
+```
+
+`doctor` reads the run store: the step that failed, its error, check findings, rejected records
+and the steps that finished. No LLM is called unless you pass `--suggest`, which adds a suggested
+fix (with `--pipeline`, the model also sees the YAML).
 
 ## Diagram
 

@@ -17,6 +17,36 @@ In your own project, add a line to your `CLAUDE.md` or `AGENTS.md`:
 Data pipelines use agentl (https://agentl.com.br/llms-full.txt). Validate with `agentl validate <file>`.
 ```
 
+## MCP server
+
+`agentl mcp` serves agentl over MCP (stdio), so Claude Code, Claude Desktop, Cursor and other MCP
+clients can validate, run and debug your pipelines directly.
+
+```bash
+claude mcp add agentl -- agentl mcp            # Claude Code
+```
+
+```json
+{"mcpServers": {"agentl": {"command": "agentl", "args": ["mcp"]}}}
+```
+
+The second form goes in Claude Desktop's or Cursor's MCP settings. Add `"--db", "<store>"` to the
+args to point at a run store other than `.agentl/agentl.db` in the working directory.
+
+| Tool | What it does |
+| --- | --- |
+| `validate` | Check a pipeline (a file path or the YAML text) without running it |
+| `diagram` | The pipeline as Mermaid |
+| `run_pipeline` | Run a pipeline file; returns status, run id, records per step and cost |
+| `list_runs`, `get_run` | Recent runs; one run with its events |
+| `list_failures` | Recent failed runs with the failing step and error |
+| `doctor` | Why a run failed, as text |
+| `list_connectors` | Installed connectors and their parameters |
+
+`run_pipeline` is the only tool marked as not read-only, so clients that ask before side effects
+ask before running a pipeline. It runs with your environment and permissions: only connect
+clients you trust.
+
 ## Prompts
 
 Copy, fill the parts in `<angle brackets>`, and paste. Each prompt asks the agent to run
