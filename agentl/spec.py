@@ -144,6 +144,9 @@ class PipelineSpec(BaseModel):
     steps: list[StepSpec]
     notify: NotifySpec | None = None
     budget: BudgetSpec | None = None
+    max_parallel_steps: int = Field(
+        default=4, ge=1, le=64
+    )  # independent steps run together; 1 = one at a time
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 

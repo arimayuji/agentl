@@ -334,6 +334,35 @@ def agent_call_shapes(scale: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------- parallel steps
+def _slow_source(input=None, seconds=0.5):
+    time.sleep(seconds)
+    return [{"i": i} for i in range(10)]
+
+
+def parallel_steps(scale: float) -> dict:
+    """Two independent sources of 0.5 s each and a join: sequential vs parallel."""
+    src = {"fn": "benchmarks.scenarios:_slow_source"}
+    steps = [
+        {"id": "invoices", **src},
+        {"id": "customers", **src},
+        {"id": "joined", "use": "select", "input": "invoices"},
+    ]
+    out = {}
+    d = _tmp()
+    for n in (1, 4):
+        spec = parse({"name": "par", "max_parallel_steps": n, "steps": steps})
+        with Store(d / f"p{n}.db") as store:
+            r, s = _timed(lambda spec=spec, store=store: Runner(spec, store=store).run())
+        assert r.status == "succeeded", r.error
+        out[f"max_parallel_{n}_s"] = round(s, 2)
+    return {
+        "summary": f"{out['max_parallel_1_s']} s one at a time, {out['max_parallel_4_s']} s in parallel",
+        "source_seconds": 0.5,
+        **out,
+    }
+
+
 ALL = [
     ("import", import_time),
     ("csv.read", csv_read),
@@ -344,4 +373,5 @@ ALL = [
     ("agent step", agent_step),
     ("agent cache re-run", agent_cache),
     ("agent call shapes", agent_call_shapes),
+    ("parallel steps", parallel_steps),
 ]

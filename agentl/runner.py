@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -73,11 +73,12 @@ class Runner:
         self.listeners = list(listeners or [])
         self._providers: dict[str, llm.Provider] = {}
         self._spend = threading.Lock()
+        self._events = threading.Lock()
+        self._provider_lock = threading.Lock()
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
     # events -------------------------------------------------------------
     def _emit(self, run_id: str, type: str, step: str | None = None, **data: Any) -> None:
-        self.store.event(run_id, type, step, data)
         event = {
             "run_id": run_id,
             "pipeline": self.spec.name,
@@ -86,14 +87,17 @@ class Runner:
             "step": step,
             "data": data,
         }
-        for listener in self.listeners:
-            listener(event)
+        with self._events:  # steps may run in parallel: one event at a time, store and listeners
+            self.store.event(run_id, type, step, data)
+            for listener in self.listeners:
+                listener(event)
 
     # llm ----------------------------------------------------------------
     def _provider(self, name: str) -> llm.Provider:
-        if name not in self._providers:
-            self._providers[name] = llm.provider(self.spec.llm[name])
-        return self._providers[name]
+        with self._provider_lock:
+            if name not in self._providers:
+                self._providers[name] = llm.provider(self.spec.llm[name])
+            return self._providers[name]
 
     def _summarize(self, event: dict) -> str:
         try:
@@ -106,40 +110,38 @@ class Runner:
         except Exception as e:
             return f"(summary unavailable: {e})"
 
-    @staticmethod
-    def _counters(result: RunResult) -> tuple[int, int, int, int, float]:
-        return (
-            result.input_tokens,
-            result.output_tokens,
-            result.cache_read_tokens,
-            result.llm_calls,
-            result.cost_usd,
-        )
-
-    def _record_spend(self, step: StepSpec, before: tuple, result: RunResult) -> None:
-        if step.kind != "agent":
-            return
-        now = self._counters(result)
-        result.spend[step.id] = {
-            "input_tokens": now[0] - before[0],
-            "output_tokens": now[1] - before[1],
-            "cache_read_tokens": now[2] - before[2],
-            "llm_calls": now[3] - before[3],
-            "cost_usd": round(now[4] - before[4], 6),
-        }
+    def _step_spend(self, step: StepSpec, result: RunResult) -> dict[str, Any]:
+        """The step's spend, with cost rounded for events. Empty for non-agent steps."""
+        with self._spend:
+            spend = result.spend.get(step.id)
+            if spend is None:
+                return {}
+            spend["cost_usd"] = round(spend["cost_usd"], 6)
+            return dict(spend)
 
     # budget -------------------------------------------------------------
-    def _charge(self, result: RunResult, spec: LLMSpec, usage: Any, batch: bool = False) -> None:
-        """`usage` is an `llm.Result` or an exception carrying the tokens of a failed call."""
+    def _charge(
+        self, result: RunResult, step: StepSpec, spec: LLMSpec, usage: Any, batch: bool = False
+    ) -> None:
+        """`usage` is an `llm.Result` or an exception carrying the tokens of a failed call. Counted
+        for the run and for the step, so spend per step stays right when steps run in parallel."""
         tin, tout = getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0)
         read, write = getattr(usage, "cache_read_tokens", 0), getattr(usage, "cache_write_tokens", 0)
+        cost = spec.cost(tin, tout, read, write)
+        if batch and spec.price:
+            cost *= spec.price.batch
         with self._spend:
             result.input_tokens += tin
             result.output_tokens += tout
             result.cache_read_tokens += read
             result.llm_calls += 1
-            cost = spec.cost(tin, tout, read, write)
-            result.cost_usd += cost * spec.price.batch if batch and spec.price else cost
+            result.cost_usd += cost
+            mine = result.spend[step.id]
+            mine["input_tokens"] += tin
+            mine["output_tokens"] += tout
+            mine["cache_read_tokens"] += read
+            mine["llm_calls"] += 1
+            mine["cost_usd"] += cost
 
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
@@ -199,7 +201,7 @@ class Runner:
             time.sleep(step.batch_poll_seconds)
         answers = prov.batch_results(batch_id, schema)
         for res in answers.values():
-            self._charge(result, llm_spec, res, batch=True)
+            self._charge(result, step, llm_spec, res, batch=True)
         out = [answers.get(cid, RuntimeError("missing from batch results")) for cid in ids]
         ok = sum(isinstance(r, llm.Result) for r in out)
         self._emit(
@@ -238,10 +240,10 @@ class Runner:
                     res = prov.structured(step.agent or "", rec, schema)
                 except (ValidationError, ValueError, RuntimeError) as e:
                     # Invalid answers still cost tokens: count them for budget and spend.
-                    self._charge(result, llm_spec, e)
+                    self._charge(result, step, llm_spec, e)
                     last = e
                     continue
-                self._charge(result, llm_spec, res)
+                self._charge(result, step, llm_spec, res)
                 return done(rec, res.value.model_dump())
             return None, {**rec, "_error": str(last)}
 
@@ -256,9 +258,9 @@ class Runner:
             try:
                 res = prov.structured(_batch_instruction(step.agent or "", len(group)), payload, batch_schema)
             except (ValidationError, ValueError, RuntimeError) as e:
-                self._charge(result, llm_spec, e)
+                self._charge(result, step, llm_spec, e)
             else:
-                self._charge(result, llm_spec, res)
+                self._charge(result, step, llm_spec, res)
                 seen: set[int] = set()
                 for item in res.value.model_dump()["items"]:
                     i = item.pop("index", None)
@@ -348,6 +350,80 @@ class Runner:
         return out
 
     # run ----------------------------------------------------------------
+    def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
+        step_id = step.id
+        if step.kind == "agent":
+            with self._spend:
+                result.spend[step_id] = dict.fromkeys(
+                    ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls"), 0
+                ) | {"cost_usd": 0.0}
+        self._emit(run_id, "step.started", step_id, kind=step.kind)
+        t0 = time.time()
+        try:
+            out = self._run_step(run_id, step, result.outputs, result)
+        except Exception as e:
+            if isinstance(e, BudgetExceeded):
+                with self._spend:
+                    totals = (result.input_tokens, result.output_tokens, round(result.cost_usd, 6))
+                self._emit(
+                    run_id,
+                    "budget.exceeded",
+                    step_id,
+                    reason=str(e),
+                    input_tokens=totals[0],
+                    output_tokens=totals[1],
+                    cost_usd=totals[2],
+                )
+            self._emit(
+                run_id,
+                "step.failed",
+                step_id,
+                error=f"{type(e).__name__}: {e}",
+                **self._step_spend(step, result),
+            )
+            raise
+        result.outputs[step_id] = out
+        self._emit(
+            run_id,
+            "step.succeeded",
+            step_id,
+            records=len(out),
+            seconds=round(time.time() - t0, 3),
+            **self._step_spend(step, result),
+        )
+        if not out and not step.inputs:
+            self._emit(run_id, "source.empty", step_id)
+
+    def _run_graph(self, run_id: str, result: RunResult) -> None:
+        """Starts each step as soon as its inputs are done, up to `max_parallel_steps` at once,
+        picking ready steps in declaration order. After a failure no new step starts; the ones
+        already running finish, then the first error is raised."""
+        pending = graph.order(self.spec)
+        deps = {s.id: set(s.inputs) for s in self.spec.steps}
+        limit = self.spec.max_parallel_steps
+        done: set[str] = set()
+        running: dict[Future, str] = {}
+        failure: BaseException | None = None
+        with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="agentl-step") as pool:
+            while pending or running:
+                if failure is None:
+                    for step_id in [i for i in pending if deps[i] <= done][: limit - len(running)]:
+                        pending.remove(step_id)
+                        step = self.spec.step(step_id)
+                        running[pool.submit(self._run_one, run_id, step, result)] = step_id
+                if not running:
+                    break
+                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in sorted(finished, key=lambda f: running[f]):
+                    step_id = running.pop(future)
+                    error = future.exception()
+                    if error is None:
+                        done.add(step_id)
+                    elif failure is None:
+                        failure = error
+        if failure is not None:
+            raise failure
+
     def run(self) -> RunResult:
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         result = RunResult(run_id=run_id, status="running")
@@ -355,45 +431,7 @@ class Runner:
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()
         try:
-            for step_id in graph.order(self.spec):
-                step = self.spec.step(step_id)
-                self._emit(run_id, "step.started", step_id, kind=step.kind)
-                t0 = time.time()
-                before = self._counters(result)
-                try:
-                    out = self._run_step(run_id, step, result.outputs, result)
-                except Exception as e:
-                    self._record_spend(step, before, result)
-                    if isinstance(e, BudgetExceeded):
-                        self._emit(
-                            run_id,
-                            "budget.exceeded",
-                            step_id,
-                            reason=str(e),
-                            input_tokens=result.input_tokens,
-                            output_tokens=result.output_tokens,
-                            cost_usd=round(result.cost_usd, 6),
-                        )
-                    self._emit(
-                        run_id,
-                        "step.failed",
-                        step_id,
-                        error=f"{type(e).__name__}: {e}",
-                        **result.spend.get(step_id, {}),
-                    )
-                    raise
-                result.outputs[step_id] = out
-                self._record_spend(step, before, result)
-                self._emit(
-                    run_id,
-                    "step.succeeded",
-                    step_id,
-                    records=len(out),
-                    seconds=round(time.time() - t0, 3),
-                    **result.spend.get(step_id, {}),
-                )
-                if not out and not step.inputs:
-                    self._emit(run_id, "source.empty", step_id)
+            self._run_graph(run_id, result)
             result.status = "succeeded"
         except Exception as e:
             result.status = "failed"
