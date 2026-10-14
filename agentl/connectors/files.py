@@ -232,6 +232,7 @@ MAX_EXTRACT_BYTES = 1024**3  # 1 GiB per archive, guards against zip bombs
 def _extract_zip(p: Path, limit: int) -> list[Path]:
     dest = tmpdir("zip-")
     out = []
+    written = 0
     with zipfile.ZipFile(p) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
         if sum(i.file_size for i in infos) > limit:
@@ -242,7 +243,12 @@ def _extract_zip(p: Path, limit: int) -> list[Path]:
                 raise ValueError(f"{p.name}: unsafe path in archive: {info.filename}")
             target.parent.mkdir(parents=True, exist_ok=True)
             with z.open(info) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+                # count what is really written: the sizes in a zip header can lie
+                while chunk := src.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > limit:
+                        raise ValueError(f"{p.name}: archive expands beyond {limit} bytes")
+                    dst.write(chunk)
             out.append(target)
     return sorted(out)
 

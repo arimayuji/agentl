@@ -158,7 +158,8 @@ def _local_module(mod: str, base: Path) -> ModuleType | None:
         with _LOCAL_LOCK:
             if file in _LOCAL:
                 return _LOCAL[file]
-            name = f"_agentl_fn_{hashlib.sha1(str(file).encode()).hexdigest()[:12]}_{mod.replace('.', '_')}"
+            digest = hashlib.sha1(str(file).encode(), usedforsecurity=False).hexdigest()[:12]
+            name = f"_agentl_fn_{digest}_{mod.replace('.', '_')}"
             spec = importlib.util.spec_from_file_location(name, file)
             if spec is None or spec.loader is None:
                 return None

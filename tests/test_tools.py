@@ -351,3 +351,37 @@ def test_anthropic_tool_loop_and_call_limit(monkeypatch):
     results = sent[1][-1]["content"]
     assert results[0]["content"] == "product A" and results[1]["is_error"] is True
     assert "limit" in results[1]["content"]
+
+
+def test_http_get_allow_hosts_applies_to_redirects():
+    import http.server
+    import threading
+
+    from agentl.netguard import BlockedURL
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            port = self.server.server_address[1]
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{port}/elsewhere")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"secret page")
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        t = resolve(spec_with([{"http.get": {"allow_hosts": ["127.0.0.1"]}}]))[0]
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        assert t.run({"url": f"{base}/ok"}).startswith("HTTP 200")
+        with pytest.raises(BlockedURL, match="localhost is not in this tool's allow_hosts"):
+            t.run({"url": f"{base}/start"})  # 127.0.0.1 is allowed, the redirect to localhost is not
+    finally:
+        srv.shutdown()
+        srv.server_close()

@@ -93,11 +93,18 @@ def _http_get(settings: dict) -> Tool:
         from . import netguard  # imported here: urllib.request stays out of `import agentl`
 
         url = str(args["url"])
-        host = (urllib.parse.urlparse(url).hostname or "").lower()
-        if hosts and not any(host == h or host.endswith("." + h) for h in hosts):
-            return f"error: {host} is not in this tool's allow_hosts"
+
+        def allowed(target: str) -> None:  # the URL and every redirect it leads to
+            host = (urllib.parse.urlparse(target).hostname or "").lower()
+            if hosts and not any(host == h or host.endswith("." + h) for h in hosts):
+                raise netguard.BlockedURL(f"{host} is not in this tool's allow_hosts")
+
+        try:
+            allowed(url)
+        except netguard.BlockedURL as e:
+            return f"error: {e}"
         req = urllib.request.Request(url, headers=headers)
-        with netguard.urlopen(req, timeout=float(settings.get("timeout", 20))) as resp:
+        with netguard.urlopen(req, timeout=float(settings.get("timeout", 20)), check=allowed) as resp:
             body = resp.read(max_bytes).decode("utf-8", errors="replace")
             return f"HTTP {resp.status}\n{body}"
 

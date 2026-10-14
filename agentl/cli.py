@@ -92,7 +92,13 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
     sv.add_argument("--port", type=int, default=7071)
 
-    cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
+    mc = cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
+    mc.add_argument("--root", help="run_pipeline only runs files under this folder (default: here)")
+    mc.add_argument(
+        "--allow-code",
+        action="store_true",
+        help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
+    )
 
     ds = cmd("dashboard", "open the local dashboard")
     ds.add_argument("--port", type=int, default=7070)
@@ -166,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "mcp":
             from .mcp_server import serve as serve_mcp
 
-            serve_mcp(a.db)
+            serve_mcp(a.db, a.root, a.allow_code)
             return 0
         if a.cmd == "dashboard":
             from .dashboard import serve

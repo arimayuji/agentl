@@ -9,6 +9,19 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Security
+
+- `agentl mcp`: `run_pipeline` only runs pipeline files under `--root` (default: the working
+  directory) and refuses pipelines that run code unless started with `--allow-code`; `validate`
+  and `diagram` no longer read environment variables or secret references.
+- URL guard: connections go to the address that was checked (DNS rebinding is refused), and the
+  `http.get` agent tool enforces `allow_hosts` on every redirect.
+- Raised minimum versions with known vulnerabilities: pydantic 2.4, pypdf 6.19, pyarrow 23.0.1,
+  requests 2.33, fsspec 2026.6, sentry-sdk 2.8, paramiko 3.4.
+- Config URLs (LLM `base_url`, MCP `url`, notification webhooks) must be http(s); webhooks reject
+  a bad `Content-Length`, time out idle clients and warn when served open on a public address;
+  zip extraction counts the bytes actually written.
+
 ### Added
 
 - `python -m cases`: four common pipelines (ticket triage, invoice extraction, web summaries,

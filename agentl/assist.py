@@ -26,14 +26,14 @@ def check(spec: PipelineSpec) -> None:
             registry.get(s.use)
 
 
-def validate_text(text: str) -> PipelineSpec:
+def validate_text(text: str, env: Any = None) -> PipelineSpec:
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise SpecError(f"invalid YAML: {e}") from e
     if not isinstance(raw, dict):
         raise SpecError("a pipeline is a YAML mapping with name and steps")
-    spec = parse(raw)
+    spec = parse(raw, env=env)
     check(spec)
     return spec
 
