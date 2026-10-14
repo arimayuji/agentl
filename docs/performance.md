@@ -15,7 +15,7 @@ CI runs `--quick` on every tag and weekly, and uploads the JSON as an artifact.
 
 ## Results
 
-agentl 0.5.1, Python 3.13, x86_64, 4 CPUs (a shared cloud container). Your numbers will differ:
+agentl 0.6.0, Python 3.13, x86_64, 4 CPUs (a shared cloud container). Your numbers will differ:
 compare runs on the same machine, not across machines.
 
 | Scenario | Result | What it measures |
