@@ -28,11 +28,11 @@ compare runs on the same machine, not across machines.
 | `http.get fan-out` | 461 req/s at concurrency 16 (5.2x vs 1) | 1000 requests to a local server with 10 ms latency |
 | `agent step` | 1,471 records/s at concurrency 32 | 500 records, fake provider with 20 ms latency. agentl overhead is about 0.3 ms per record |
 | `agent cache re-run` | 31x faster, 0 tokens | Same 500 records again: every call is a cache hit |
-| `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20` | 500 records, fake provider with a 400-token fixed prefix (see below) |
+| `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20`, 0.50 in batch mode | 500 records, fake provider with a 400-token fixed prefix (see below) |
 
 ## Call shapes
 
-`agent call shapes` runs the same 500 records three ways (concurrency 8, price 3 / 15 / 0.30 per
+`agent call shapes` runs the same 500 records four ways (concurrency 8, price 3 / 15 / 0.30 per
 million input / output / cached input):
 
 | | Calls | Tokens | Cached | Cost (USD) | Seconds |
@@ -40,12 +40,13 @@ million input / output / cached input):
 | default | 500 | 250,000 | 0 | 0.99 | 1.3 |
 | prompt caching | 500 | 250,000 | 199,600 | 0.45 | 1.3 |
 | `records_per_call: 20` | 25 | 60,000 | 0 | 0.42 | 0.1 |
+| `mode: batch` (`price.batch: 0.5`) | 500 | 250,000 | 0 | 0.50 | n/a |
 
 The fake provider charges a 400-token prefix per call plus 60 input and 40 output tokens per record,
 and answers every call in 20 ms. That makes the token and cost columns a model of the arithmetic,
 not a measurement of a real API. In particular the seconds for `records_per_call` are optimistic:
-a real model takes longer to write 20 answers than one. A run against a real API has not been done
-yet.
+a real model takes longer to write 20 answers than one. Batch mode has no meaningful time here: the fake answers at once, a real batch takes minutes to
+hours. A run against a real API has not been done yet.
 
 ## Caveats
 

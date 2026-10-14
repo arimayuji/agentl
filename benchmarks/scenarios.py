@@ -193,8 +193,9 @@ class _FakeLLM:
         self.cache = bool(spec.options.get("prompt_cache"))
         self.warm = False
 
-    def structured(self, instruction, record, schema):
-        time.sleep(self.latency)
+    def structured(self, instruction, record, schema, sleep=True):
+        if sleep:
+            time.sleep(self.latency)
         recs = record.get("records")
         n = len(recs) if recs is not None else 1
         tin, tout = self.prefix + n * self.per_in, n * self.per_out
@@ -206,6 +207,19 @@ class _FakeLLM:
         items = [{"index": r["index"], **answer} for r in recs]
         return Result(schema.model_validate({"items": items}), tin, tout, read)
 
+    # Batch mode: answered at once. A real batch takes minutes to hours; that is not modelled.
+    def submit_batch(self, instruction, records, schema):
+        self.pending = {
+            cid: self.structured(instruction, r, schema, sleep=False) for cid, r in records.items()
+        }
+        return "bench-batch"
+
+    def batch_done(self, batch_id):
+        return True
+
+    def batch_results(self, batch_id, schema):
+        return self.pending
+
     def text(self, instruction, content):
         return ""
 
@@ -213,8 +227,8 @@ class _FakeLLM:
 register_provider("bench-fake", _FakeLLM)
 
 
-def _agent_spec(concurrency: int, per_call: int = 1, prompt_cache: bool = False):
-    price = {"input": 3.0, "output": 15.0, "cache_read": 0.3}
+def _agent_spec(concurrency: int, per_call: int = 1, prompt_cache: bool = False, mode: str = "sync"):
+    price = {"input": 3.0, "output": 15.0, "cache_read": 0.3, "batch": 0.5}
     opts = {"prompt_cache": True} if prompt_cache else {}
     return parse(
         {
@@ -228,6 +242,7 @@ def _agent_spec(concurrency: int, per_call: int = 1, prompt_cache: bool = False)
                     "input": "src",
                     "concurrency": concurrency,
                     "records_per_call": per_call,
+                    "mode": mode,
                     "output": {"category": "str", "ok": "bool"},
                 },
             ],
@@ -280,7 +295,7 @@ def agent_cache(scale: float) -> dict:
 
 
 def agent_call_shapes(scale: float) -> dict:
-    """Same 500 records, concurrency 8: one record per call, prompt caching, 20 records per call."""
+    """Same 500 records, concurrency 8: default, prompt caching, 20 records per call, batch."""
     global _N_AGENT
     _N_AGENT = int(500 * scale)
     d = _tmp()
@@ -289,6 +304,7 @@ def agent_call_shapes(scale: float) -> dict:
         ("default", {}),
         ("prompt_cache", {"prompt_cache": True}),
         ("per_call_20", {"per_call": 20}),
+        ("batch", {"mode": "batch"}),
     ):
         with Store(d / f"{name}.db") as store:
             r, s = _timed(
@@ -307,10 +323,11 @@ def agent_call_shapes(scale: float) -> dict:
         out["prompt_cache"]["cost_usd"],
         out["per_call_20"]["cost_usd"],
     )
+    batch = out["batch"]["cost_usd"]
     return {
         "summary": (
             f"{base} USD; prompt cache {cache} ({base / cache:.1f}x less), "
-            f"20 per call {many} ({base / many:.1f}x less)"
+            f"20 per call {many} ({base / many:.1f}x less), batch {batch} ({base / batch:.1f}x less)"
         ),
         "records": _N_AGENT,
         **out,

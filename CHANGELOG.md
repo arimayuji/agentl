@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Batch mode for agent steps (`mode: batch`): the step goes through Anthropic Message Batches or the
+  OpenAI Batch API, with polling (`batch_poll_seconds`, `batch_timeout_seconds`), resume of a pending
+  batch after a stopped run, normal-call retry for requests the batch could not answer, and
+  `price.batch` for the discount. Events `batch.submitted`, `batch.resumed`, `batch.ended`.
 - Prompt caching for agent steps: the instruction is a stable prefix, marked with `cache_control` on
   Anthropic (on by default) and a `cachePoint` on Bedrock (`options.prompt_cache: true`). Cache hits
   are reported as `cache_read_tokens` (Anthropic, OpenAI, Bedrock) and priced with the new

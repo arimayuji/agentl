@@ -129,7 +129,7 @@ class Runner:
         }
 
     # budget -------------------------------------------------------------
-    def _charge(self, result: RunResult, spec: LLMSpec, usage: Any) -> None:
+    def _charge(self, result: RunResult, spec: LLMSpec, usage: Any, batch: bool = False) -> None:
         """`usage` is an `llm.Result` or an exception carrying the tokens of a failed call."""
         tin, tout = getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0)
         read, write = getattr(usage, "cache_read_tokens", 0), getattr(usage, "cache_write_tokens", 0)
@@ -138,7 +138,8 @@ class Runner:
             result.output_tokens += tout
             result.cache_read_tokens += read
             result.llm_calls += 1
-            result.cost_usd += spec.cost(tin, tout, read, write)
+            cost = spec.cost(tin, tout, read, write)
+            result.cost_usd += cost * spec.price.batch if batch and spec.price else cost
 
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
@@ -155,6 +156,62 @@ class Runner:
         if b.max_usd is not None and result.cost_usd >= b.max_usd:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
         return None
+
+    # batch mode ---------------------------------------------------------
+    def _run_batch(
+        self,
+        run_id: str,
+        step: StepSpec,
+        prov: Any,
+        schema: type[BaseModel],
+        recs: Records,
+        key: Callable[[dict], str],
+        result: RunResult,
+    ) -> list[llm.Result | Exception]:
+        """Submits one provider batch for `recs`, waits for it and returns one answer per record.
+        The batch id is kept in the store, so a run that stops while waiting picks the same batch
+        up again instead of paying for a new one."""
+        if not hasattr(prov, "submit_batch"):
+            raise ValueError(
+                f"step '{step.id}': llm provider '{self.spec.llm[step.llm].provider}' has no batch mode"
+            )
+        llm_spec = self.spec.llm[step.llm]
+        ids = {f"r{n}": rec for n, rec in enumerate(recs)}
+        resume = self.use_cache and step.cached
+        ticket = _hash("batch", [key(r) for r in recs])
+        saved = self.store.cache_get(ticket) if resume else None
+        if saved:
+            batch_id = saved["batch_id"]
+            self._emit(run_id, "batch.resumed", step.id, batch_id=batch_id, requests=len(ids))
+        else:
+            self._check_budget(result)
+            batch_id = prov.submit_batch(step.agent or "", ids, schema)
+            if resume:
+                self.store.cache_set(ticket, {"batch_id": batch_id})
+            self._emit(run_id, "batch.submitted", step.id, batch_id=batch_id, requests=len(ids))
+        t0 = time.time()
+        while not prov.batch_done(batch_id):
+            if time.time() - t0 > step.batch_timeout_seconds:
+                raise TimeoutError(
+                    f"batch {batch_id} not finished after {step.batch_timeout_seconds:.0f}s; "
+                    "run again later to pick it up"
+                )
+            time.sleep(step.batch_poll_seconds)
+        answers = prov.batch_results(batch_id, schema)
+        for res in answers.values():
+            self._charge(result, llm_spec, res, batch=True)
+        out = [answers.get(cid, RuntimeError("missing from batch results")) for cid in ids]
+        ok = sum(isinstance(r, llm.Result) for r in out)
+        self._emit(
+            run_id,
+            "batch.ended",
+            step.id,
+            batch_id=batch_id,
+            succeeded=ok,
+            failed=len(out) - ok,
+            seconds=round(time.time() - t0, 3),
+        )
+        return out
 
     # steps --------------------------------------------------------------
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
@@ -222,6 +279,18 @@ class Runner:
                 todo.append(i)
         size = step.records_per_call
         groups = [todo[n : n + size] for n in range(0, len(todo), size)]
+        if step.mode == "batch" and todo:
+            answers_by_slot = self._run_batch(
+                run_id, step, prov, schema, [records[i] for i in todo], key, result
+            )
+            failed = []
+            for i, res in zip(todo, answers_by_slot, strict=True):
+                if isinstance(res, llm.Result):
+                    slots[i] = done(records[i], res.value.model_dump())
+                else:
+                    failed.append(i)
+            # Requests the batch could not answer are retried as normal calls.
+            todo, groups = failed, [[i] for i in failed]
         with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
             if size == 1:
                 answers = pool.map(lambda g: [one(records[g[0]])], groups)

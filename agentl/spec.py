@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -41,6 +41,7 @@ class PriceSpec(BaseModel):
     output: float = Field(ge=0)
     cache_read: float | None = Field(default=None, ge=0)  # cached input; default: same as input
     cache_write: float | None = Field(default=None, ge=0)  # input written to the cache; default: input
+    batch: float = Field(default=1.0, gt=0, le=1)  # multiplier for batch mode, e.g. 0.5; default: no discount
 
 
 class LLMSpec(BaseModel):
@@ -85,6 +86,9 @@ class StepSpec(BaseModel):
     llm: str = "default"
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
+    mode: Literal["sync", "batch"] = "sync"
+    batch_poll_seconds: float = Field(default=30, gt=0)
+    batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
 
     @model_validator(mode="after")
@@ -94,6 +98,10 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
+        if self.mode == "batch" and self.records_per_call > 1:
+            raise ValueError(
+                f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
+            )
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
         return self
