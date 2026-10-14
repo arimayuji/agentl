@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import graph, llm, registry
+from . import checks, graph, llm, registry
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
@@ -107,6 +107,10 @@ class Outputs(dict):
 
     def copy(self) -> Outputs:
         return Outputs(self.items())
+
+
+class CheckFailed(RuntimeError):
+    """A check step with `on_fail: stop` found problems; the data was not passed on."""
 
 
 class BudgetExceeded(RuntimeError):
@@ -458,6 +462,11 @@ class Runner:
         elif refs:
             data = {r: outputs[r] for r in refs}
 
+        if step.kind == "check":
+            if isinstance(data, dict):
+                raise ValueError("check steps take a single input")
+            return self._run_check(run_id, step, [] if data is None else data, result)
+
         if step.kind == "agent":
             if isinstance(data, dict):
                 raise ValueError("agent steps take a single input; join the inputs first")
@@ -475,6 +484,52 @@ class Runner:
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
         return out
+
+    # checks ---------------------------------------------------------------
+    def _run_check(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """Fixed expectations, then the optional agent review of the data's profile. Emits
+        `check.passed` or `check.failed`; with `on_fail: stop` a failure stops the step before the
+        data reaches the next one (usually the writer). The profile of each passing run is kept to
+        compare the next run against."""
+        records = list(records)
+        memory = _hash("check-profile", self.spec.name, step.id)
+        previous = self.store.cache_get(memory)
+        findings = checks.run_expectations(records, step.expect, previous)
+        prof = checks.profile(records)
+        notes: list[str] = []
+        if step.review:
+            llm_spec = self.spec.llm[step.llm]
+            schema = llm.schema_model(f"{step.id}_review", {"passed": "bool", "findings": "list[str]"})
+            payload = {
+                "today": prof,
+                "last_delivered_run": previous,
+                "failed_fixed_checks": list(findings),
+            }
+            self._check_budget(result)
+            try:
+                res = self._provider(step.llm).structured(_review_instruction(step.review), payload, schema)
+            except (ValidationError, ValueError, RuntimeError) as e:
+                self._charge(result, step, llm_spec, e)
+                raise RuntimeError(f"check review did not answer in the expected shape: {e}") from e
+            self._charge(result, step, llm_spec, res)
+            verdict = res.value.model_dump()
+            if verdict["passed"]:
+                notes = list(verdict["findings"])
+            else:
+                findings += [{"check": "review", "detail": f} for f in verdict["findings"]] or [
+                    {"check": "review", "detail": "the reviewer rejected the data without a reason"}
+                ]
+        data = {"rows": len(records), "findings": findings, **({"notes": notes} if notes else {})}
+        if findings:
+            self._emit(run_id, "check.failed", step.id, on_fail=step.on_fail, **data)
+            if step.on_fail == "stop":
+                first = "; ".join(f["detail"] for f in findings[:3])
+                more = f" (+{len(findings) - 3} more)" if len(findings) > 3 else ""
+                raise CheckFailed(f"{len(findings)} problem(s): {first}{more}")
+        else:
+            self._emit(run_id, "check.passed", step.id, **data)
+            self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
+        return records
 
     # arrow fast path ------------------------------------------------------
     def _arrow_plan(self, chains: dict[str, list[StepSpec]]) -> set[str]:
@@ -536,7 +591,7 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind == "agent":
+        if step.kind == "agent" or step.review:
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
@@ -772,6 +827,16 @@ class Runner:
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+
+def _review_instruction(review: str) -> str:
+    return (
+        f"{review}\n\nYou are checking data before it is delivered to the people who use it. The "
+        "record holds a profile of today's data (row count, per-column stats, a few sample rows), "
+        "the profile of the last delivered run (null on the first run) and the fixed checks that "
+        "already failed. Set passed to false only for problems that should block delivery. Write "
+        "each finding as one short sentence a business user understands, with the numbers."
+    )
 
 
 def _batch_schema(step_id: str, schema: type[BaseModel]) -> type[BaseModel]:

@@ -57,6 +57,7 @@ nav:
       - Connectors: connectors.md
       - Integrations: integrations.md
       - Agent steps: agents.md
+      - Data checks: checks.md
       - Notifications: notifications.md
       - CLI and dashboard: cli.md
       - Scheduling and orchestration: orchestration.md

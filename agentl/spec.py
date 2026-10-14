@@ -93,6 +93,9 @@ class MCPServerSpec(BaseModel):
         return self
 
 
+_EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run")  # see checks.py
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -100,6 +103,12 @@ class StepSpec(BaseModel):
     use: str | None = None
     fn: str | None = None
     agent: str | None = None
+    # Data check: the step to check (its input); expectations, an optional agent review, and what
+    # to do when it fails. The records pass through unchanged.
+    check: str | None = None
+    expect: dict[str, Any] = Field(default_factory=dict)
+    review: str | None = None
+    on_fail: Literal["stop", "warn"] = "stop"
     input: str | list[str] | None = None
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
@@ -118,9 +127,20 @@ class StepSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
-        kinds = [k for k in ("use", "fn", "agent") if getattr(self, k)]
+        kinds = [k for k in ("use", "fn", "agent", "check") if getattr(self, k)]
         if len(kinds) != 1:
-            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent")
+            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent/check")
+        if self.check and self.input not in (None, self.check):
+            raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
+        if self.check and not (self.expect or self.review):
+            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or both")
+        unknown = [k for k in self.expect if k not in _EXPECTATIONS]
+        if unknown:
+            raise ValueError(
+                f"step '{self.id}': unknown expectation {unknown}. Use {', '.join(_EXPECTATIONS)}"
+            )
+        if (self.expect or self.review) and not self.check:
+            raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
         if self.mode == "batch" and self.records_per_call > 1:
@@ -142,12 +162,12 @@ class StepSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        return "use" if self.use else "fn" if self.fn else "agent"
+        return "use" if self.use else "fn" if self.fn else "check" if self.check else "agent"
 
     @property
     def inputs(self) -> list[str]:
         if self.input is None:
-            return []
+            return [self.check] if self.check else []
         return [self.input] if isinstance(self.input, str) else list(self.input)
 
     @property
