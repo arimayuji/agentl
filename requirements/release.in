@@ -1,0 +1,4 @@
+# Tools the release workflow installs. Regenerate release.txt with:
+#   pip-compile --generate-hashes --allow-unsafe -o requirements/release.txt requirements/release.in
+build
+cyclonedx-bom>=4

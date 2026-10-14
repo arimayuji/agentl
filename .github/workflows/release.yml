@@ -25,18 +25,22 @@ jobs:
         run: |
           pkg=$(python -c "import re;print(re.search(r'__version__ = \"(.+)\"', open('agentl/__init__.py').read())[1])")
           test "v$pkg" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $pkg"; exit 1; }
-      - run: pip install build
+      - run: pip install --require-hashes -r requirements/release.txt  # build tools, pinned by hash
       - run: python -m build
       - name: SBOM (CycloneDX) of the installed wheel and its runtime dependencies
         run: |
           python -m venv /tmp/sbom-env
           /tmp/sbom-env/bin/pip install dist/*.whl
-          pip install "cyclonedx-bom>=4"
           mkdir -p sbom
           cyclonedx-py environment /tmp/sbom-env/bin/python --of JSON -o "sbom/agentl-etl-${GITHUB_REF_NAME}.cdx.json"
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        id: attest
         with:
           subject-path: "dist/*"
+      - name: Keep the signed provenance bundle with the release files
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" "sbom/agentl-etl-${GITHUB_REF_NAME}.sigstore.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
