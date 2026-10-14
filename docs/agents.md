@@ -44,6 +44,7 @@ llm:
 | `ollama` | Local models through [Ollama](https://ollama.com), free and offline. Uses `OLLAMA_HOST` (default `http://localhost:11434`). |
 | `bedrock` | Amazon Bedrock (Converse API): Claude, Llama, Mistral, Nova and other models with tool use. Needs `agentl-etl[aws]`; credentials and region from the AWS chain. `model` is a Bedrock model or inference profile id. |
 | `openai-compatible` | Any OpenAI-style endpoint (vLLM, LM Studio, Groq, Together, gateways): set `options.base_url` and, if needed, `options.api_key_env`. |
+| `openrouter` | Hundreds of models (Claude, GPT, Gemini, Llama, DeepSeek, ...) behind one key through [OpenRouter](https://openrouter.ai). Needs `OPENROUTER_API_KEY`. `model` is an OpenRouter id like `anthropic/claude-sonnet-4.5`. Uses the cost OpenRouter reports, so budgets need no `price`. |
 | `echo` | Offline. Copies matching fields from the record and leaves the rest empty, so required fields that are not in the record (for example `valid: bool`) get rejected. Mark them optional (`bool?`) while testing with echo. |
 
 ```yaml
@@ -63,6 +64,44 @@ small local models may return JSON that does not match the schema, and those rec
 
 Each agent step chooses a provider with `llm:`. Register your own with
 [`register_provider`](extending.md#llm-providers).
+
+### OpenRouter
+
+```yaml
+llm:
+  default:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    options:
+      models: [openai/gpt-4o-mini, google/gemini-2.5-flash]  # OpenRouter's own fallback, in order
+      app_url: https://example.com   # optional, sent as HTTP-Referer
+      app_name: my-pipeline          # optional, sent as X-Title
+```
+
+Agent steps ask for strict JSON schema output; not every model on OpenRouter supports it, and tool
+use depends on the model too. Pick models marked with structured outputs on openrouter.ai/models.
+
+### Fallback between providers
+
+`fallback` lists other llms, by name, to try in order when a call fails (HTTP error, timeout, outage).
+It works across any providers:
+
+```yaml
+llm:
+  default:
+    provider: anthropic
+    model: claude-opus-5-5
+    price: { input: 5, output: 25 }
+    fallback: [bedrock, local]
+  bedrock: { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-v1:0, price: { input: 3, output: 15 } }
+  local: { provider: ollama, model: llama3.2 }
+```
+
+Each answer is priced with the llm that gave it, and every switch is logged as an `llm.fallback`
+event. An answer in the wrong shape does not fall back: the step's own retry handles it. Fallback
+llms cannot have fallbacks of their own; list the whole chain on the first one. Batch mode stays on
+the first llm. With tools, a call that fails mid-way starts over on the next llm, so its tools may
+run again.
 
 ## Data privacy
 

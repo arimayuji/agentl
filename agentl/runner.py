@@ -145,6 +145,7 @@ class Runner:
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
+        self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
@@ -167,8 +168,20 @@ class Runner:
     def _provider(self, name: str) -> llm.Provider:
         with self._provider_lock:
             if name not in self._providers:
-                self._providers[name] = llm.provider(self.spec.llm[name])
+                spec = self.spec.llm[name]
+                prov = llm.provider(spec)
+                if spec.fallback:
+                    chain = [(name, spec, prov)]
+                    chain += [(f, self.spec.llm[f], llm.provider(self.spec.llm[f])) for f in spec.fallback]
+                    prov = llm.FallbackProvider(chain)
+                    prov.on_fallback = self._on_fallback
+                self._providers[name] = prov
             return self._providers[name]
+
+    def _on_fallback(self, failed: str, to: str, error: Exception) -> None:
+        if self._run_id:
+            reason = f"{type(error).__name__}: {error}"[:300]
+            self._emit(self._run_id, "llm.fallback", llm=failed, to=to, error=reason)
 
     def _summarize(self, event: dict) -> str:
         try:
@@ -198,8 +211,9 @@ class Runner:
         for the run and for the step, so spend per step stays right when steps run in parallel."""
         tin, tout = getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0)
         read, write = getattr(usage, "cache_read_tokens", 0), getattr(usage, "cache_write_tokens", 0)
-        cost = spec.cost(tin, tout, read, write)
-        if batch and spec.price:
+        known = getattr(usage, "cost_usd", None)
+        cost = known if known is not None else spec.cost(tin, tout, read, write)
+        if batch and spec.price and known is None:
             cost *= spec.price.batch
         with self._spend:
             result.input_tokens += tin
@@ -863,6 +877,7 @@ class Runner:
     def run(self) -> RunResult:
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         result = RunResult(run_id=run_id, status="running")
+        self._run_id = run_id
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()

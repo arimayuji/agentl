@@ -50,6 +50,8 @@ class LLMSpec(BaseModel):
     max_tokens: int = 4096
     options: dict[str, Any] = Field(default_factory=dict)
     price: PriceSpec | None = None
+    # Other llms (by name) to try, in order, when a call to this one fails.
+    fallback: list[str] = Field(default_factory=list)
 
     def cost(self, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float:
         """`input_tokens` is all input; `cache_read` and `cache_write` are the parts of it that hit
@@ -280,10 +282,18 @@ class PipelineSpec(BaseModel):
     def _refs(self) -> PipelineSpec:
         if self.budget and self.budget.max_usd is not None:
             used = {s.llm for s in self.steps if s.kind == "agent"}
+            used |= {f for n in used if n in self.llm for f in self.llm[n].fallback}
             unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
-            unpriced = [n for n in unpriced if self.llm[n].provider not in ("echo", "ollama")]
+            free = ("echo", "ollama", "openrouter")  # openrouter reports the cost of each call
+            unpriced = [n for n in unpriced if self.llm[n].provider not in free]
             if unpriced:
                 raise ValueError(f"budget.max_usd needs a price on llm {unpriced} (price: {{input, output}})")
+        for name, spec in self.llm.items():
+            for f in spec.fallback:
+                if f == name or f not in self.llm:
+                    raise ValueError(f"llm '{name}': fallback '{f}' must name another llm")
+                if self.llm[f].fallback:
+                    raise ValueError(f"llm '{name}': fallback '{f}' has its own fallback; list them all here")
         ids = [s.id for s in self.steps]
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:

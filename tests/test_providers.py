@@ -170,3 +170,104 @@ def test_openai_cached_tokens_are_reported(fake_api):
     prov = provider(spec(options={"base_url": fake_api["url"]}))
     out = prov.structured("x", {}, schema_model("o", {"ok": "bool"}))
     assert (out.input_tokens, out.cache_read_tokens) == (2000, 1536)
+
+
+# ---------------------------------------------------------------- openrouter and fallback
+def test_openrouter_sends_models_headers_and_uses_reported_cost(fake_api, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    fake_api["reply"] = '{"category": "food"}'
+    fake_api["usage"] = {"prompt_tokens": 7, "completion_tokens": 3, "cost": 0.0042}
+    p = provider(
+        LLMSpec(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4.5",
+            options={
+                "base_url": fake_api["url"],
+                "models": ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4.5"],
+                "app_url": "https://agentl.com.br",
+                "app_name": "agentl",
+            },
+        )
+    )
+    res = p.structured("classify", {"t": "pizza"}, schema_model("o", {"category": "str"}))
+    assert res.value.category == "food" and res.cost_usd == 0.0042
+    req = fake_api["requests"][0]
+    assert req["body"]["models"] == ["anthropic/claude-sonnet-4.5", "openai/gpt-4o-mini"]
+    assert req["body"]["usage"] == {"include": True}
+    headers = {k.lower(): v for k, v in req["headers"].items()}
+    assert headers["authorization"] == "Bearer or-key"
+    assert headers["http-referer"] == "https://agentl.com.br" and headers["x-title"] == "agentl"
+
+
+def test_openrouter_needs_its_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        provider(LLMSpec(provider="openrouter", model="x/y"))
+
+
+def test_fallback_to_another_provider_and_priced_by_it(fake_api, tmp_path):
+    fake_api["reply"] = '{"category": "food"}'
+    fake_api["usage"] = {"prompt_tokens": 1_000_000, "completion_tokens": 0}
+    spec = parse(
+        {
+            "name": "fb",
+            "llm": {
+                "default": {
+                    "provider": "openai-compatible",
+                    "model": "down",
+                    "options": {"base_url": "http://127.0.0.1:9/v1", "retries": 0, "timeout": 2},
+                    "price": {"input": 100, "output": 100},
+                    "fallback": ["backup"],
+                },
+                "backup": {
+                    "provider": "openai-compatible",
+                    "model": "up",
+                    "options": {"base_url": fake_api["url"]},
+                    "price": {"input": 2, "output": 2},
+                },
+            },
+            "budget": {"max_usd": 10},
+            "steps": [
+                {"id": "rows", "fn": "tests.test_providers:one_row"},
+                {"id": "tag", "input": "rows", "agent": "classify", "output": {"category": "str"}},
+            ],
+        }
+    )
+    with Store(tmp_path / "s.db") as store:
+        r = Runner(spec, store=store).run()
+        events = [e["type"] for e in store.events(r.run_id)]
+    assert r.status == "succeeded" and r.outputs["tag"][0]["category"] == "food"
+    assert r.cost_usd == pytest.approx(2.0)  # priced by backup, not by the llm that failed
+    assert "llm.fallback" in events and fake_api["requests"][0]["body"]["model"] == "up"
+
+
+def test_fallback_does_not_hide_invalid_answers(fake_api):
+    from agentl.llm import FallbackProvider, InvalidOutput
+
+    fake_api["reply"] = "not json"
+    a, b = spec(options={"base_url": fake_api["url"]}), spec(options={"base_url": fake_api["url"]})
+    fb = FallbackProvider([("a", a, provider(a)), ("b", b, provider(b))])
+    with pytest.raises(InvalidOutput):
+        fb.structured("x", {}, schema_model("o", {"category": "str"}))
+    assert len(fake_api["requests"]) == 1
+
+
+def test_fallback_validation():
+    base = {"name": "x", "steps": [{"id": "a", "fn": "tests.test_providers:one_row"}]}
+    with pytest.raises(Exception, match="fallback 'nope' must name another llm"):
+        parse({**base, "llm": {"default": {"provider": "echo", "fallback": ["nope"]}}})
+    with pytest.raises(Exception, match="has its own fallback"):
+        parse(
+            {
+                **base,
+                "llm": {
+                    "default": {"provider": "echo", "fallback": ["b"]},
+                    "b": {"provider": "echo", "fallback": ["c"]},
+                    "c": {"provider": "echo"},
+                },
+            }
+        )
+
+
+def one_row(input=None):
+    return [{"t": "pizza"}]

@@ -40,6 +40,7 @@ class Result:
     output_tokens: int = 0
     cache_read_tokens: int = 0  # part of input_tokens read from the provider's prompt cache
     cache_write_tokens: int = 0  # part of input_tokens written to it
+    cost_usd: float | None = None  # set when known exactly (provider report or fallback); else from price
 
 
 class InvalidOutput(ValueError):
@@ -50,6 +51,7 @@ class InvalidOutput(ValueError):
         super().__init__(message)
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.cost_usd: float | None = None
 
 
 class Provider(Protocol):
@@ -377,9 +379,12 @@ class OpenAICompatibleProvider:
         ]
         total = [0, 0, 0, 0]
         calls = 0
+        cost: float | None = None  # only gateways that report it (OpenRouter)
         while True:
             resp = json.loads(self._http("POST", "/chat/completions", json.dumps(body)))
             usage = resp.get("usage") or {}
+            if usage.get("cost") is not None:
+                cost = (cost or 0.0) + float(usage["cost"])
             _usage_sum(
                 total,
                 usage.get("prompt_tokens", 0),
@@ -389,8 +394,9 @@ class OpenAICompatibleProvider:
             message = resp["choices"][0]["message"]
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                res = self._parse({**resp, "usage": {}}, schema)
-                return Result(res.value, *total)
+                res = OpenAICompatibleProvider._parse({**resp, "usage": {}}, schema)
+                tin, tout, read, write = total
+                return Result(res.value, tin, tout, read, write, cost)
             body["messages"].append(
                 {k: v for k, v in message.items() if k in ("role", "content", "tool_calls")}
             )
@@ -516,6 +522,102 @@ class OllamaProvider(OpenAICompatibleProvider):
         super().__init__(spec)
 
 
+class OpenRouterProvider(OpenAICompatibleProvider):
+    """Hundreds of models behind one key through OpenRouter (https://openrouter.ai). `model` is an
+    OpenRouter id such as `anthropic/claude-sonnet-4.5`. Key in OPENROUTER_API_KEY (`api_key_env`).
+
+    `options.models`: more ids OpenRouter tries, in order, when `model` fails or is unavailable.
+    `options.app_url` / `options.app_name`: sent as HTTP-Referer / X-Title (attribution).
+    The cost OpenRouter reports for each call is used, so no `price` is needed for budgets."""
+
+    base_url = "https://openrouter.ai/api/v1"
+    api_key_env = "OPENROUTER_API_KEY"
+    key_required = True
+
+    def __init__(self, spec: LLMSpec):
+        opts = dict(spec.options)
+        models = opts.pop("models", None) or []
+        if isinstance(models, str):
+            models = [models]
+        self.app_url, self.app_name = opts.pop("app_url", None), opts.pop("app_name", None)
+        super().__init__(spec.model_copy(update={"options": opts}))
+        if models:
+            self.extra["models"] = [spec.model, *(m for m in models if m != spec.model)]
+        self.extra.setdefault("usage", {"include": True})
+
+    def _auth(self) -> dict[str, str]:
+        headers = super()._auth()
+        if self.app_url:
+            headers["HTTP-Referer"] = str(self.app_url)
+        if self.app_name:
+            headers["X-Title"] = str(self.app_name)
+        return headers
+
+    @staticmethod
+    def _parse(resp: dict, schema: type[BaseModel]) -> Result:
+        cost = (resp.get("usage") or {}).get("cost")
+        try:
+            res = OpenAICompatibleProvider._parse(resp, schema)
+        except InvalidOutput as e:
+            e.cost_usd = float(cost) if cost is not None else None
+            raise
+        if cost is not None:
+            res.cost_usd = float(cost)
+        return res
+
+
+class FallbackProvider:
+    """`fallback:` on an llm: when a call fails (HTTP error, timeout, outage), the same call goes
+    to the next llm in the list, any provider. An answer in the wrong shape is not a failure of
+    the provider and does not fall back; the step's own retry handles it. Each answer is priced
+    with the llm that gave it."""
+
+    def __init__(self, chain: list[tuple[str, LLMSpec, Provider]]):
+        self.chain = chain
+        self.on_fallback: Callable[[str, str, Exception], None] | None = None
+
+    def _call(self, method: str, *args: Any) -> Any:
+        last: Exception | None = None
+        for i, (name, spec, prov) in enumerate(self.chain):
+            fn = getattr(prov, method, None)
+            if fn is None:
+                continue
+            try:
+                out = fn(*args)
+            except InvalidOutput as e:
+                if e.cost_usd is None:
+                    e.cost_usd = spec.cost(e.input_tokens, e.output_tokens)
+                raise
+            except Exception as e:
+                last = e
+                nxt = next((n for n, _, p in self.chain[i + 1 :] if hasattr(p, method)), None)
+                if nxt is not None and self.on_fallback is not None:
+                    self.on_fallback(name, nxt, e)
+                continue
+            if isinstance(out, Result) and out.cost_usd is None:
+                out.cost_usd = spec.cost(
+                    out.input_tokens, out.output_tokens, out.cache_read_tokens, out.cache_write_tokens
+                )
+            return out
+        if last is None:
+            raise ValueError(f"no llm in {[n for n, _, _ in self.chain]} supports {method}")
+        raise last
+
+    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
+        return self._call("structured", instruction, record, schema)
+
+    def text(self, instruction: str, content: str) -> str:
+        return self._call("text", instruction, content)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "structured_tools":
+            if not any(hasattr(p, name) for _, _, p in self.chain):
+                raise AttributeError(name)
+            return lambda *args: self._call(name, *args)
+        # batch mode talks to one provider across calls: it stays on the first llm
+        return getattr(self.chain[0][2], name)
+
+
 class BedrockProvider:
     """Amazon Bedrock through the Converse API: Claude, Llama, Mistral, Nova and other models
     that support tool use. Structured output uses a forced tool whose input schema is the step's
@@ -597,6 +699,7 @@ _PROVIDERS: dict[str, Callable[[LLMSpec], Provider]] = {
     "ollama": OllamaProvider,
     "openai-compatible": OpenAICompatibleProvider,
     "azure-openai": AzureOpenAIProvider,
+    "openrouter": OpenRouterProvider,
     "echo": EchoProvider,
 }
 
