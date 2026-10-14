@@ -6,8 +6,9 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
-from . import graph, registry
+from . import assist, graph, registry
 from .runner import Runner
 from .spec import SpecError, load
 from .store import open_store
@@ -67,6 +68,21 @@ def main(argv: list[str] | None = None) -> int:
     cmd("runs", "list recent runs")
     cmd("connectors", "list installed connectors")
 
+    n = cmd("new", "write a pipeline from a description (asks an LLM, then validates)")
+    n.add_argument("description")
+    n.add_argument("-o", "--output", help="write the YAML here instead of printing it")
+    n.add_argument("--provider", help="LLM provider (default: $AGENTL_PROVIDER or anthropic)")
+    n.add_argument("--model", help="model (default: $AGENTL_MODEL)")
+
+    dr = cmd("doctor", "explain why a run failed")
+    dr.add_argument("run_id", nargs="?", help="default: the latest failed run")
+    dr.add_argument("--pipeline", help="the pipeline file, sent to the LLM with --suggest")
+    dr.add_argument("--suggest", action="store_true", help="ask an LLM for a fix")
+    dr.add_argument("--provider")
+    dr.add_argument("--model")
+
+    cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
+
     ds = cmd("dashboard", "open the local dashboard")
     ds.add_argument("--port", type=int, default=7070)
     ds.add_argument("--host", default="127.0.0.1")
@@ -83,10 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result.status == "succeeded" else 1
         if a.cmd == "validate":
             spec = load(a.pipeline)
-            graph.order(spec)
-            for s in spec.steps:
-                if s.use:
-                    registry.get(s.use)
+            assist.check(spec)
             print(f"ok: {spec.name} ({len(spec.steps)} steps)")
             return 0
         if a.cmd == "diagram":
@@ -101,13 +114,39 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "connectors":
             print("\n".join(registry.names()))
             return 0
+        if a.cmd == "new":
+            text, spec = assist.new_pipeline(a.description, assist.llm_from_env(a.provider, a.model))
+            if a.output:
+                with open(a.output, "x", encoding="utf-8") as f:
+                    f.write(text)
+                print(f"wrote {a.output}: {spec.name} ({len(spec.steps)} steps)", file=sys.stderr)
+            else:
+                print(text, end="")
+            print("\n" + graph.mermaid(spec), file=sys.stderr)
+            return 0
+        if a.cmd == "doctor":
+            with open_store(a.db) as store:
+                run_id = a.run_id or next((r["id"] for r in assist.failures(store, 1)), None)
+                if run_id is None:
+                    print("no failed runs in this store")
+                    return 0
+                report = assist.diagnose(store, run_id)
+            llm = assist.llm_from_env(a.provider, a.model) if a.suggest else None
+            yaml_text = Path(a.pipeline).read_text(encoding="utf-8") if a.pipeline else None
+            print(assist.explain(report, llm, yaml_text))
+            return 0
+        if a.cmd == "mcp":
+            from .mcp_server import serve as serve_mcp
+
+            serve_mcp(a.db)
+            return 0
         if a.cmd == "dashboard":
             from .dashboard import serve
 
             with open_store(a.db) as store:
                 serve(store, a.host, a.port)
             return 0
-    except (SpecError, KeyError, FileNotFoundError) as e:
+    except (SpecError, KeyError, FileNotFoundError, FileExistsError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return 0
