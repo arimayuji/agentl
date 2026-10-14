@@ -71,6 +71,26 @@ class BudgetSpec(BaseModel):
 
     max_tokens: int | None = Field(default=None, gt=0)
     max_usd: float | None = Field(default=None, gt=0)
+    max_tool_calls: int | None = Field(default=None, gt=0)  # tool calls by agent steps, whole run
+
+
+class MCPServerSpec(BaseModel):
+    """An MCP server agent steps can use as tools: a local `command` (stdio) or a remote `url`
+    (streamable HTTP)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: list[str] | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    timeout: float = Field(default=30, gt=0)
+
+    @model_validator(mode="after")
+    def _one_transport(self) -> MCPServerSpec:
+        if bool(self.command) == bool(self.url):
+            raise ValueError("an mcp server needs exactly one of 'command' or 'url'")
+        return self
 
 
 class StepSpec(BaseModel):
@@ -90,6 +110,11 @@ class StepSpec(BaseModel):
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
+    # Tools the agent may call, per record: "http.get", "sqlite.query", "fn:module:function",
+    # "mcp:server" or "mcp:server/tool"; a one-key dict adds settings, e.g. {sqlite.query: {db: x}}.
+    tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
+    max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
+    write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
@@ -102,6 +127,15 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.tools and not self.agent:
+            raise ValueError(f"step '{self.id}': only agent steps take tools")
+        if self.tools and (self.mode == "batch" or self.records_per_call > 1):
+            raise ValueError(
+                f"step '{self.id}': tools work one record per call; drop mode batch and records_per_call"
+            )
+        for t in self.tools:
+            if isinstance(t, dict) and len(t) != 1:
+                raise ValueError(f"step '{self.id}': write each tool with settings as its own item")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
         return self
@@ -150,6 +184,7 @@ class PipelineSpec(BaseModel):
     chunk_size: int | None = Field(default=None, ge=1)
     # Pass pyarrow Tables between steps that can take them. None: when pyarrow is installed.
     arrow: bool | None = None
+    mcp: dict[str, MCPServerSpec] = Field(default_factory=dict)
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 
@@ -171,6 +206,11 @@ class PipelineSpec(BaseModel):
                     raise ValueError(f"step '{s.id}': unknown input '{ref}'")
             if s.kind == "agent" and s.llm not in self.llm:
                 raise ValueError(f"step '{s.id}': unknown llm '{s.llm}'")
+            for t in s.tools:
+                name = t if isinstance(t, str) else next(iter(t))
+                server = name[4:].split("/", 1)[0]
+                if name.startswith("mcp:") and server not in self.mcp:
+                    raise ValueError(f"step '{s.id}': tool '{name}' needs an mcp server named '{server}'")
         return self
 
     def step(self, step_id: str) -> StepSpec:

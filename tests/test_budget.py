@@ -112,6 +112,7 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
         "output_tokens": 1000,
         "cache_read_tokens": 0,
         "llm_calls": 2,
+        "tool_calls": 0,
         "cost_usd": 0.021,
     }
     assert set(result.spend) == {"a", "b"}  # only agent steps

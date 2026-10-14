@@ -187,6 +187,74 @@ steps:
 - The budget is checked before the batch is submitted, not while it runs: a batch is paid as a whole.
 - Events: `batch.submitted`, `batch.resumed`, `batch.ended` (with `succeeded`, `failed`, `seconds`).
 
+## Tools and MCP servers
+
+An agent step can look things up while it answers: call an API, query a database, ask an MCP
+server. The model decides when to call a tool, up to `max_tool_calls` per record.
+
+```yaml
+mcp:
+  crm: { command: [npx, -y, "@acme/crm-mcp"], env: { CRM_TOKEN: "${CRM_TOKEN}" } }
+  docs: { url: https://mcp.example.com/mcp, headers: { Authorization: "Bearer ${DOCS_TOKEN}" } }
+
+steps:
+  - id: enrich
+    agent: Find the company's sector. Use the CRM first, then its website.
+    input: companies
+    tools:
+      - mcp:crm                                   # every read-only tool of the server
+      - mcp:docs/search                           # one tool of a server
+      - http.get: { allow_hosts: [example.com] }  # built-in, with settings
+      - sqlite.query: { db: data/companies.db }
+      - fn:my_package.tools:crm_company           # your Python function
+    max_tool_calls: 6       # per record, default 8
+    output: { sector: str? }
+```
+
+| Tool | What it does |
+| --- | --- |
+| `http.get` | GET a URL; public addresses only (same guard as the HTTP connectors), optional `allow_hosts`, `headers`, `max_bytes` |
+| `sqlite.query` | read-only SQL on a SQLite file (opened in `mode=ro`), up to `max_rows` rows |
+| `fn:module:function` | a Python function decorated with `@tool` |
+| `mcp:server` / `mcp:server/tool` | tools of an MCP server declared under `mcp:` (stdio `command` or HTTP `url`) |
+
+```python
+from agentl import tool
+
+
+@tool(read_only=True)
+def crm_company(domain: str) -> dict:
+    """Company record from the CRM by web domain."""
+    return crm.get(domain)
+```
+
+The signature becomes the tool's input schema and the docstring its description.
+
+**Read-only by default.** A tool that can change something must be named in `write_tools`:
+MCP tools without `readOnlyHint`, and functions without `@tool(read_only=True)`. Listing a whole
+MCP server (`mcp:crm`) only brings its read-only tools.
+
+```yaml
+    tools: [mcp:crm/update_company]
+    write_tools: [crm.update_company]
+```
+
+- Every call emits `tool.called` with the tool, its arguments (cut to 300 characters), the time and
+  whether it worked. A failing tool answers `error: ...` to the model instead of failing the record.
+- Each step's spend and `RunResult` count `tool_calls`; `budget.max_tool_calls` caps the whole run.
+  The tokens of the extra model turns count in `max_tokens` and `max_usd` as usual.
+- The tools are part of the per-record cache key: changing them asks the model again.
+- Providers: `anthropic`, `openai` and `openai-compatible`. `records_per_call` and `mode: batch`
+  do not apply to steps with tools.
+- MCP servers start with the run (stdio) and stop when it ends.
+
+!!! warning "Tools and untrusted records"
+    A record can contain text that tries to steer the model, and with tools that text could try to
+    make it call one. agentl tells the model to treat records and tool results as data, keeps tools
+    read-only unless you allow writes, and `http.get` refuses internal addresses. Still: give a step
+    only the tools it needs, prefer `allow_hosts`, and never pass secrets the model could echo into
+    a tool argument.
+
 ## Security: untrusted data in prompts
 
 Records often come from places you do not control: web pages, emails, PDFs. A record can contain

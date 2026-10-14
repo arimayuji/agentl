@@ -9,6 +9,15 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Tools for agent steps (`tools:`): the model can call `http.get`, a read-only `sqlite.query`, Python
+  functions decorated with `@tool`, and MCP servers declared under `mcp:` (stdio or streamable HTTP,
+  stdlib client). Read-only by default; tools that can write must be listed in `write_tools`.
+  `max_tool_calls` per record, `budget.max_tool_calls` per run, `tool_calls` in spend and a
+  `tool.called` event for every call. Supported by the `anthropic`, `openai` and `openai-compatible`
+  providers.
+
 ### Changed
 
 - The quickstart example is now in English: `examples/quickstart.yaml` (was `examples/notas.yaml`)
