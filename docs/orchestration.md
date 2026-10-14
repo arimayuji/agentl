@@ -28,6 +28,46 @@ runs in one dashboard: set `AGENTL_DB=postgresql://...` on every worker
 
 `agentl run` exits with 1 when the run fails, so cron mail and wrappers notice it.
 
+## agentl serve: schedules, webhooks and new files
+
+For teams without a scheduler, `agentl serve` runs pipelines on their own triggers, declared in
+the YAML:
+
+```yaml
+name: invoices
+trigger:
+  - cron: "0 7 * * 1-5"              # weekdays 07:00, local time (or timezone: America/Sao_Paulo)
+  - webhook: /hooks/invoices          # POST JSON here
+    secret: ${INVOICES_HOOK_SECRET}
+  - files: "inbox/*.pdf"              # new or changed files; remote globs work too (s3://, gs://)
+    every: 1m
+steps:
+  - id: arrived
+    use: trigger                      # what started the run
+  - id: pages
+    use: file.read
+    input: arrived
+  # ...
+```
+
+```bash
+agentl serve pipelines/invoices.yaml pipelines/sales.yaml --host 0.0.0.0 --port 7071
+```
+
+| Trigger | The `trigger` step gets |
+| --- | --- |
+| `cron` | `[{scheduled_at}]`. Five fields, names (`mon`, `jan`), ranges, steps, `@daily`/`@hourly`/`@weekly`/`@monthly`; a time missed while the service was down is not run later |
+| `webhook` | the JSON body as records (an object is one record). `secret` accepts `Authorization: Bearer <secret>` or an HMAC-SHA256 of the body in `X-Signature-256` / `X-Hub-Signature-256` (`sha256=<hex>`). Answers 202 once queued |
+| `files` | one record per new or changed file: `path`, `name`, `size`, `modified`. The cursor is kept in the run store, so a restart does not reprocess old files, and files are marked as seen only after a successful run |
+
+Runs of one pipeline never overlap: they queue. Different pipelines run side by side. `GET
+/health` lists the pipelines served. A `use: trigger` step outside `agentl serve` returns no
+records, so the same file still runs with `agentl run`.
+
+`agentl serve` is one process. If you already have cron, Airflow or GitHub Actions, keep them:
+they bring retries, history and high availability that a single process does not. Put a reverse
+proxy with TLS in front of webhooks exposed to the internet.
+
 ## Sources with no fixed publishing time
 
 A portal that posts yesterday's file sometime between 6 and 11 am, an API that updates "in the

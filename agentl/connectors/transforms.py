@@ -80,3 +80,10 @@ def concat(input: Any) -> list[dict]:
     if isinstance(input, dict):
         return [r for rows in input.values() for r in rows]
     return single(input)
+
+
+@connector("trigger")
+def trigger(input: Any = None) -> list[dict]:
+    """What started the run under `agentl serve`: the webhook body, the new files, or the
+    schedule. The runner fills it; outside `agentl serve` it is empty."""
+    return []

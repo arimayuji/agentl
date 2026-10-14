@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `trigger:` in the pipeline (`cron`, `webhook` with `secret`, `files` with a cursor in the run
+  store) and `agentl serve` to run pipelines on them; a `use: trigger` step gets what started the
+  run. Runs of one pipeline queue instead of overlapping.
 - `graphql.query` (cursor pagination), `gsheets.read` / `gsheets.write`, `gdrive.files` /
   `gdrive.upload` and `sharepoint.files` / `sharepoint.upload` (SharePoint and OneDrive through
   Microsoft Graph, chunked uploads over 4 MB). Credentials from the environment; Google service
