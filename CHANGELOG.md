@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `excel.write`: an .xlsx ready to open (bold header, frozen first row, filter, fitted columns,
+  numeric text as numbers), one sheet per input step.
+- Versioned outputs on every file writer: `{date}` and `{datetime}` in `path`, a `latest` copy
+  under a fixed name, and `keep: N` to delete older versions (local and remote paths).
 - Data checks (`check:` steps): fixed expectations (`rows`, `not_null`, `unique`, `accepted`,
   `range`, `fresh`, `vs_last_run`) and an optional agent `review` of the data's profile. With
   `on_fail: stop` a failing check stops the run before the writer; `warn` lets the data through.
