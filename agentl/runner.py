@@ -22,6 +22,7 @@ from . import graph, llm, registry
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
+from .tools import ToolBox, api_name
 
 Records = list[dict[str, Any]]
 Listener = Callable[[dict], None]
@@ -38,6 +39,7 @@ class RunResult:
     output_tokens: int = 0
     cache_read_tokens: int = 0  # part of input_tokens served from provider prompt caches
     llm_calls: int = 0
+    tool_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
 
@@ -128,6 +130,7 @@ class Runner:
         self.use_cache = use_cache
         self.listeners = list(listeners or [])
         self._providers: dict[str, llm.Provider] = {}
+        self._toolbox: ToolBox | None = None
         self._spend = threading.Lock()
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
@@ -214,7 +217,53 @@ class Runner:
             return f"max_tokens {b.max_tokens} reached ({result.input_tokens + result.output_tokens} used)"
         if b.max_usd is not None and result.cost_usd >= b.max_usd:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
+        if b.max_tool_calls is not None and result.tool_calls >= b.max_tool_calls:
+            return f"max_tool_calls {b.max_tool_calls} reached"
         return None
+
+    # tools --------------------------------------------------------------
+    def _tool_caller(self, run_id: str, step: StepSpec, result: RunResult) -> tuple[list[dict], llm.ToolCall]:
+        """Tool definitions for the provider and the function it calls for each tool use: it
+        checks the budget, runs the tool, records spend and emits `tool.called`. A tool that fails
+        answers `error: ...` to the model instead of failing the record."""
+        with self._provider_lock:  # steps may run in parallel
+            if self._toolbox is None:
+                self._toolbox = ToolBox(self.spec)
+            toolbox = self._toolbox
+        by_name = {api_name(t.name): t for t in toolbox.for_step(step)}
+        defs = [
+            {"name": n, "description": t.description, "input_schema": t.input_schema}
+            for n, t in by_name.items()
+        ]
+
+        def call(name: str, args: dict) -> str:
+            t = by_name.get(name)
+            if t is None:
+                return f"error: unknown tool {name}"
+            self._check_budget(result)
+            with self._spend:
+                result.tool_calls += 1
+                result.spend[step.id]["tool_calls"] += 1
+            t0 = time.time()
+            try:
+                out, ok = t.run(args), True
+            except Exception as e:
+                out, ok = f"error: {type(e).__name__}: {e}", False
+            ok = ok and not out.startswith("error:")
+            shown = json.dumps(args, ensure_ascii=False, default=str)
+            self._emit(
+                run_id,
+                "tool.called",
+                step.id,
+                tool=t.name,
+                ok=ok,
+                seconds=round(time.time() - t0, 3),
+                args=shown if len(shown) <= 300 else shown[:300] + "…",
+                **({} if ok else {"error": out[:300]}),
+            )
+            return out
+
+        return defs, call
 
     # batch mode ---------------------------------------------------------
     def _run_batch(
@@ -280,8 +329,19 @@ class Runner:
         cacheable = self.use_cache and step.cached
         llm_key = llm_spec.model_dump(exclude={"price"})
 
+        tool_defs: list[dict] = []
+        call_tool: llm.ToolCall | None = None
+        if step.tools:
+            if not hasattr(prov, "structured_tools"):
+                raise ValueError(
+                    f"step '{step.id}': llm provider '{llm_spec.provider}' does not support tools"
+                )
+            tool_defs, call_tool = self._tool_caller(run_id, step, result)
+
         def key(rec: dict) -> str:
             # records_per_call is not part of the key: the answer per record is the same.
+            if step.tools:  # tools can change the answer, so they are part of the key
+                return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
             return _hash("agent", step.agent, step.output, llm_key, rec)
 
         def done(rec: dict, out: dict) -> tuple[dict, None]:
@@ -294,7 +354,14 @@ class Runner:
             for _ in range(2):  # one retry on invalid output
                 self._check_budget(result)
                 try:
-                    res = prov.structured(step.agent or "", rec, schema)
+                    if call_tool is not None:
+                        res = prov.structured_tools(  # type: ignore[attr-defined]
+                            step.agent or "", rec, schema, tool_defs, call_tool, step.max_tool_calls
+                        )
+                    else:
+                        res = prov.structured(step.agent or "", rec, schema)
+                except BudgetExceeded:
+                    raise
                 except (ValidationError, ValueError, RuntimeError) as e:
                     # Invalid answers still cost tokens: count them for budget and spend.
                     self._charge(result, step, llm_spec, e)
@@ -472,7 +539,7 @@ class Runner:
         if step.kind == "agent":
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
-                    ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls"), 0
+                    ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
                 ) | {"cost_usd": 0.0}
         self._emit(run_id, "step.started", step_id, kind=step.kind)
         t0 = time.time()
@@ -559,7 +626,7 @@ class Runner:
             if step.kind == "agent":
                 with self._spend:
                     result.spend[step.id] = dict.fromkeys(
-                        ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls"), 0
+                        ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
                     ) | {"cost_usd": 0.0}
             self._emit(run_id, "step.started", step.id, kind=step.kind, chunk_size=size)
         counts = dict.fromkeys((s.id for s in chain), 0)
@@ -689,6 +756,10 @@ class Runner:
         except Exception as e:
             result.status = "failed"
             result.error = f"{type(e).__name__}: {e}"
+        finally:
+            if self._toolbox is not None:  # MCP servers started for this run
+                self._toolbox.close()
+                self._toolbox = None
         self.store.finish_run(run_id, result.status, result.error)
         self._emit(
             run_id,

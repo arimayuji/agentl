@@ -5,6 +5,7 @@ from .notify import register_channel
 from .registry import connector
 from .runner import PipelineFailed, Runner, RunResult, run
 from .spec import PipelineSpec, SpecError, load, parse
+from .tools import tool
 
 __all__ = [
     "PipelineFailed",
@@ -18,5 +19,6 @@ __all__ = [
     "register_channel",
     "register_provider",
     "run",
+    "tool",
 ]
 __version__ = "0.6.1"
