@@ -6,6 +6,9 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.6.0**: performance: reproducible benchmarks, prompt caching, several records per call and
+  batch mode for agent steps, independent steps in parallel, chunked streaming for large inputs and
+  an Arrow fast path (10x on CSV to pandas to Parquet, 22x on Parquet to Postgres).
 - **0.5.1**: security hardening: URL guard against SSRF, untrusted record data in prompts, SBOM and
   build provenance on releases, pinned actions and OpenSSF Scorecard.
 - **0.5.0**: AWS Lambda connector, Bedrock provider, HTTP pagination, the `examples/invoices` migration
@@ -21,16 +24,6 @@ Priorities change with feedback, so dates are intentionally left out.
 - **0.1.1**: YAML pipelines, agent steps with validated schemas, per-record cache, connectors
   (CSV, JSON, Excel, PDF, Word, HTTP, SQLite), notifications, CLI and local dashboard.
   See the [changelog](changelog.md).
-
-## Next: 0.6, performance
-
-| Feature | Issue |
-|---|---|
-| Reproducible benchmarks and a published performance page | [#56](https://github.com/arimayuji/agentl/issues/56) |
-| Cheaper and faster agent steps: prompt caching, multi-record calls, batch mode | [#59](https://github.com/arimayuji/agentl/issues/59) |
-| Run independent steps in parallel | [#57](https://github.com/arimayuji/agentl/issues/57) |
-| Stream records in chunks for large inputs | [#58](https://github.com/arimayuji/agentl/issues/58) |
-| Columnar fast path with Apache Arrow | [#60](https://github.com/arimayuji/agentl/issues/60) |
 
 ## Later
 
