@@ -11,7 +11,7 @@ from ..registry import connector, require
 from ._util import tmpdir
 from .files import html_tables
 
-EXTRACT = ("table", "text", "html", "links")
+EXTRACT = ("table", "text", "html", "links", "markdown")
 ACTIONS = ("goto", "fill", "click", "press", "select", "check", "wait_for", "wait")
 
 
@@ -49,6 +49,16 @@ def _extract(page: Any, mode: str, selector: str | None, table: int | None) -> l
         return page.eval_on_selector_all(
             f"{selector or 'body'} a[href]", "els => els.map(a => ({text: a.innerText.trim(), href: a.href}))"
         )
+    if mode == "markdown":
+        from .web import to_markdown
+
+        html = (
+            page.content()
+            if not selector
+            else "".join(el.evaluate("e => e.outerHTML") for el in page.query_selector_all(selector))
+        )
+        md = to_markdown(html, url=page.url)
+        return [md] if md["markdown"] else []
     els = page.query_selector_all(selector or "body")
     if mode == "text":
         return [{"text": el.inner_text()} for el in els]
@@ -69,12 +79,20 @@ def browser_scrape(
     headless: bool = True,
     executable_path: str | None = None,
     user_agent: str | None = None,
+    evidence: bool | str = False,
+    evidence_keep_days: int | None = None,
+    retry_if_empty: int = 0,
 ) -> list[dict]:
     """Open `url` (or run `steps`), then extract `table` rows, `text`, `html` or `links` matching
     `selector`, or click `download` and return the saved file as `{path}` for `file.read`.
 
     With upstream records, runs once per record and fills `{field}` placeholders in `url` and
-    steps. Every output record gets `_url` (the page it came from)."""
+    steps. Every output record gets `_url` (the page it came from).
+
+    `extract: markdown` gives the page's main content as clean Markdown (needs `agentl-etl[web]`).
+    `evidence` keeps the page HTML, the Markdown and a screenshot of every page (true:
+    `.agentl/evidence`, or a folder). `retry_if_empty` loads the page again when the extraction
+    gave nothing (a late render, a flaky page)."""
     if extract not in EXTRACT:
         raise ValueError(f"extract must be one of {EXTRACT}")
     sync_api = require("playwright.sync_api", "browser")
@@ -88,13 +106,21 @@ def browser_scrape(
         try:
             context = browser.new_context(accept_downloads=True, user_agent=user_agent)
             page = context.new_page()
+            if evidence and evidence_keep_days:
+                from .web import prune_evidence
+
+                prune_evidence(evidence, evidence_keep_days)
             for rec in records:
-                if url:
-                    page.goto(url.format(**rec), timeout=ms)
-                for action in steps or []:
-                    _do(page, action, rec, ms)
-                if wait_for:
-                    page.wait_for_selector(wait_for.format(**rec), timeout=ms)
+
+                def load(rec: dict = rec) -> None:
+                    if url:
+                        page.goto(url.format(**rec), timeout=ms)
+                    for action in steps or []:
+                        _do(page, action, rec, ms)
+                    if wait_for:
+                        page.wait_for_selector(wait_for.format(**rec), timeout=ms)
+
+                load()
                 if download:
                     with page.expect_download(timeout=ms) as info:
                         page.click(download.format(**rec), timeout=ms)
@@ -103,7 +129,23 @@ def browser_scrape(
                     dl.save_as(str(path))
                     out.append({"path": str(path), "filename": path.name, "_url": page.url})
                     continue
-                out.extend({**r, "_url": page.url} for r in _extract(page, extract, selector, table))
+                rows = _extract(page, extract, selector, table)
+                for _ in range(retry_if_empty):
+                    if rows:
+                        break
+                    load()
+                    rows = _extract(page, extract, selector, table)
+                ev: dict = {}
+                if evidence:
+                    from .web import save_evidence
+
+                    md = "\n\n".join(r["markdown"] for r in rows) if extract == "markdown" else None
+                    ev = save_evidence(
+                        evidence, page.url, page.content(), md, page.screenshot(full_page=True)
+                    )
+                    if not rows:
+                        out.append({"_url": page.url, "_empty": True, **ev})
+                out.extend({**r, "_url": page.url, **ev} for r in rows)
             context.close()
         finally:
             browser.close()

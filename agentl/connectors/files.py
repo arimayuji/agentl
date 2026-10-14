@@ -555,8 +555,49 @@ def html_read(
     headers: dict | None = None,
     storage_options: dict | None = None,
     table: int | None = None,
+    format: str = "tables",
+    evidence: bool | str = False,
+    evidence_keep_days: int | None = None,
+    retry_if_empty: int = 0,
+    encoding: str = "utf-8",
 ) -> Records:
-    return _each(read_html, input, path, url, headers, table=table, storage_options=storage_options)
+    """`format: tables` (default) gives the rows of the HTML tables. `format: markdown` gives one
+    record per page with `title` and `markdown`: the main content, without menus, footers or
+    scripts (needs `agentl-etl[web]`). `evidence` keeps the raw HTML and the Markdown of every page
+    (true: `.agentl/evidence`, or a folder); `retry_if_empty` reads a page again when it gave
+    nothing."""
+    if format not in ("tables", "markdown"):
+        raise ValueError("format must be 'tables' or 'markdown'")
+    if format == "tables" and not evidence and not retry_if_empty:
+        return _each(read_html, input, path, url, headers, table=table, storage_options=storage_options)
+    from . import web
+
+    if evidence and evidence_keep_days:
+        web.prune_evidence(evidence, evidence_keep_days)
+    out: Records = []
+    for attempt in range(retry_if_empty + 1):
+        out = []
+        empty = False
+        for p in paths(input, path, "path", url, headers, storage_options):
+            html = p.read_text(encoding=encoding, errors="replace")
+            source = url if url and "{" not in url else str(p)
+            if format == "markdown":
+                page = web.to_markdown(html, url=source if source.startswith("http") else None)
+                rows = [{**page, "_source": source}] if page["markdown"] else []
+            else:
+                rows = html_tables(html, table)
+            empty = empty or not rows
+            ev = (
+                web.save_evidence(evidence, source, html, page["markdown"] if format == "markdown" else None)
+                if evidence
+                else {}
+            )
+            out.extend({**r, **ev} for r in rows)
+            if not rows and format == "markdown" and attempt == retry_if_empty:
+                out.append({"title": "", "markdown": "", "_source": source, **ev})
+        if not empty:
+            break
+    return out
 
 
 # ---------------------------------------------------------------- writers
