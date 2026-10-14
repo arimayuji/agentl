@@ -6,6 +6,7 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.6.1**: fixes copying and pickling `RunResult` and outputs that could show Arrow tables.
 - **0.6.0**: performance: reproducible benchmarks, prompt caching, several records per call and
   batch mode for agent steps, independent steps in parallel, chunked streaming for large inputs and
   an Arrow fast path (10x on CSV to pandas to Parquet, 22x on Parquet to Postgres).
