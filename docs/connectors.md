@@ -50,7 +50,42 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
 | ZIP, GZ | `file.read` | records of the inner files | |
 
-Writers: `csv.write`, `json.write` (`.json` or `.jsonl`) and `parquet.write` (`compression`, needs `agentl-etl[parquet]`).
+Writers: `csv.write`, `json.write` (`.json` or `.jsonl`), `parquet.write` (`compression`, needs
+`agentl-etl[parquet]`) and `excel.write` (needs `agentl-etl[excel]`). All of them take
+[versioned names](#versioned-outputs).
+
+### Excel for the people who use the data
+
+```yaml
+- id: report
+  use: excel.write
+  input: [summary, detail]          # one sheet per input step
+  with:
+    path: "smb://fileserver/finance/sales_{date}.xlsx"
+    latest: "smb://fileserver/finance/sales.xlsx"
+    keep: 30
+```
+
+`excel.write` gives a file a person can open as is: bold header, frozen first row, a filter on
+the header and column widths that fit. Numeric text (from CSV, say) becomes numbers, except values
+with a leading zero such as `00123`, which stay text; `numbers: false` keeps everything as written.
+Dicts and lists are written as JSON, and dates with a time zone are converted to UTC, since Excel
+has no time zones. `sheet:` names the sheet when there is a single input.
+
+### Versioned outputs
+
+Every file writer (`csv.write`, `json.write`, `parquet.write`, `excel.write`) takes:
+
+| Setting | Example | Effect |
+| --- | --- | --- |
+| `{date}` / `{datetime}` in `path` | `reports/sales_{date}.xlsx` | one file per day (`2026-10-14`) or per run (`2026-10-14T050007`), local time |
+| `latest` | `reports/sales.xlsx` | a copy of the new file under a fixed name, for people and links |
+| `keep` | `30` | delete all but the 30 newest versions (needs `{date}` or `{datetime}`) |
+
+`keep` only counts files whose name matches the dated pattern, so the `latest` copy and other
+files in the folder are never deleted. It works on local paths and on any remote path (S3, SMB,
+SFTP, ...). If the storage keeps versions itself (S3 bucket versioning, SharePoint), writing to a
+fixed name is enough.
 
 ### Example: CSV straight from a URL
 

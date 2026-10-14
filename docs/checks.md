@@ -31,9 +31,12 @@ steps:
     on_fail: stop            # or warn
 
   - id: report
-    use: csv.write
+    use: excel.write
     input: verify
-    with: { path: "smb://fileserver/finance/sales.csv" }
+    with:
+      path: "smb://fileserver/finance/sales_{date}.xlsx"
+      latest: "smb://fileserver/finance/sales.xlsx"
+      keep: 30
 
 notify:
   channels:

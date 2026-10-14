@@ -8,9 +8,11 @@ Every reader takes its files from `path` (a glob), `url` (downloaded first) or t
 from __future__ import annotations
 
 import csv
+import datetime as _dt
 import gzip
 import json
 import logging
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -565,12 +567,76 @@ def _target(path: str) -> Path:
     return local
 
 
+# Versioned outputs: `{date}` / `{datetime}` in the path, a `latest` copy, `keep` the newest N.
+_STAMPS = {"date": "%Y-%m-%d", "datetime": "%Y-%m-%dT%H%M%S"}
+
+
+def versioned(path: str, now: _dt.datetime | None = None) -> str:
+    """'reports/sales_{date}.xlsx' -> 'reports/sales_2026-10-14.xlsx' (local time)."""
+    if "{" not in path:
+        return path
+    now = now or _dt.datetime.now()
+    try:
+        return path.format(**{k: now.strftime(f) for k, f in _STAMPS.items()})
+    except (KeyError, IndexError) as e:
+        raise ValueError(f"path '{path}': only {{date}} and {{datetime}} can be used") from e
+
+
+def publish(
+    template: str, path: str, local: Path, latest: str | None, keep: int | None, storage_options: dict | None
+) -> dict:
+    """After a writer wrote `local` to `path`: copy it to `latest` and delete all but the newest
+    `keep` files made from the same `template`. Returns the fields to add to the writer's result."""
+    extra: dict = {}
+    if latest:
+        if is_remote(latest):
+            upload(local, latest, storage_options)
+        else:
+            Path(latest).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local, latest)
+        extra["latest"] = latest
+    if keep:
+        if "{" not in template:
+            raise ValueError("keep needs {date} or {datetime} in the path, so versions have their own names")
+        pattern = template.format(**dict.fromkeys(_STAMPS, "*"))
+        # Only names in the template's own format count as versions (not sales_latest.csv).
+        name = re.escape(template.replace("\\", "/").rsplit("/", 1)[-1])
+        for key, regex in (("date", r"\d{4}-\d{2}-\d{2}"), ("datetime", r"\d{4}-\d{2}-\d{2}T\d{6}")):
+            name = name.replace(re.escape("{" + key + "}"), regex)
+        version = re.compile(name + "$")
+
+        def versions(paths: list[str]) -> list[str]:
+            return sorted(p for p in paths if version.match(p.replace("\\", "/").rsplit("/", 1)[-1]))
+
+        if is_remote(template):
+            from ._util import _fs
+
+            fs, root = _fs(pattern, storage_options)
+            found = versions(fs.glob(root))
+            for old in found[:-keep]:
+                fs.rm(old)
+        else:
+            import glob as _glob
+
+            found = versions(_glob.glob(pattern))
+            for old in found[:-keep]:
+                Path(old).unlink(missing_ok=True)
+        extra["deleted"] = max(0, len(found) - keep)
+    return extra
+
+
 @stream_writer("csv.write")
 def csv_write_chunks(
-    chunks: Iterable[Records], path: str, delimiter: str = ",", storage_options: dict | None = None
+    chunks: Iterable[Records],
+    path: str,
+    delimiter: str = ",",
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
 ) -> Records:
     """The header comes from the first chunk with records. A column that first appears in a later
     chunk is an error rather than silently dropped: select the fields, or use a bigger chunk."""
+    template, path = path, versioned(path)
     local = _target(path)
     written = 0
     w: csv.DictWriter | None = None
@@ -593,51 +659,97 @@ def csv_write_chunks(
             csv.writer(f).writerow([])
     if is_remote(path):
         upload(local, path, storage_options)
-    return [{"path": path, "written": written}]
+    return [
+        {"path": path, "written": written, **publish(template, path, local, latest, keep, storage_options)}
+    ]
 
 
 @connector("csv.write")
-def csv_write(input: Any, path: str, delimiter: str = ",", storage_options: dict | None = None) -> Records:
-    return csv_write_chunks([single(input)], path, delimiter, storage_options)
+def csv_write(
+    input: Any,
+    path: str,
+    delimiter: str = ",",
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
+) -> Records:
+    return csv_write_chunks([single(input)], path, delimiter, storage_options, latest, keep)
 
 
-def _parquet_target(path: str, storage_options: dict | None, write: Callable[[Path], None]) -> None:
+def _write_file(
+    path: str,
+    storage_options: dict | None,
+    write: Callable[[Path], None],
+    latest: str | None,
+    keep: int | None,
+    written: int,
+) -> Records:
+    """Writers that build the whole file at once: write locally, upload, publish versions."""
+    template, path = path, versioned(path)
     local = _target(path)
     write(local)
     if is_remote(path):
         upload(local, path, storage_options)
+    return [
+        {"path": path, "written": written, **publish(template, path, local, latest, keep, storage_options)}
+    ]
 
 
 @connector("parquet.write")
 def parquet_write(
-    input: Any, path: str, compression: str = "snappy", storage_options: dict | None = None
+    input: Any,
+    path: str,
+    compression: str = "snappy",
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
 ) -> Records:
     """Write records to a Parquet file (local or remote). Needs `agentl-etl[parquet]`."""
     pa = require("pyarrow", "parquet")
     pq = require("pyarrow.parquet", "parquet")
     rows = single(input)
-    _parquet_target(
+    return _write_file(
         path,
         storage_options,
         lambda p: pq.write_table(pa.Table.from_pylist(rows), str(p), compression=compression),
+        latest,
+        keep,
+        len(rows),
     )
-    return [{"path": path, "written": len(rows)}]
 
 
 @arrow_writer("parquet.write")
 def parquet_write_arrow(
-    data: Any, path: str, compression: str = "snappy", storage_options: dict | None = None
+    data: Any,
+    path: str,
+    compression: str = "snappy",
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
 ) -> Records:
     pq = require("pyarrow.parquet", "arrow")
-    _parquet_target(path, storage_options, lambda p: pq.write_table(data, str(p), compression=compression))
-    return [{"path": path, "written": data.num_rows}]
+    return _write_file(
+        path,
+        storage_options,
+        lambda p: pq.write_table(data, str(p), compression=compression),
+        latest,
+        keep,
+        data.num_rows,
+    )
 
 
 @stream_writer("json.write")
-def json_write_chunks(chunks: Iterable[Records], path: str, storage_options: dict | None = None) -> Records:
+def json_write_chunks(
+    chunks: Iterable[Records],
+    path: str,
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
+) -> Records:
     """`.jsonl` is written chunk by chunk; a `.json` array needs every record, so it is collected."""
     if not path.endswith(".jsonl"):
-        return json_write([r for rows in chunks for r in rows], path, storage_options)
+        return json_write([r for rows in chunks for r in rows], path, storage_options, latest, keep)
+    template, path = path, versioned(path)
     local = _target(path)
     written = 0
     with open(local, "w", encoding="utf-8") as f:
@@ -646,17 +758,105 @@ def json_write_chunks(chunks: Iterable[Records], path: str, storage_options: dic
             written += len(rows)
     if is_remote(path):
         upload(local, path, storage_options)
-    return [{"path": path, "written": written}]
+    return [
+        {"path": path, "written": written, **publish(template, path, local, latest, keep, storage_options)}
+    ]
 
 
 @connector("json.write")
-def json_write(input: Any, path: str, storage_options: dict | None = None) -> Records:
+def json_write(
+    input: Any,
+    path: str,
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
+) -> Records:
     rows = single(input)
     if path.endswith(".jsonl"):
-        return json_write_chunks([rows], path, storage_options)
-    local = _target(path)
-    with open(local, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
-    if is_remote(path):
-        upload(local, path, storage_options)
-    return [{"path": path, "written": len(rows)}]
+        return json_write_chunks([rows], path, storage_options, latest, keep)
+
+    def write(local: Path) -> None:
+        with open(local, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2, default=str)
+
+    return _write_file(path, storage_options, write, latest, keep, len(rows))
+
+
+# ---------------------------------------------------------------- excel.write
+_NUMBER = re.compile(r"^-?(0|[1-9]\d*)(\.\d+)?$")
+
+
+def _cell(v: Any, numbers: bool) -> Any:
+    """A value openpyxl can store: JSON for dicts and lists, naive datetimes (Excel has no time
+    zones), and numeric text as numbers unless it has a leading zero (codes like 00123 stay text)."""
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, default=str)
+    if isinstance(v, _dt.datetime) and v.tzinfo is not None:
+        return v.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+    if numbers and isinstance(v, str) and _NUMBER.match(v.strip()):
+        n = float(v)
+        return int(n) if n.is_integer() and "." not in v else n
+    return v
+
+
+def _sheet_title(name: str, used: set[str]) -> str:
+    title = re.sub(r"[\[\]:*?/\\]", "_", name)[:31] or "Sheet"
+    base, n = title, 2
+    while title.lower() in used:
+        title = f"{base[:28]}_{n}"
+        n += 1
+    used.add(title.lower())
+    return title
+
+
+@connector("excel.write")
+def excel_write(
+    input: Any,
+    path: str,
+    sheet: str = "data",
+    numbers: bool = True,
+    freeze_header: bool = True,
+    autofilter: bool = True,
+    storage_options: dict | None = None,
+    latest: str | None = None,
+    keep: int | None = None,
+) -> Records:
+    """Write an .xlsx a person can open as is: bold header, frozen first row, a filter on the
+    header, column widths that fit, numbers as numbers. With several inputs, one sheet per input
+    step (`input: [summary, detail]`). Needs `agentl-etl[excel]`."""
+    require("openpyxl", "excel")
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    sheets = input if isinstance(input, dict) else {sheet: input or []}
+    total = sum(len(rows) for rows in sheets.values())
+
+    def write(local: Path) -> None:
+        wb = Workbook(write_only=True)
+        used: set[str] = set()
+        for name, rows in sheets.items():
+            ws = wb.create_sheet(_sheet_title(str(name), used))
+            cols: list[str] = []
+            for r in rows:
+                cols.extend(k for k in r if k not in cols)
+            for i, c in enumerate(cols, start=1):
+                longest = max([len(str(c))] + [len(str(r.get(c, ""))) for r in rows[:500]])
+                ws.column_dimensions[get_column_letter(i)].width = min(60, longest + 2)
+            if freeze_header:
+                ws.freeze_panes = "A2"
+            if autofilter and cols:
+                ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{len(rows) + 1}"
+            header = []
+            for c in cols:
+                cell = WriteOnlyCell(ws, value=c)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill("solid", fgColor="E8EEF5")
+                header.append(cell)
+            ws.append(header)
+            for r in rows:
+                ws.append([_cell(r.get(c), numbers) for c in cols])
+        wb.save(local)
+
+    return _write_file(path, storage_options, write, latest, keep, total)
