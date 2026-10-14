@@ -1,4 +1,4 @@
-"""Build the agentl brand assets from the Outfit Bold font.
+"""Build the agentl brand assets (Carioca palette) from the Outfit Bold font.
 
 Text is converted to outlines, so the SVGs render the same everywhere
 without the font installed. PNGs are rendered with Playwright.
@@ -23,9 +23,18 @@ TEXT_FONT = TTFont(HERE / "font" / "inter-latin-400-normal.woff2")  # supporting
 OUT = HERE / "assets"
 TRACKING = -0.03  # em, slightly tighter than default
 
-INK_DARK = "#f4f4f6"  # on dark backgrounds
-INK_LIGHT = "#0b0b10"  # on light backgrounds
-BG_DARK = "#07070b"
+# Carioca palette: white first, Rio blue, sun yellow, sunset orange, palm green.
+WHITE = "#ffffff"
+BLUE = "#0070c9"
+SUN = "#ffd400"
+SUNSET = "#ff6b3d"
+PALM = "#009c3b"
+INK = "#0b1b2b"  # text on light backgrounds
+NAVY = "#08131f"  # dark backgrounds
+MUTED = "#3d5266"  # supporting text on light backgrounds
+
+INK_DARK = WHITE  # wordmark on dark backgrounds
+INK_LIGHT = INK  # wordmark on light backgrounds
 
 
 def outline(
@@ -50,56 +59,90 @@ def outline(
     return pen.getCommands(), x_max, y_min, y_max
 
 
+def _sun(x: float, baseline: float, size: float) -> str:
+    """The sun dot that closes the name, sitting on the baseline like a period."""
+    r = size * 0.075
+    return f'<circle cx="{x + r * 1.6:.1f}" cy="{baseline - r:.1f}" r="{r:.1f}" fill="{SUN}"/>'
+
+
 def wordmark(color: str, size: float = 100, pad: float = 0) -> str:
     d, w, top, bottom = outline("agentl", size)
+    r = size * 0.075
+    full = w + r * 2.6
     h = bottom - top
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-pad} {top - pad} {w + 2 * pad:.1f} {h + 2 * pad:.1f}" '
-        f'width="{w + 2 * pad:.0f}" height="{h + 2 * pad:.0f}" role="img" aria-label="agentl">'
-        f'<path d="{d}" fill="{color}"/></svg>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-pad} {top - pad} {full + 2 * pad:.1f} {h + 2 * pad:.1f}" '
+        f'width="{full + 2 * pad:.0f}" height="{h + 2 * pad:.0f}" role="img" aria-label="agentl">'
+        f'<path d="{d}" fill="{color}"/>{_sun(w, 0, size)}</svg>'
     )
 
 
-def icon(size: int = 512, bg: str = BG_DARK, ink: str = INK_DARK) -> str:
-    d, w, top, bottom = outline("a", size * 0.62)
-    gx = (size - w) / 2
+def _mark(size: float, scale: float) -> str:
+    """The "a." centred in a square of `size`."""
+    d, w, top, bottom = outline("a", size * scale)
+    dot = size * scale * 0.075 * 2.6
+    gx = (size - w - dot) / 2
     gy = (size - (bottom - top)) / 2 - top
+    return f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, size * scale)}</g>'
+
+
+def icon(size: int = 512) -> str:
+    """App icon and favicon: rounded square."""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
-        f'<rect width="{size}" height="{size}" rx="{size * 0.22:.0f}" fill="{bg}"/>'
-        f'<path transform="translate({gx:.1f} {gy:.1f})" d="{d}" fill="{ink}"/></svg>'
+        f'<rect width="{size}" height="{size}" rx="{size * 0.22:.0f}" fill="{BLUE}"/>{_mark(size, 0.62)}</svg>'
     )
 
 
-BLOBS = [  # (cx, cy, r, color) of the soft color mesh behind the social image
-    (0.02, 0.05, 0.26, "#c4b5fd"),
-    (0.38, -0.12, 0.22, "#a5f3fc"),
-    (0.95, 0.02, 0.26, "#fbcfe8"),
-    (1.02, 0.95, 0.27, "#99f6e4"),
-    (0.58, 1.14, 0.24, "#fde68a"),
-    (0.00, 1.02, 0.24, "#bfdbfe"),
+def avatar(size: int = 512) -> str:
+    """Profile picture: full bleed, since X, GitHub and others crop it to a circle."""
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
+        f'<rect width="{size}" height="{size}" fill="{BLUE}"/>{_mark(size, 0.56)}</svg>'
+    )
+
+
+BLOBS = [  # (cx, cy, r, color) of the soft color mesh behind the wide images
+    (0.00, 0.05, 0.24, "#9fd0f5"),  # sky
+    (0.36, -0.14, 0.20, "#fff1a8"),  # sun
+    (0.97, 0.00, 0.24, "#ffc2a8"),  # sunset
+    (1.04, 0.98, 0.26, "#a8e6c0"),  # palm
+    (0.58, 1.16, 0.22, "#fff1a8"),
+    (0.00, 1.04, 0.22, "#9fd0f5"),
 ]
 
 
-def social(width: int = 1280, height: int = 640) -> str:
-    d, w, top, bottom = outline("agentl", 210)
-    gx = (width - w) / 2
-    gy = height / 2 - 40 - (top + bottom) / 2
-    tag, tw, _ttop, _tbot = outline("Agentic ETL for Python", 34, TEXT_FONT, 0.01)
+def _wide(width: int, height: int, title: float, tagline: str, x_center: float) -> str:
+    d, w, top, bottom = outline("agentl", title)
+    r = title * 0.075
+    full = w + r * 2.6
+    gx = x_center - full / 2
+    gy = height / 2 - title * 0.2 - (top + bottom) / 2
+    tag, tw, _t, _b = outline(tagline, title * 0.16, TEXT_FONT, 0.01)
     blobs = "".join(
-        f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r * width:.0f}" fill="{col}"/>'
-        for x, y, r, col in BLOBS
+        f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r_ * width:.0f}" fill="{col}"/>'
+        for x, y, r_, col in BLOBS
     )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
         '<defs><filter id="soft" x="-50%" y="-50%" width="200%" height="200%">'
-        '<feGaussianBlur stdDeviation="90"/></filter></defs>'
-        f'<rect width="{width}" height="{height}" fill="#ffffff"/>'
-        f'<g filter="url(#soft)" opacity=".9">{blobs}</g>'
-        f'<path transform="translate({gx:.1f} {gy:.1f})" d="{d}" fill="{INK_LIGHT}"/>'
-        f'<path transform="translate({(width - tw) / 2:.1f} {gy + bottom + 80:.1f})" d="{tag}" fill="#3f3f46"/>'
+        f'<feGaussianBlur stdDeviation="{width * 0.07:.0f}"/></filter></defs>'
+        f'<rect width="{width}" height="{height}" fill="{WHITE}"/>'
+        f'<g filter="url(#soft)" opacity=".85">{blobs}</g>'
+        f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{INK}"/>{_sun(w, 0, title)}</g>'
+        f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{MUTED}"/>'
         "</svg>"
     )
+
+
+def social(width: int = 1280, height: int = 640) -> str:
+    """GitHub / Open Graph preview."""
+    return _wide(width, height, 210, "Agentic ETL for Python", width / 2)
+
+
+def banner(width: int = 1500, height: int = 500) -> str:
+    """X header. The profile picture covers the lower left, so the text sits right of center."""
+    return _wide(width, height, 170, "Agentic ETL in YAML · pip install agentl-etl", width * 0.58)
 
 
 def render_png(svg_path: Path, png_path: Path, width: int, height: int) -> None:
@@ -124,19 +167,39 @@ def main() -> None:
         "agentl-wordmark-dark.svg": wordmark(INK_DARK),  # for dark backgrounds
         "agentl-wordmark-light.svg": wordmark(INK_LIGHT),  # for light backgrounds
         "agentl-icon.svg": icon(),
-        "agentl-icon-light.svg": icon(bg="#ffffff", ink=INK_LIGHT),
+        "agentl-avatar.svg": avatar(),
         "agentl-social.svg": social(),
+        "agentl-banner.svg": banner(),
     }
+    for old in ("agentl-icon-light.svg",):  # retired with the Carioca palette
+        (OUT / old).unlink(missing_ok=True)
     for name, svg in files.items():
         (OUT / name).write_text(svg)
-    render_png(OUT / "agentl-icon.svg", OUT / "agentl-icon-512.png", 512, 512)
-    render_png(OUT / "agentl-icon.svg", OUT / "agentl-icon-180.png", 180, 180)
-    render_png(OUT / "agentl-icon.svg", OUT / "agentl-icon-32.png", 32, 32)
-    render_png(OUT / "agentl-social.svg", OUT / "agentl-social-1280x640.png", 1280, 640)
+    pngs = [
+        ("agentl-icon", 512, 512, "agentl-icon-512.png"),
+        ("agentl-icon", 180, 180, "agentl-icon-180.png"),
+        ("agentl-icon", 32, 32, "agentl-icon-32.png"),
+        ("agentl-avatar", 400, 400, "agentl-avatar-400.png"),
+        ("agentl-avatar", 1000, 1000, "agentl-avatar-1000.png"),
+        ("agentl-social", 1280, 640, "agentl-social-1280x640.png"),
+        ("agentl-banner", 1500, 500, "agentl-banner-1500x500.png"),
+    ]
+    for src, w, h, png in pngs:
+        render_png(OUT / f"{src}.svg", OUT / png, w, h)
     for name in ("agentl-wordmark-dark", "agentl-wordmark-light"):
         svg = (OUT / f"{name}.svg").read_text()
         w, h = (float(v) for v in svg.split('width="')[1].split('"')[0:3:2])
         render_png(OUT / f"{name}.svg", OUT / f"{name}.png", int(w * 4), int(h * 4))
+    # the docs site serves its own copies
+    docs = HERE.parent.parent / "docs" / "assets"
+    for name in (
+        "agentl-wordmark-dark.svg",
+        "agentl-wordmark-light.svg",
+        "agentl-icon-180.png",
+        "agentl-social-1280x640.png",
+    ):
+        (docs / name).write_bytes((OUT / name).read_bytes())
+    (docs / "favicon.svg").write_text(files["agentl-icon.svg"])
     print("\n".join(sorted(p.name for p in OUT.iterdir())))
 
 
