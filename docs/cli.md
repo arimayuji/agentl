@@ -49,5 +49,13 @@ flowchart LR
 
 ## Dashboard
 
-`agentl dashboard` serves a local page with recent runs, the event log and the pipeline diagram colored
-by step status. It binds to `127.0.0.1` by default. Do not expose it publicly: it has no authentication.
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/dashboard.jpg" aria-label="The dashboard during a live run: steps light up, KPIs and spend update, events stream in">
+  <source src="../assets/clips/dashboard.webm" type="video/webm">
+  <source src="../assets/clips/dashboard.mp4" type="video/mp4">
+</video>
+
+<small>Screen recording of `agentl dashboard` during a run (offline demo pipeline with a fake LLM).</small>
+
+`agentl dashboard` serves a local page, refreshed every second: recent runs, the pipeline graph with
+live status, records, duration and cost per step, KPIs, spend per step and the event timeline. It is
+self-contained (no CDN) and follows the newest run until you pick one. It binds to `127.0.0.1` by default. Do not expose it publicly: it has no authentication.

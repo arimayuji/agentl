@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Changed
+
+- New dashboard: the pipeline graph is drawn by agentl (no Mermaid, no CDN, works offline), with live
+  step status, records, duration and cost on each node; KPIs (duration, steps, records, rejected,
+  tokens, cost), spend per step, an events timeline with an issues filter, light and dark themes.
+  It follows the newest run until you pick one.
+
 ## [0.5.1] - 2026-10-14
 
 ### Security
