@@ -1,0 +1,28 @@
+name: daily-sales
+steps:
+  - id: export
+    use: csv.read
+    with: { path: "${WORK}/data/sales.csv" }
+
+  - id: clean
+    use: filter
+    input: export
+    with: { not_empty: amount }
+
+  - id: unique
+    use: dedupe
+    input: clean
+    with: { on: order_id }
+
+  - id: verify
+    check: unique
+    expect: { rows: { min: 10 }, not_null: [region] }
+
+  - id: report
+    fn: cases.sales_report.steps:by_region
+    input: verify
+
+  - id: save
+    use: excel.write
+    input: report
+    with: { path: "${WORK}/out/sales_{date}.xlsx", latest: "${WORK}/out/sales_latest.xlsx", keep: 7 }

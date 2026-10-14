@@ -1,0 +1,23 @@
+name: web-summaries
+llm: { provider: case-fake, model: fake, options: { task: summary } }
+
+steps:
+  - id: pages
+    use: html.read
+    with: { path: "${WORK}/data/pages/*.html", format: markdown }
+
+  - id: summarized
+    agent: Summarize the page in one sentence.
+    input: pages
+    concurrency: 8
+    output: { summary: str }
+
+  - id: rows
+    use: select
+    input: summarized
+    with: { fields: [_source, title, summary], rename: { _source: source } }
+
+  - id: save
+    use: json.write
+    input: rows
+    with: { path: "${WORK}/out/summaries.json" }

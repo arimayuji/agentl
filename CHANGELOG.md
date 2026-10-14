@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `python -m cases`: four common pipelines (ticket triage, invoice extraction, web summaries,
+  a daily sales report) written by hand and with agentl, checked to write the same result, with
+  lines of code, time and model calls on a clean run, after a failed write and on a re-run.
+  See the Before and after page.
 - Secret references resolved at load time and kept out of the run store: `${aws-sm:...}`
   (with `#key` for JSON secrets), `${ssm:...}`, `${gcp-sm:...}`, `${azure-kv:...}`.
 - `provider: azure-openai` (Azure OpenAI v1 API). New Cloud page with deployment recipes for

@@ -1,0 +1,20 @@
+name: ticket-triage
+llm: { provider: case-fake, model: fake, options: { task: tickets } }
+
+steps:
+  - id: tickets
+    use: csv.read
+    with: { path: "${WORK}/data/tickets.csv" }
+
+  - id: triage
+    agent: >
+      Classify the support ticket. category is one of billing, bug, account, feature_request,
+      other. urgent is true only when something critical is blocked right now.
+    input: tickets
+    concurrency: 8
+    output: { category: str, urgent: bool }
+
+  - id: report
+    use: excel.write
+    input: triage
+    with: { path: "${WORK}/out/triage.xlsx" }

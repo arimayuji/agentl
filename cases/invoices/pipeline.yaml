@@ -1,0 +1,25 @@
+name: invoice-extraction
+llm: { provider: case-fake, model: fake, options: { task: invoices } }
+
+steps:
+  - id: invoices
+    use: txt.read
+    with: { path: "${WORK}/data/invoices/*.txt" }
+
+  - id: fields
+    agent: >
+      Extract tax_id (the CNPJ as written), total (amount due as a number) and due_date
+      (YYYY-MM-DD) from the invoice.
+    input: invoices
+    concurrency: 8
+    output: { tax_id: str, total: float, due_date: str }
+
+  - id: rows
+    use: select
+    input: fields
+    with: { fields: [path, tax_id, total, due_date] }
+
+  - id: save
+    use: sqlite.write
+    input: rows
+    with: { db: "${WORK}/out/finance.db", table: invoices, mode: replace }
