@@ -63,6 +63,7 @@ nav:
       - Scheduling and orchestration: orchestration.md
       - Observability: observability.md
       - Performance: performance.md
+      - Evals: evals.md
       - Extending: extending.md
       - Migrate from pandas: migrate-from-pandas.md
       - Use with AI agents: ai-agents.md

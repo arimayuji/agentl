@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `python -m evals`: accuracy per field on two small labeled datasets, tokens and USD per 1k
+  records, and cache savings on reruns, for agentl, agentl with `records_per_call: 10` and a
+  plain-Python baseline with the same model and prompt. See the Evals page.
 - `agentl stats`: track record per pipeline from the run store (success rate, median and p95
   duration, cost, failures grouped by step and normalized error, per-day trend), also in the
   dashboard and as the MCP tool `pipeline_stats`.
