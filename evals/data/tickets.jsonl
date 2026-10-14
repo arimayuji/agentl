@@ -1,0 +1,40 @@
+{"id": 1, "text": "I was charged twice for my October subscription, please refund one of them.", "label": {"category": "billing", "urgent": false}}
+{"id": 2, "text": "The export button crashes the app every time I click it. We have a board meeting in an hour and need the report NOW.", "label": {"category": "bug", "urgent": true}}
+{"id": 3, "text": "How do I change the email address on my account?", "label": {"category": "account", "urgent": false}}
+{"id": 4, "text": "It would be great if the dashboard had a dark mode.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 5, "text": "Our whole team is locked out after the password reset, nobody can log in and payroll runs today.", "label": {"category": "account", "urgent": true}}
+{"id": 6, "text": "Can you send me the invoice for September with our company tax id on it?", "label": {"category": "billing", "urgent": false}}
+{"id": 7, "text": "Search returns no results for names with accents, like José or Conceição.", "label": {"category": "bug", "urgent": false}}
+{"id": 8, "text": "Please add an option to schedule reports weekly instead of only daily.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 9, "text": "Production is down: every API call returns 500 since 9am and our checkout is broken.", "label": {"category": "bug", "urgent": true}}
+{"id": 10, "text": "My card was declined but the bank says everything is fine. Can you check?", "label": {"category": "billing", "urgent": false}}
+{"id": 11, "text": "I want to delete my account and all my data.", "label": {"category": "account", "urgent": false}}
+{"id": 12, "text": "Do you have an office in Lisbon? I would like to visit.", "label": {"category": "other", "urgent": false}}
+{"id": 13, "text": "An integration with Google Sheets would save us hours every week.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 14, "text": "We were billed for 50 seats but we only have 12 users. This is the third month, fix it today or we cancel.", "label": {"category": "billing", "urgent": true}}
+{"id": 15, "text": "The date picker shows the wrong month when the browser language is Portuguese.", "label": {"category": "bug", "urgent": false}}
+{"id": 16, "text": "How can I add a second admin to our workspace?", "label": {"category": "account", "urgent": false}}
+{"id": 17, "text": "Thanks for the quick help yesterday, the team loved it!", "label": {"category": "other", "urgent": false}}
+{"id": 18, "text": "Someone logged into my account from another country and changed the password. Please lock it immediately.", "label": {"category": "account", "urgent": true}}
+{"id": 19, "text": "Could the CSV export include the customer id column?", "label": {"category": "feature_request", "urgent": false}}
+{"id": 20, "text": "Uploading files larger than 10 MB fails with a timeout.", "label": {"category": "bug", "urgent": false}}
+{"id": 21, "text": "What payment methods do you accept? Is PIX available?", "label": {"category": "billing", "urgent": false}}
+{"id": 22, "text": "Are you hiring data engineers?", "label": {"category": "other", "urgent": false}}
+{"id": 23, "text": "All our scheduled pipelines stopped running overnight and the morning numbers for the CEO are missing. Urgent.", "label": {"category": "bug", "urgent": true}}
+{"id": 24, "text": "I'd like to be able to tag records with custom labels.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 25, "text": "Please switch our plan from monthly to yearly billing.", "label": {"category": "billing", "urgent": false}}
+{"id": 26, "text": "I never received the email to confirm my account.", "label": {"category": "account", "urgent": false}}
+{"id": 27, "text": "The mobile app logs me out every few minutes.", "label": {"category": "bug", "urgent": false}}
+{"id": 28, "text": "Can we get an API endpoint to list all runs with filters?", "label": {"category": "feature_request", "urgent": false}}
+{"id": 29, "text": "Your site has a typo on the pricing page, 'anual' should be 'annual'.", "label": {"category": "other", "urgent": false}}
+{"id": 30, "text": "The renewal charged our old card that was cancelled and now the account is suspended during our product launch, please restore access right now.", "label": {"category": "billing", "urgent": true}}
+{"id": 31, "text": "How do I enable two factor authentication?", "label": {"category": "account", "urgent": false}}
+{"id": 32, "text": "Charts render blank in Safari 17.", "label": {"category": "bug", "urgent": false}}
+{"id": 33, "text": "Please support Excel files with multiple sheets on import.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 34, "text": "Is there a discount for nonprofits?", "label": {"category": "billing", "urgent": false}}
+{"id": 35, "text": "Data from yesterday is duplicated in the warehouse and the finance close is this afternoon, we need this fixed immediately.", "label": {"category": "bug", "urgent": true}}
+{"id": 36, "text": "I'd like to transfer ownership of the workspace to my colleague.", "label": {"category": "account", "urgent": false}}
+{"id": 37, "text": "Do you have a status page I can subscribe to?", "label": {"category": "other", "urgent": false}}
+{"id": 38, "text": "A Slack notification when a run fails would be very useful.", "label": {"category": "feature_request", "urgent": false}}
+{"id": 39, "text": "The receipt shows the wrong company address.", "label": {"category": "billing", "urgent": false}}
+{"id": 40, "text": "Sorting by date puts 2025 after 2026 in the runs table.", "label": {"category": "bug", "urgent": false}}
