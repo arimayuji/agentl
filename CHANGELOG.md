@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Data checks (`check:` steps): fixed expectations (`rows`, `not_null`, `unique`, `accepted`,
+  `range`, `fresh`, `vs_last_run`) and an optional agent `review` of the data's profile. With
+  `on_fail: stop` a failing check stops the run before the writer; `warn` lets the data through.
+  Events `check.passed` and `check.failed` with the findings. New "Data checks" docs page.
 - Tools for agent steps (`tools:`): the model can call `http.get`, a read-only `sqlite.query`, Python
   functions decorated with `@tool`, and MCP servers declared under `mcp:` (stdio or streamable HTTP,
   stdlib client). Read-only by default; tools that can write must be listed in `write_tools`.

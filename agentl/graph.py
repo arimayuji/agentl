@@ -18,7 +18,7 @@ def order(spec: PipelineSpec) -> list[str]:
     return done
 
 
-_SHAPES = {"use": ("[", "]"), "fn": ("(", ")"), "agent": ("{{", "}}")}
+_SHAPES = {"use": ("[", "]"), "fn": ("(", ")"), "agent": ("{{", "}}"), "check": ("[[", "]]")}
 _STATUS_CLASS = {
     "running": "fill:#dbeafe,stroke:#2563eb",
     "succeeded": "fill:#dcfce7,stroke:#16a34a",
@@ -30,7 +30,7 @@ def mermaid(spec: PipelineSpec, status: dict[str, str] | None = None) -> str:
     lines = ["flowchart LR"]
     for s in spec.steps:
         left, right = _SHAPES[s.kind]
-        detail = s.use or s.fn or "agent"
+        detail = s.use or s.fn or ("check" if s.check else "agent")
         label = f"{s.id}<br/><small>{detail}</small>".replace('"', "'")
         lines.append(f'  {s.id}{left}"{label}"{right}')
     for s in spec.steps:
