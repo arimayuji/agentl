@@ -11,6 +11,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `python -m benchmarks --compare`: the same jobs with agentl, in plain Python and with pandas, measuring time, CPU, peak memory and I/O, and failing unless every variant writes the same data. Results in the Performance page.
 - `excel.write`: an .xlsx ready to open (bold header, frozen first row, filter, fitted columns,
   numeric text as numbers), one sheet per input step.
 - Versioned outputs on every file writer: `{date}` and `{datetime}` in `path`, a `latest` copy
