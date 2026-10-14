@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import assist, graph, registry
@@ -81,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--provider")
     dr.add_argument("--model")
 
+    st = cmd("stats", "success rate, durations, cost and failures by reason, per pipeline")
+    st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
+    st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
+    st.add_argument("--json", action="store_true", help="print the report as JSON")
+
     cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
 
     ds = cmd("dashboard", "open the local dashboard")
@@ -135,6 +141,14 @@ def main(argv: list[str] | None = None) -> int:
             yaml_text = Path(a.pipeline).read_text(encoding="utf-8") if a.pipeline else None
             print(assist.explain(report, llm, yaml_text))
             return 0
+        if a.cmd == "stats":
+            from . import stats
+            from .checks import parse_duration
+
+            with open_store(a.db) as store:
+                report = stats.compute(store, time.time() - parse_duration(a.since), a.pipeline)
+            print(json.dumps(report, indent=2, default=str) if a.json else stats.text(report))
+            return 0
         if a.cmd == "mcp":
             from .mcp_server import serve as serve_mcp
 
@@ -146,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 serve(store, a.host, a.port)
             return 0
-    except (SpecError, KeyError, FileNotFoundError, FileExistsError) as e:
+    except (SpecError, KeyError, FileNotFoundError, FileExistsError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return 0

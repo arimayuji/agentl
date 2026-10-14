@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -62,10 +63,12 @@ svg text{font-family:Inter,system-ui,sans-serif}
 .ev .st{color:var(--violet);font-family:var(--mono);font-size:12px}.ev .d{color:var(--muted);font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
 .tabs{display:flex;gap:6px;margin-left:auto}.tabs button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer}
 .tabs button.on{color:var(--fg);background:var(--panel2)}
+.ps{padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px}.ps .row{display:flex;justify-content:space-between;gap:8px}.ps .rate{font-family:var(--mono)}.ps .why{color:var(--muted);font-size:12px;margin-top:4px;overflow-wrap:anywhere}
+.ps .track{height:6px;border-radius:3px;background:var(--red);overflow:hidden;margin-top:6px}.ps .ok{height:100%;background:var(--green)}
 .empty{color:var(--muted);padding:40px;text-align:center}.empty code{color:var(--fg)}
 </style></head><body>
 <header><span class="wm">agentl</span><span class="sub">dashboard</span><span class="live"><span class="dot"></span>live · <span id="count">0</span> runs</span></header>
-<main><aside class="card"><h2>Runs</h2><div class="runs" id="runs"></div></aside><section id="detail"></section></main>
+<main><aside class="card"><h2>Last 30 days</h2><div id="stats"></div><h2>Runs</h2><div class="runs" id="runs"></div></aside><section id="detail"></section></main>
 <script>
 let sel=null,pinned=false,filter='all';
 const $=s=>document.querySelector(s);
@@ -119,7 +122,14 @@ async function tick(){
   if(!sel){$('#detail').innerHTML='<div class="card empty">Run a pipeline and it shows up here live.</div>';return}
   const r=await fetch('/api/runs/'+sel);if(r.ok)render(await r.json());
 }
-tick();setInterval(tick,1000);
+async function stats(){
+  const r=await fetch('/api/stats');if(!r.ok)return;const ps=(await r.json()).pipelines;
+  $('#stats').innerHTML=ps.map(p=>{const rate=p.success_rate==null?'—':Math.round(p.success_rate*100)+'%',f=p.failures[0];
+    return `<div class="ps"><div class="row"><b>${esc(p.pipeline)}</b><span class="rate">${rate} · ${p.succeeded}/${p.succeeded+p.failed}</span></div>
+    <div class="track"><div class="ok" style="width:${(p.success_rate??1)*100}%"></div></div>
+    ${f?`<div class="why">${f.count}× ${f.step?'['+esc(f.step)+'] ':''}${esc(f.reason)}</div>`:''}</div>`}).join('')||'<div class="empty">No runs in the last 30 days.</div>';
+}
+tick();setInterval(tick,1000);stats();setInterval(stats,15000);
 </script></body></html>"""
 
 
@@ -225,6 +235,11 @@ def serve(store: Store, host: str = "127.0.0.1", port: int = 7070) -> None:
                 return self._send(200, PAGE, "text/html; charset=utf-8")
             if path == "/api/runs":
                 return self._send(200, json.dumps(store.runs()), "application/json")
+            if path == "/api/stats":
+                from . import stats
+
+                report = stats.compute(store, time.time() - 30 * 86400)
+                return self._send(200, json.dumps(report, default=str), "application/json")
             if path.startswith("/api/runs/"):
                 detail = run_detail(store, path.rsplit("/", 1)[1])
                 if detail:

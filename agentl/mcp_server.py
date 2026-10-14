@@ -68,6 +68,17 @@ class Server:
             self.list_failures,
             required=[],
         )
+        add(
+            "pipeline_stats",
+            "Track record per pipeline: success rate, durations, cost, failures grouped by reason "
+            "and a per-day trend.",
+            {
+                "pipeline": {"type": "string", "description": "pipeline name; all when omitted"},
+                "since": {"type": "string", "description": "how far back, e.g. 7d, 12h (default 30d)"},
+            },
+            self.pipeline_stats,
+            required=[],
+        )
         add("doctor", "Explain why a run failed.", {"run_id": {"type": "string"}}, self.doctor)
         add("list_connectors", "Installed connectors and their parameters.", {}, self.connectors)
 
@@ -132,6 +143,16 @@ class Server:
             return [
                 assist.diagnose(store, r["id"]) for r in assist.failures(store, int(args.get("limit") or 10))
             ]
+
+    def pipeline_stats(self, args: dict) -> dict:
+        import time
+
+        from . import stats
+        from .checks import parse_duration
+
+        since = time.time() - parse_duration(args.get("since") or "30d")
+        with open_store(self.db) as store:
+            return stats.compute(store, since, args.get("pipeline"))
 
     def doctor(self, args: dict) -> str:
         with open_store(self.db) as store:

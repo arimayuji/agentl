@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl stats`: track record per pipeline from the run store (success rate, median and p95
+  duration, cost, failures grouped by step and normalized error, per-day trend), also in the
+  dashboard and as the MCP tool `pipeline_stats`.
 - `format: markdown` on `html.read` and `extract: markdown` on `browser.scrape`: the page's main
   content as clean Markdown (`agentl-etl[web]`, trafilatura). `evidence` keeps the HTML, the
   Markdown and a screenshot of every page, with `evidence_keep_days`; `retry_if_empty` reads a page again.
