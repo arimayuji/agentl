@@ -12,12 +12,21 @@ from agentl.store import Store
 
 STARTED: list[str] = []
 LOCK = threading.Lock()
+# How many `slow` steps are running right now, and the most seen at once. Asserting on this instead
+# of wall time keeps the tests stable on slow CI runners.
+ACTIVE = {"now": 0, "max": 0}
 
 
 def slow(input=None, name="x", seconds=0.3, fail=False):
     with LOCK:
         STARTED.append(name)
-    time.sleep(seconds)
+        ACTIVE["now"] += 1
+        ACTIVE["max"] = max(ACTIVE["max"], ACTIVE["now"])
+    try:
+        time.sleep(seconds)
+    finally:
+        with LOCK:
+            ACTIVE["now"] -= 1
     if fail:
         raise RuntimeError(f"{name} broke")
     return [{"src": name, "n": i} for i in range(3)]
@@ -45,6 +54,7 @@ def pipeline(parallel=4, fail_a=False, extra=()):
 @pytest.fixture(autouse=True)
 def reset():
     STARTED.clear()
+    ACTIVE.update(now=0, max=0)
 
 
 def run(tmp_path, spec):
@@ -55,15 +65,15 @@ def run(tmp_path, spec):
 
 
 def test_independent_sources_run_together(tmp_path):
-    r, seconds, _ = run(tmp_path, pipeline(parallel=4))
+    r, _, _ = run(tmp_path, pipeline(parallel=4))
     assert r.status == "succeeded", r.error
-    assert seconds < 0.55  # max(a, b), not a + b
+    assert ACTIVE["max"] == 2  # a and b overlapped
     assert len(r.outputs["both"]) == 6
 
 
 def test_one_at_a_time_keeps_the_old_order(tmp_path):
-    _, seconds, events = run(tmp_path, pipeline(parallel=1))
-    assert seconds >= 0.6
+    _, _, events = run(tmp_path, pipeline(parallel=1))
+    assert ACTIVE["max"] == 1
     order = [(e["type"], e["step"]) for e in events if e["type"].startswith("step.")]
     assert order == [
         ("step.started", "a"),
@@ -97,8 +107,9 @@ def test_parallel_limit_is_respected(tmp_path):
         for i in range(4)
     ]
     spec = parse({"name": "lim", "max_parallel_steps": 2, "steps": many})
-    _, seconds, _ = run(tmp_path, spec)
-    assert 0.4 <= seconds < 0.75  # two waves of two
+    r, _, _ = run(tmp_path, spec)
+    assert r.status == "succeeded", r.error
+    assert ACTIVE["max"] == 2  # never more than the limit, and it did run two at once
 
 
 class Priced:
