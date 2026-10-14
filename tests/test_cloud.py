@@ -110,7 +110,8 @@ def spec_with(value):
     )
 
 
-def test_every_secret_kind_resolves(cloud, aws):
+def test_every_secret_kind_resolves(cloud, aws, monkeypatch):
+    monkeypatch.setenv("AGENTL_TEST_PLAIN", "plain")
     s = parse(
         {
             "name": "x",
@@ -124,7 +125,7 @@ def test_every_secret_kind_resolves(cloud, aws):
                         "ssm": "${ssm:/prod/pg}",
                         "gcp": "${gcp-sm:acme/pg_dsn}",
                         "az": "postgresql://etl:${azure-kv:kv/pg-dsn#password}@db/x",
-                        "env": "${HOME}",
+                        "env": "${AGENTL_TEST_PLAIN}",
                     },
                 }
             ],
@@ -132,7 +133,7 @@ def test_every_secret_kind_resolves(cloud, aws):
     )
     w = s.steps[0].with_
     assert w["aws"] == "postgresql://aws" and w["aws_key"] == "s3" and w["ssm"] == "ssm:/prod/pg:True"
-    assert w["gcp"] == "postgresql://gcp" and w["az"] == "postgresql://etl:p@ss@db/x" and w["env"]
+    assert w["gcp"] == "postgresql://gcp" and w["az"] == "postgresql://etl:p@ss@db/x" and w["env"] == "plain"
 
 
 def test_secrets_are_fetched_once_per_process(cloud, aws):
