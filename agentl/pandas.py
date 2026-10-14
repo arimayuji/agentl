@@ -57,16 +57,49 @@ def to_records(df: Any) -> list[dict]:
     ]
 
 
+def to_table(df: Any) -> Any:
+    """DataFrame -> pyarrow Table with the same columns and values `to_records` would give."""
+    pd = require("pandas", "pandas")
+    pa = require("pyarrow", "arrow")
+    if isinstance(df, pd.Series):
+        df = df.to_frame()
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"expected a DataFrame, got {type(df).__name__}")
+    if not isinstance(df.index, pd.RangeIndex):
+        df = df.reset_index()
+    df = df.set_axis([str(c) for c in df.columns], axis=1)
+    table = pa.Table.from_pandas(df, preserve_index=False).replace_schema_metadata(None)
+    # pandas' string columns come out as large_string; records would give string.
+    fields = [
+        pa.field(f.name, pa.string() if pa.types.is_large_string(f.type) else f.type, f.nullable)
+        for f in table.schema
+    ]
+    return table.cast(pa.schema(fields))
+
+
+def _frame(value: Any) -> Any:
+    """Records or a pyarrow Table -> DataFrame."""
+    if hasattr(value, "to_pandas") and hasattr(value, "num_rows"):
+        return value.to_pandas()
+    return to_df(value)
+
+
 def dataframe(fn: Callable[..., Any]) -> Callable[..., list[dict]]:
-    """Wrap `fn(df, **params) -> DataFrame` as an agentl step `fn(records, **params) -> records`."""
+    """Wrap `fn(df, **params) -> DataFrame` as an agentl step `fn(records, **params) -> records`.
+
+    With `agentl-etl[arrow]` the runner may hand the step a pyarrow Table instead of records and
+    ask for a Table back (`_arrow=True`), skipping the per-row conversion on both sides."""
 
     @functools.wraps(fn)
-    def step(input: Any = None, **params: Any) -> list[dict]:
+    def step(input: Any = None, _arrow: bool = False, **params: Any) -> Any:
         if isinstance(input, dict):
-            arg: Any = {k: to_df(v) for k, v in input.items()}
+            arg: Any = {k: _frame(v) for k, v in input.items()}
         else:
-            arg = to_df(input)
+            arg = _frame(input)
         out = fn(arg, **params)
+        if _arrow:
+            return to_table(to_df([]) if out is None else out)
         return [] if out is None else to_records(out)
 
+    step.agentl_dataframe = True  # type: ignore[attr-defined]
     return step

@@ -70,6 +70,27 @@ steps:
 Measured: 1M rows (70 MB CSV) to SQLite grows the process by 790 MB all at once and by 61 MB in
 50k chunks; 3M rows in 50k chunks stays at 62 MB. See [Performance](performance.md).
 
+## Columnar fast path (Arrow)
+
+Records are Python dicts. With `pip install 'agentl-etl[arrow]'`, steps that can work on columns
+pass a pyarrow Table to each other instead, and records are only built for steps that need them:
+
+| Produces a Table | Takes a Table |
+| --- | --- |
+| `csv.read`, `parquet.read`, `@dataframe` steps | `parquet.write`, `postgres.write` (append and replace, with `COPY`), `@dataframe` steps |
+
+- A step passes a Table only when every step that reads its output can take one; otherwise
+  nothing changes for that edge. Cached and chunked steps always use records.
+- `csv.read` keeps every column as text, as without Arrow. It uses the normal reader for what
+  pyarrow would read differently: several files, an encoding other than UTF-8, a BOM, duplicate
+  or ragged columns.
+- `RunResult.outputs` still gives records: a Table is converted the first time you read it.
+- On by default when pyarrow is installed. `arrow: false` on the pipeline turns it off, and
+  `arrow: true` fails the run if pyarrow is missing.
+
+Measured: CSV to `@dataframe` to Parquet, 500k rows, 6.5 s to 0.6 s with the same Parquet file;
+Parquet to Postgres, 200k rows, 4.7 s to 0.2 s with the same rows. See [Performance](performance.md).
+
 ## Extract, transform and load sections
 
 If you prefer the classic shape, use sections instead of `steps`. Inside `transform` and `load`, a step

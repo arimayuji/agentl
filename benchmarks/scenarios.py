@@ -422,6 +422,106 @@ def chunked(scale: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------- arrow fast path
+def _need_arrow() -> None:
+    import importlib.util
+
+    for mod in ("pyarrow", "pandas"):
+        if importlib.util.find_spec(mod) is None:
+            raise Skip(f"needs {mod}: pip install 'agentl-etl[arrow,pandas]'")
+
+
+def arrow_csv_pandas_parquet(scale: float) -> dict:
+    """csv.read -> @dataframe -> parquet.write with `arrow: false` and with the Arrow fast path."""
+    _need_arrow()
+    import pyarrow.parquet as pq
+
+    n = int(500_000 * scale)
+    d = _tmp()
+    src = d / "in.csv"
+    with open(src, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "kind", "amount", "note"])
+        for i in range(n):
+            w.writerow([i, "ab"[i % 2], f"{i * 1.37:.3f}", "x" * 20])
+    out = {"records": n}
+    for mode in (False, True):
+        target = d / f"out-{mode}.parquet"
+        spec = parse(
+            {
+                "name": "arrow",
+                "arrow": mode,
+                "steps": [
+                    {"id": "read", "use": "csv.read", "with": {"path": str(src)}},
+                    {"id": "clean", "fn": "benchmarks.frames:clean", "input": "read"},
+                    {"id": "save", "use": "parquet.write", "input": "clean", "with": {"path": str(target)}},
+                ],
+            }
+        )
+        with Store(d / f"s-{mode}.db") as store:
+            r, s = _timed(lambda spec=spec, store=store: Runner(spec, store=store).run())
+        assert r.status == "succeeded", r.error
+        out["arrow_s" if mode else "dicts_s"] = round(s, 2)
+    same = pq.read_table(d / "out-True.parquet").equals(pq.read_table(d / "out-False.parquet"))
+    assert same, "Arrow and dict paths wrote different Parquet"
+    return {
+        "summary": f"{out['dicts_s'] / out['arrow_s']:.1f}x faster with Arrow, same Parquet",
+        "identical": same,
+        **out,
+    }
+
+
+def arrow_parquet_postgres(scale: float) -> dict:
+    """parquet.read -> postgres.write (append): executemany from records vs COPY from Arrow."""
+    _need_arrow()
+    dsn = os.environ.get("AGENTL_TEST_PG_DSN")
+    if not dsn:
+        raise Skip("set AGENTL_TEST_PG_DSN")
+    import psycopg
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    n = int(200_000 * scale)
+    d = _tmp()
+    src = d / "in.parquet"
+    rows = [{"id": i, "name": f"n{i}", "total": i * 0.5, "ok": i % 3 == 0} for i in range(n)]
+    pq.write_table(pa.Table.from_pylist(rows), src)
+    tables = {mode: f"bench_arrow_{mode}_{random.randint(0, 1 << 30)}".lower() for mode in (False, True)}
+    out = {"records": n}
+    try:
+        for mode, table in tables.items():
+            spec = parse(
+                {
+                    "name": "pg",
+                    "arrow": mode,
+                    "steps": [
+                        {"id": "read", "use": "parquet.read", "with": {"path": str(src)}},
+                        {
+                            "id": "save",
+                            "use": "postgres.write",
+                            "input": "read",
+                            "with": {"dsn": dsn, "table": table},
+                        },
+                    ],
+                }
+            )
+            with Store(d / f"s-{mode}.db") as store:
+                r, s = _timed(lambda spec=spec, store=store: Runner(spec, store=store).run())
+            assert r.status == "succeeded", r.error
+            out["copy_s" if mode else "insert_s"] = round(s, 2)
+        with psycopg.connect(dsn) as conn:
+            a, b = (conn.execute(f"select * from {t} order by id").fetchall() for t in tables.values())
+        assert a == b, "COPY and INSERT loaded different rows"
+    finally:
+        with psycopg.connect(dsn) as conn:
+            for t in tables.values():
+                conn.execute(f"drop table if exists {t}")
+    return {
+        "summary": f"{out['insert_s'] / out['copy_s']:.1f}x faster with COPY from Arrow, same rows",
+        **out,
+    }
+
+
 ALL = [
     ("import", import_time),
     ("csv.read", csv_read),
@@ -434,4 +534,6 @@ ALL = [
     ("agent call shapes", agent_call_shapes),
     ("parallel steps", parallel_steps),
     ("chunked", chunked),
+    ("arrow csv-pandas-parquet", arrow_csv_pandas_parquet),
+    ("arrow parquet-postgres", arrow_parquet_postgres),
 ]

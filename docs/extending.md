@@ -126,6 +126,10 @@ NA become `None`, numpy scalars become `int`/`float`, timestamps become `datetim
 non-default index (for example after `groupby`) becomes columns. `agentl.pandas.to_df` and
 `to_records` are available for manual conversion.
 
+With `agentl-etl[arrow]` installed, a `@dataframe` step next to an Arrow-capable reader or writer
+gets its DataFrame straight from a pyarrow Table and hands one back, without building records in
+between. See [Columnar fast path](concepts.md#columnar-fast-path-arrow).
+
 Several inputs:
 
 ```python

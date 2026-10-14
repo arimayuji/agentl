@@ -50,7 +50,7 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
 | ZIP, GZ | `file.read` | records of the inner files | |
 
-Writers: `csv.write` and `json.write` (`.json` or `.jsonl`).
+Writers: `csv.write`, `json.write` (`.json` or `.jsonl`) and `parquet.write` (`compression`, needs `agentl-etl[parquet]`).
 
 ### Example: CSV straight from a URL
 
@@ -309,7 +309,7 @@ transaction. Missing tables are created with types inferred from the records; te
 
 ## Remote storage
 
-Every reader, `file.read`, `csv.write` and `json.write` accept remote paths:
+Every reader, `file.read`, `csv.write`, `json.write` and `parquet.write` accept remote paths:
 
 ```yaml
 extract:

@@ -7,7 +7,7 @@ import decimal
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-from ..registry import connector, require, stream_reader, stream_writer
+from ..registry import arrow_writer, connector, require, stream_reader, stream_writer
 from ._util import single
 
 MODES = ("append", "replace", "upsert")
@@ -181,3 +181,66 @@ def postgres_write(
     return postgres_write_chunks(
         [single(input)], dsn=dsn, table=table, mode=mode, key=key, batch_size=batch_size, create=create
     )
+
+
+def _arrow_pg_type(t: Any) -> str | None:
+    """Postgres type for an Arrow type, matching what `_pg_type` picks for the same Python values;
+    None when COPY cannot take it as is (nested or binary types)."""
+    pa = require("pyarrow", "arrow")
+    types = pa.types
+    if types.is_null(t) or types.is_string(t) or types.is_large_string(t):
+        return "text"
+    if types.is_boolean(t):
+        return "boolean"
+    if types.is_integer(t):
+        return "bigint"
+    if types.is_floating(t):
+        return "double precision"
+    if types.is_decimal(t):
+        return "numeric"
+    if types.is_timestamp(t):
+        return "timestamptz"
+    if types.is_date(t):
+        return "date"
+    return None
+
+
+@arrow_writer("postgres.write", accepts=lambda w: w.get("mode", "append") in ("append", "replace"))
+def postgres_write_arrow(
+    data: Any,
+    dsn: str = "",
+    table: str = "",
+    mode: str = "append",
+    key: str | list[str] | None = None,
+    batch_size: int = 1000,
+    create: bool = True,
+) -> list[dict]:
+    """append/replace from an Arrow table with COPY, one transaction. Nested or binary columns fall
+    back to the normal writer."""
+    name = table
+    pg_types = {f.name: _arrow_pg_type(f.type) for f in data.schema}
+    if None in pg_types.values() or not data.num_columns:
+        return postgres_write_chunks(
+            [data.to_pylist()], dsn=dsn, table=name, mode=mode, key=key, batch_size=batch_size, create=create
+        )
+    psycopg = require("psycopg", "postgres")
+    sql = require("psycopg.sql", "postgres")
+    tbl = _ident(name)
+    cols = list(data.column_names)
+    with psycopg.connect(dsn) as conn, conn.transaction():
+        if mode == "replace":
+            conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(tbl))
+        if data.num_rows == 0:
+            return [{"table": name, "written": 0, "mode": mode}]
+        if create:
+            defs = sql.SQL(", ").join(
+                sql.SQL("{} {}").format(sql.Identifier(c), sql.SQL(pg_types[c] or "text")) for c in cols
+            )
+            conn.execute(sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(tbl, defs))
+        stmt = sql.SQL("COPY {} ({}) FROM STDIN").format(tbl, sql.SQL(", ").join(map(sql.Identifier, cols)))
+        with conn.cursor() as cur, cur.copy(stmt) as copy:
+            for batch in data.to_batches(max_chunksize=50_000):
+                columns = [batch.column(i).to_pylist() for i in range(batch.num_columns)]
+                for row in zip(*columns, strict=True):
+                    copy.write_row(row)
+    return [{"table": name, "written": data.num_rows, "mode": mode}]

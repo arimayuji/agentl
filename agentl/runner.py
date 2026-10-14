@@ -31,7 +31,7 @@ Listener = Callable[[dict], None]
 class RunResult:
     run_id: str
     status: str
-    outputs: dict[str, Records] = field(default_factory=dict)
+    outputs: dict[str, Records] = field(default_factory=lambda: Outputs())
     rejected: dict[str, Records] = field(default_factory=dict)
     error: str | None = None
     input_tokens: int = 0
@@ -49,6 +49,49 @@ class RunResult:
         if not outputs:
             data.pop("outputs")
         return json.loads(json.dumps(data, default=str))
+
+
+def _is_table(value: Any) -> bool:
+    return hasattr(value, "num_rows") and hasattr(value, "to_pylist")
+
+
+class Outputs(dict):
+    """Step outputs. With the Arrow fast path a step's output can be a pyarrow Table internally;
+    reading it from here gives records, converted once on first access."""
+
+    def __init__(self, *args: Any, **kw: Any):
+        super().__init__(*args, **kw)
+        self._lock = threading.Lock()
+
+    def raw(self, key: str) -> Any:
+        return super().__getitem__(key)
+
+    def __getitem__(self, key: str) -> Records:
+        value = super().__getitem__(key)
+        if _is_table(value):
+            with self._lock:
+                value = super().__getitem__(key)
+                if _is_table(value):
+                    value = value.to_pylist()
+                    super().__setitem__(key, value)
+        return value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self[key] if key in self else default  # noqa: SIM401 (self.get would recurse)
+
+    def values(self) -> Any:
+        return [self[k] for k in self]
+
+    def items(self) -> Any:
+        return [(k, self[k]) for k in self]
+
+    def __eq__(self, other: object) -> bool:
+        return dict(self.items()) == other
+
+    __hash__ = None
+
+    def copy(self) -> Outputs:
+        return Outputs(self.items())
 
 
 class BudgetExceeded(RuntimeError):
@@ -75,6 +118,7 @@ class Runner:
         self._spend = threading.Lock()
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
+        self._arrow_out: set[str] = set()
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
     # events -------------------------------------------------------------
@@ -327,9 +371,10 @@ class Runner:
         self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult
     ) -> Records:
         refs = step.inputs
+        raw = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
         data: Any = None
         if len(refs) == 1:
-            data = outputs[refs[0]]
+            data = raw(refs[0])
         elif refs:
             data = {r: outputs[r] for r in refs}
 
@@ -339,6 +384,8 @@ class Runner:
             # A source agent step (no input) runs once; an empty upstream means nothing to do.
             return self._run_agent(run_id, step, [{}] if data is None else data, result)
 
+        if step.id in self._arrow_out or _is_table(data):
+            return self._run_arrow(step, data)
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
         key = _hash("step", step.model_dump(by_alias=True), data)
         if self.use_cache and step.cached and (hit := self.store.cache_get(key)) is not None:
@@ -348,6 +395,63 @@ class Runner:
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
         return out
+
+    # arrow fast path ------------------------------------------------------
+    def _arrow_plan(self, chains: dict[str, list[StepSpec]]) -> set[str]:
+        """Steps whose output stays a pyarrow Table: the step can produce one (an Arrow reader or a
+        `@dataframe` fn) and every consumer can take one (an Arrow writer that accepts its settings,
+        or a `@dataframe` fn with that single input). Cached and chunked steps keep records."""
+        wanted = self.spec.arrow
+        if wanted is False:
+            return set()
+        if not registry.arrow_available():
+            if wanted:
+                raise ImportError("arrow: true needs pyarrow: pip install 'agentl-etl[arrow]'")
+            return set()
+        chunked = {s.id for chain in chains.values() for s in chain}
+
+        def is_frame(step: StepSpec) -> bool:
+            if not step.fn:
+                return False
+            return bool(getattr(registry.resolve_fn(step.fn, self.spec.base_dir), "agentl_dataframe", False))
+
+        def takes(step: StepSpec, src: str) -> bool:
+            if step.inputs != [src] or step.cached or step.id in chunked:
+                return False
+            if step.use:
+                writer = registry.arrow(step.use)[1]
+                return writer is not None and writer[1](step.with_)
+            return is_frame(step)
+
+        consumers: dict[str, list[StepSpec]] = {s.id: [] for s in self.spec.steps}
+        for s in self.spec.steps:
+            for ref in s.inputs:
+                consumers[ref].append(s)
+        out = set()
+        for step in self.spec.steps:
+            if step.cached or step.id in chunked or not consumers[step.id]:
+                continue
+            makes = (step.use and registry.arrow(step.use)[0] is not None) or is_frame(step)
+            if makes and all(takes(c, step.id) for c in consumers[step.id]):
+                out.add(step.id)
+        return out
+
+    def _run_arrow(self, step: StepSpec, data: Any) -> Any:
+        """Runs a step on the Arrow path. Its output is a Table when it is in the plan; a reader may
+        still return records when the file needs the normal reader."""
+        produce = step.id in self._arrow_out
+        if step.use:
+            reader, writer = registry.arrow(step.use)
+            if produce and reader is not None and not _is_table(data):
+                return reader(data, **step.with_)
+            if _is_table(data) and writer is not None:
+                return list(writer[0](data, **step.with_) or [])
+            return list(
+                registry.get(step.use)(data.to_pylist() if _is_table(data) else data, **step.with_) or []
+            )
+        fn = registry.resolve_fn(step.fn or "", self.spec.base_dir)
+        out = fn(data, _arrow=produce, **step.with_)
+        return out if produce else list(out or [])
 
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
@@ -391,7 +495,7 @@ class Runner:
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
         )
-        if not out and not step.inputs:
+        if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
 
     # chunked execution ----------------------------------------------------
@@ -529,6 +633,7 @@ class Runner:
         picking ready steps in declaration order. After a failure no new step starts; the ones
         already running finish, then the first error is raised."""
         chains = self._chains()
+        self._arrow_out = self._arrow_plan(chains)
         inside = {s.id for chain in chains.values() for s in chain[1:]}
         pending = [i for i in graph.order(self.spec) if i not in inside]
         deps = {s.id: set(s.inputs) for s in self.spec.steps}
