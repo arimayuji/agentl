@@ -97,25 +97,72 @@ class AnthropicProvider:
         # with cache_control. Prefixes shorter than the model's minimum are simply not cached.
         self.cache, self.options = _cache_option(spec, default=True)
 
-    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
+    def _content(self, instruction: str, record: dict) -> list[dict]:
         head, body = message_parts(instruction, record)
         head_block: dict[str, Any] = {"type": "text", "text": head}
         if self.cache:
             head_block["cache_control"] = {"type": "ephemeral"}
+        return [head_block, {"type": "text", "text": body}]
+
+    @staticmethod
+    def _usage(u: Any) -> tuple[int, int, int, int]:
+        read = getattr(u, "cache_read_input_tokens", 0) or 0
+        write = getattr(u, "cache_creation_input_tokens", 0) or 0
+        return u.input_tokens + read + write, u.output_tokens, read, write
+
+    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
         resp = self.client.messages.parse(
             model=self.spec.model,
             max_tokens=self.spec.max_tokens,
             system=SYSTEM,
-            messages=[{"role": "user", "content": [head_block, {"type": "text", "text": body}]}],
+            messages=[{"role": "user", "content": self._content(instruction, record)}],
             output_format=schema,
             **self.options,
         )
         if resp.stop_reason == "refusal":
             raise RuntimeError("model refused this record")
-        u = resp.usage
-        read = getattr(u, "cache_read_input_tokens", 0) or 0
-        write = getattr(u, "cache_creation_input_tokens", 0) or 0
-        return Result(resp.parsed_output, u.input_tokens + read + write, u.output_tokens, read, write)
+        return Result(resp.parsed_output, *self._usage(resp.usage))
+
+    # Message Batches: same request per record, answered within 24 h at a lower price.
+    def submit_batch(self, instruction: str, records: dict[str, dict], schema: type[BaseModel]) -> str:
+        fmt = {"type": "json_schema", "schema": _strict_schema(schema)}
+        requests = [
+            {
+                "custom_id": cid,
+                "params": {
+                    "model": self.spec.model,
+                    "max_tokens": self.spec.max_tokens,
+                    "system": SYSTEM,
+                    "messages": [{"role": "user", "content": self._content(instruction, rec)}],
+                    "output_config": {"format": fmt},
+                    **self.options,
+                },
+            }
+            for cid, rec in records.items()
+        ]
+        return self.client.messages.batches.create(requests=requests).id
+
+    def batch_done(self, batch_id: str) -> bool:
+        return self.client.messages.batches.retrieve(batch_id).processing_status == "ended"
+
+    def batch_results(self, batch_id: str, schema: type[BaseModel]) -> dict[str, Result | Exception]:
+        out: dict[str, Result | Exception] = {}
+        for item in self.client.messages.batches.results(batch_id):
+            res = item.result
+            if res.type != "succeeded":
+                out[item.custom_id] = RuntimeError(f"batch request {res.type}")
+                continue
+            msg = res.message
+            tin, tout, read, write = self._usage(msg.usage)
+            if msg.stop_reason == "refusal":
+                out[item.custom_id] = InvalidOutput("model refused this record", tin, tout)
+                continue
+            text = "".join(b.text for b in msg.content if b.type == "text")
+            try:
+                out[item.custom_id] = Result(schema.model_validate_json(text), tin, tout, read, write)
+            except ValidationError as e:
+                out[item.custom_id] = InvalidOutput(str(e), tin, tout)
+        return out
 
     def text(self, instruction: str, content: str) -> str:
         resp = self.client.messages.create(
@@ -189,22 +236,30 @@ class OpenAICompatibleProvider:
         self.extra = opts
         self.spec = spec
 
-    def _chat(self, messages: list[dict], **body: Any) -> dict:
-        import urllib.error  # imported here: most pipelines never use this provider
-        import urllib.request
-
+    def _payload(self, messages: list[dict], **body: Any) -> dict:
         payload = {"model": self.spec.model, "messages": messages, "max_tokens": self.spec.max_tokens}
         payload.update(self.extra)
         payload.update(body)
-        headers = {"Content-Type": "application/json"}
+        return payload
+
+    def _chat(self, messages: list[dict], **body: Any) -> dict:
+        return json.loads(
+            self._http("POST", "/chat/completions", json.dumps(self._payload(messages, **body)))
+        )
+
+    def _http(self, method: str, path: str, data: str | bytes | None = None, content_type: str = "") -> bytes:
+        import urllib.error  # imported here: most pipelines never use this provider
+        import urllib.request
+
+        headers = {"Content-Type": content_type or "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        data = json.dumps(payload).encode()
+        raw = data.encode() if isinstance(data, str) else data
         for attempt in range(self.retries + 1):
-            req = urllib.request.Request(f"{self.base_url}/chat/completions", data, headers, method="POST")
+            req = urllib.request.Request(f"{self.base_url}{path}", raw, headers, method=method)
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.loads(resp.read())
+                    return resp.read()
             except urllib.error.HTTPError as e:
                 if (e.code < 500 and e.code != 429) or attempt == self.retries:
                     detail = e.read().decode(errors="replace")[:500]
@@ -215,13 +270,20 @@ class OpenAICompatibleProvider:
             time.sleep(2**attempt)
         raise RuntimeError("unreachable")
 
-    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
+    def _structured_body(self, instruction: str, record: dict, schema: type[BaseModel]) -> dict:
         msg = user_message(instruction, record)
         fmt = {"name": schema.__name__, "schema": _strict_schema(schema), "strict": True}
-        resp = self._chat(
+        return self._payload(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": msg}],
             response_format={"type": "json_schema", "json_schema": fmt},
         )
+
+    def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
+        body = self._structured_body(instruction, record, schema)
+        return self._parse(json.loads(self._http("POST", "/chat/completions", json.dumps(body))), schema)
+
+    @staticmethod
+    def _parse(resp: dict, schema: type[BaseModel]) -> Result:
         message = resp["choices"][0]["message"]
         if message.get("refusal"):
             raise RuntimeError(f"model refused this record: {message['refusal']}")
@@ -244,6 +306,60 @@ class OpenAIProvider(OpenAICompatibleProvider):
     base_url = "https://api.openai.com/v1"
     api_key_env = "OPENAI_API_KEY"
     key_required = True
+
+    # Batch API: a JSONL file of chat requests, answered within 24 h at a lower price.
+    def submit_batch(self, instruction: str, records: dict[str, dict], schema: type[BaseModel]) -> str:
+        lines = [
+            json.dumps(
+                {
+                    "custom_id": cid,
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": self._structured_body(instruction, rec, schema),
+                }
+            )
+            for cid, rec in records.items()
+        ]
+        boundary = "agentl-" + os.urandom(8).hex()
+        form = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nbatch\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="batch.jsonl"\r\n'
+            f"Content-Type: application/jsonl\r\n\r\n" + "\n".join(lines) + f"\r\n--{boundary}--\r\n"
+        )
+        file = json.loads(self._http("POST", "/files", form, f"multipart/form-data; boundary={boundary}"))
+        body = {"input_file_id": file["id"], "endpoint": "/v1/chat/completions", "completion_window": "24h"}
+        return json.loads(self._http("POST", "/batches", json.dumps(body)))["id"]
+
+    def _batch(self, batch_id: str) -> dict:
+        return json.loads(self._http("GET", f"/batches/{batch_id}"))
+
+    def batch_done(self, batch_id: str) -> bool:
+        status = self._batch(batch_id)["status"]
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"openai batch {batch_id} {status}")
+        return status in ("completed", "expired")
+
+    def batch_results(self, batch_id: str, schema: type[BaseModel]) -> dict[str, Result | Exception]:
+        batch = self._batch(batch_id)
+        out: dict[str, Result | Exception] = {}
+        for key in ("output_file_id", "error_file_id"):
+            if not batch.get(key):
+                continue
+            for line in self._http("GET", f"/files/{batch[key]}/content").decode().splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                resp = item.get("response") or {}
+                if resp.get("status_code") != 200:
+                    out[item["custom_id"]] = RuntimeError(
+                        f"batch request failed: {item.get('error') or resp}"
+                    )
+                    continue
+                try:
+                    out[item["custom_id"]] = self._parse(resp["body"], schema)
+                except (InvalidOutput, RuntimeError) as e:
+                    out[item["custom_id"]] = e
+        return out
 
 
 class OllamaProvider(OpenAICompatibleProvider):

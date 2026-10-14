@@ -151,6 +151,42 @@ record back. The fixed part of the prompt is paid once per call instead of once 
   10 to 20, and lower it if items come back wrong. The output schema cannot have a field named
   `index`.
 
+### Batch mode
+
+For jobs that can wait, send the whole step through the provider's batch API. It answers within
+24 hours (usually much sooner) at a lower price: 50% off on Anthropic and OpenAI at the time of
+writing.
+
+```yaml
+llm:
+  default:
+    provider: anthropic
+    model: claude-opus-5-5
+    price: { input: 3.00, output: 15.00, batch: 0.5 }   # example values: copy yours
+
+steps:
+  - id: classify
+    agent: Classify the expense.
+    input: expenses
+    mode: batch
+    batch_poll_seconds: 30        # default
+    batch_timeout_seconds: 86400  # default: 24 h
+    output: { category: str }
+```
+
+- Supported by `anthropic` (Message Batches) and `openai` (Batch API). Other providers fail the step
+  with a clear error; Bedrock batch inference needs S3 and an IAM role and is not wired in yet.
+- Records already in the cache are not sent. The rest go in one batch, one request per record
+  (`records_per_call` does not apply). Prompt caching still applies inside the batch.
+- The batch id is kept in the store. If the run stops or times out while waiting, run it again: it
+  picks up the same batch (`batch.resumed`) instead of paying for a new one. This needs the cache on.
+- Requests the batch could not answer (invalid output, errored, expired) are retried as normal calls,
+  at the normal price.
+- `price.batch` multiplies the cost of batch answers. Without it there is no discount, so `max_usd`
+  never undercounts.
+- The budget is checked before the batch is submitted, not while it runs: a batch is paid as a whole.
+- Events: `batch.submitted`, `batch.resumed`, `batch.ended` (with `succeeded`, `failed`, `seconds`).
+
 ## Security: untrusted data in prompts
 
 Records often come from places you do not control: web pages, emails, PDFs. A record can contain
