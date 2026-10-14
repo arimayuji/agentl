@@ -1,0 +1,43 @@
+# Runs offline with the "echo" provider. Switch to provider: anthropic
+# (and export ANTHROPIC_API_KEY) to let a real model fill the agent step.
+name: invoices
+llm:
+  provider: echo
+  model: claude-opus-5-5
+
+steps:
+  - id: invoices
+    use: csv.read
+    with: { path: examples/data/invoices.csv }
+
+  - id: customers
+    use: json.read
+    with: { path: examples/data/customers.json }
+
+  - id: matched
+    use: join
+    input: [invoices, customers]
+    with: { left: invoices, right: customers, on: tax_id, how: left }
+
+  - id: classify
+    agent: >
+      Classify the expense category of this invoice from its description
+      and flag it for review if the customer is unknown.
+    input: matched
+    output:
+      number: str
+      customer: str?
+      category: str?
+      needs_review: bool?
+
+  - id: save
+    use: json.write
+    input: classify
+    with: { path: out/invoices.json }
+
+notify:
+  channels:
+    console: {}
+  rules:
+    - on: [run.failed, item.rejected]
+      to: [console]

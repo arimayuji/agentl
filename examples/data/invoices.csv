@@ -1,0 +1,4 @@
+number,tax_id,description,amount
+1001,11.111.111/0001-11,Monthly consulting,1500.00
+1002,22.222.222/0001-22,Software license,320.50
+1003,99.999.999/0001-99,Unregistered customer,80.00

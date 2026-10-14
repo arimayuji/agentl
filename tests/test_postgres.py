@@ -107,8 +107,8 @@ def test_invoices_example_end_to_end(tmp_path, monkeypatch):
 
     invoices = [
         {
-            "number": f"NF-{i}",
-            "cnpj": "12.345.678/0001-90" if i % 2 else "99.999.999/0001-99",
+            "number": f"INV-{i}",
+            "tax_id": "12.345.678/0001-90" if i % 2 else "99.999.999/0001-99",
             "total": str(10 * i),
             "issued_at": "2026-10-13T10:00:00Z",
             "description": "SaaS seats",
@@ -123,7 +123,7 @@ def test_invoices_example_end_to_end(tmp_path, monkeypatch):
         def do_GET(self):
             u = urlparse(self.path)
             if u.path.endswith(".csv"):
-                body, ctype = b"cnpj;name;segment\n12345678000190;Acme;tech\n", "text/csv"
+                body, ctype = b"tax_id;name;segment\n12345678000190;Acme;tech\n", "text/csv"
             else:
                 page = int(parse_qs(u.query)["page"][0])
                 chunk = invoices[(page - 1) * 2 : page * 2]
@@ -177,7 +177,7 @@ def test_invoices_example_end_to_end(tmp_path, monkeypatch):
     rows = get("postgres.read")(
         None, dsn=DSN, query="SELECT number, name, category, needs_review FROM invoices ORDER BY number"
     )
-    assert [r["number"] for r in rows] == ["NF-1", "NF-2", "NF-3", "NF-4", "NF-5"]
+    assert [r["number"] for r in rows] == ["INV-1", "INV-2", "INV-3", "INV-4", "INV-5"]
     assert rows[0]["name"] == "Acme" and rows[0]["needs_review"] is False
     assert rows[1]["name"] is None and rows[1]["needs_review"] is True
     assert (tmp_path / "invoices" / "2026-10-13" / "raw.json").exists()

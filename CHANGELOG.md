@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Changed
+
+- The quickstart example is now in English: `examples/quickstart.yaml` (was `examples/notas.yaml`)
+  with `examples/data/invoices.csv` and `customers.json`, steps `invoices`, `customers`, `matched`,
+  `classify` and `save`. The invoices example and tests use `tax_id` and `INV-` numbers.
+
 ## [0.6.1] - 2026-10-14
 
 ### Fixed

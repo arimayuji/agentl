@@ -41,10 +41,10 @@ agents are hexagons:
 
 ```mermaid
 flowchart LR
-  notas["notas"] --> cruzar("cruzar")
-  clientes["clientes"] --> cruzar
-  cruzar --> classificar{{"classificar"}}
-  classificar --> salvar["salvar"]
+  invoices["invoices"] --> matched("matched")
+  customers["customers"] --> matched
+  matched --> classify{{"classify"}}
+  classify --> save["save"]
 ```
 
 ## Dashboard

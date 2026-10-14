@@ -1,0 +1,4 @@
+[
+  {"tax_id": "11.111.111/0001-11", "customer": "Acme Inc", "segment": "services"},
+  {"tax_id": "22.222.222/0001-22", "customer": "Beta Corp", "segment": "technology"}
+]

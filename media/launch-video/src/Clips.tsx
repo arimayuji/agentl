@@ -507,11 +507,11 @@ export const ClipUpsert: React.FC = () => {
   const f = useCurrentFrame();
   const run2 = f >= 120;
   const table = [
-    ["NF-1", "120.00", "120.00"],
-    ["NF-2", "80.00", "99.90"],
-    ["NF-3", "45.10", "45.10"],
-    ["NF-4", "310.00", "310.00"],
-    ["NF-5", "18.40", "18.40"],
+    ["INV-1", "120.00", "120.00"],
+    ["INV-2", "80.00", "99.90"],
+    ["INV-3", "45.10", "45.10"],
+    ["INV-4", "310.00", "310.00"],
+    ["INV-5", "18.40", "18.40"],
   ] as const;
   const incoming = (at: number) => (i: number) => lin(f, at + i * 10, at + i * 10 + 22, 0, 1);
   const in1 = incoming(14);
@@ -519,7 +519,7 @@ export const ClipUpsert: React.FC = () => {
   return (
     <Frame title="idempotent loads" note="Same file twice: no duplicates. Postgres, MySQL, SQL Server, Snowflake, BigQuery and more." yaml={["- id: save", "  use: postgres.write", "  input: invoices", "  with:", "    dsn: ${DATABASE_URL}", "    table: invoices", "    mode: upsert", "    key: number"]}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: c.fg }}>{run2 ? "run 2: same file, NF-2 changed" : "run 1: first load"}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: c.fg }}>{run2 ? "run 2: same file, INV-2 changed" : "run 1: first load"}</div>
         <Chip text={run2 ? "ON CONFLICT (number) DO UPDATE" : "INSERT"} color={run2 ? c.green : c.blue} />
       </div>
       <Cells widths={[200, 200, 260]} cells={["number", "total", "status"]} color={c.muted} style={{ height: 40 }} />

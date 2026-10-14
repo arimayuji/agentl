@@ -13,8 +13,8 @@ def clean(dfs):
     df = df.dropna(subset=["number"]).drop_duplicates("number", keep="last")
     df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0).round(2)
     df["issued_at"] = pd.to_datetime(df["issued_at"], errors="coerce", utc=True)
-    df["cnpj"] = df["cnpj"].astype(str).str.replace(r"\D", "", regex=True)
-    cust["cnpj"] = cust["cnpj"].astype(str).str.replace(r"\D", "", regex=True)
-    df = df.merge(cust[["cnpj", "name", "segment"]], on="cnpj", how="left")
+    df["tax_id"] = df["tax_id"].astype(str).str.replace(r"\D", "", regex=True)
+    cust["tax_id"] = cust["tax_id"].astype(str).str.replace(r"\D", "", regex=True)
+    df = df.merge(cust[["tax_id", "name", "segment"]], on="tax_id", how="left")
     df["customer_known"] = df["name"].notna()
     return df[(df["total"] > 0) & df["issued_at"].notna()]

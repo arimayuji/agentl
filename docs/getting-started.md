@@ -20,8 +20,8 @@ without an API key:
 git clone https://github.com/arimayuji/agentl
 cd agentl
 pip install -e .
-agentl validate examples/notas.yaml
-agentl run examples/notas.yaml --show classificar
+agentl validate examples/quickstart.yaml
+agentl run examples/quickstart.yaml --show classify
 ```
 
 ## Use a real model
