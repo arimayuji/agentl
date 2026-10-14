@@ -1,5 +1,10 @@
 # Agent steps
 
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/agent.jpg" aria-label="Agent step answers validated against the schema">
+  <source src="../assets/clips/agent.webm" type="video/webm">
+  <source src="../assets/clips/agent.mp4" type="video/mp4">
+</video>
+
 An agent step applies an instruction to every record of its input. Each output record is the input
 record with the fields declared in `output` added or overwritten. Records whose answer does not match
 the schema are rejected (`item.rejected`), not passed on.
@@ -65,6 +70,11 @@ Agent steps send record contents to the configured provider. Use a local provide
 not leave your machine, and select only the fields the agent needs with a `select` step first.
 
 ## Budget
+
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/budget.jpg" aria-label="A run stopped by its cost budget">
+  <source src="../assets/clips/budget.webm" type="video/webm">
+  <source src="../assets/clips/budget.mp4" type="video/mp4">
+</video>
 
 Stop a run before it costs more than you expect:
 

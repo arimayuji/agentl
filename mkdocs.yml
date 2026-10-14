@@ -48,6 +48,7 @@ nav:
       - Getting started: getting-started.md
       - Concepts: concepts.md
       - Connectors: connectors.md
+      - Integrations: integrations.md
       - Agent steps: agents.md
       - Notifications: notifications.md
       - CLI and dashboard: cli.md

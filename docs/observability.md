@@ -1,5 +1,10 @@
 # Observability
 
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/observe.jpg" aria-label="Run diagram, JSON logs and traces">
+  <source src="../assets/clips/observe.webm" type="video/webm">
+  <source src="../assets/clips/observe.mp4" type="video/mp4">
+</video>
+
 Every run emits events (`run.started`, `step.succeeded`, `item.rejected`, `budget.exceeded`, ...).
 agentl ships listeners that turn them into logs, traces, metrics and error reports.
 

@@ -45,6 +45,11 @@ fallback. A missing variable without a default is an error.
 
 ## Cache and resume
 
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/cache.jpg" aria-label="A second run served from the per-record cache">
+  <source src="../assets/clips/cache.webm" type="video/webm">
+  <source src="../assets/clips/cache.mp4" type="video/mp4">
+</video>
+
 Agent steps cache each record's result in `.agentl/agentl.db`, keyed by the instruction, the schema,
 the model and the record. Re-running a pipeline only pays for records that changed or failed.
 Set `cache: true` on other steps to cache them too, or run with `--no-cache` to ignore the cache.

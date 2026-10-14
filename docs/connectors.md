@@ -5,6 +5,11 @@ Connectors are used with `use:` and configured with `with:`. List what is instal
 
 ## Files
 
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/files.jpg" aria-label="Reading a folder of mixed files into records">
+  <source src="../assets/clips/files.webm" type="video/webm">
+  <source src="../assets/clips/files.mp4" type="video/mp4">
+</video>
+
 Every reader (`csv.read`, `json.read`, `excel.read`, `file.read`, ...) takes its input from one of:
 
 - `path`: a local file or glob (`data/**/*.csv`),
@@ -58,6 +63,11 @@ Writers: `csv.write` and `json.write` (`.json` or `.jsonl`).
 ```
 
 ## HTTP
+
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/http.jpg" aria-label="Paginated API requests with retries">
+  <source src="../assets/clips/http.webm" type="video/webm">
+  <source src="../assets/clips/http.mp4" type="video/mp4">
+</video>
 
 | Connector | Parameters |
 |---|---|
@@ -229,6 +239,11 @@ without changing their flags. Attachment names come from the sender, so only a s
 kept and files are saved under the run's temporary folder. Standard library only.
 
 ## PostgreSQL
+
+<video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/upsert.jpg" aria-label="Upsert keeps one row per key across runs">
+  <source src="../assets/clips/upsert.webm" type="video/webm">
+  <source src="../assets/clips/upsert.mp4" type="video/mp4">
+</video>
 
 ```yaml
 load:
