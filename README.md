@@ -21,7 +21,9 @@
 
 Agentic ETL for Python. Declare pipelines in YAML where each step is a connector, a function or an LLM agent. Read CSV, Excel, PDF, Word, HTTP and SQL, validate agent outputs with schemas, and follow every run in a live diagram, a local dashboard and notifications.
 
-> Status: early (v0.1). The API may change.
+> Status: beta (v0.6). Minor releases may still change the API; every change is in the [changelog](CHANGELOG.md).
+
+**For AI agents:** the docs are at [agentl.com.br/llms.txt](https://agentl.com.br/llms.txt), and every docs page has a raw Markdown copy (`<page>/index.md`).
 
 ## Install
 
@@ -37,34 +39,34 @@ The distribution is named `agentl-etl` on PyPI; the import and the CLI are both 
 ## A pipeline
 
 ```yaml
-name: notas-fiscais
+name: invoices
 llm:
   provider: anthropic          # or "echo" to run offline
   model: claude-opus-5-5
 
 steps:
-  - id: notas
+  - id: invoices
     use: csv.read
-    with: { path: data/notas.csv }
+    with: { path: data/invoices.csv }
 
-  - id: clientes
+  - id: customers
     use: json.read
-    with: { path: data/clientes.json }
+    with: { path: data/customers.json }
 
-  - id: cruzar
+  - id: matched
     use: join
-    input: [notas, clientes]
-    with: { left: notas, right: clientes, on: cnpj, how: left }
+    input: [invoices, customers]
+    with: { left: invoices, right: customers, on: tax_id, how: left }
 
-  - id: classificar
+  - id: classify
     agent: Classify the expense category and flag unknown clients for review.
-    input: cruzar
-    output: { numero: str, cliente: str?, categoria: str?, revisar: bool? }
+    input: matched
+    output: { number: str, customer: str?, category: str?, needs_review: bool? }
 
-  - id: salvar
+  - id: save
     use: sqlite.write
-    input: classificar
-    with: { db: out/notas.db, table: notas }
+    input: classify
+    with: { db: out/invoices.db, table: invoices }
 
 notify:
   channels:
@@ -80,7 +82,7 @@ notify:
 
 ```bash
 agentl validate pipeline.yaml
-agentl run pipeline.yaml --show classificar
+agentl run pipeline.yaml --show classify
 agentl diagram pipeline.yaml      # Mermaid
 agentl dashboard                  # http://127.0.0.1:7070
 ```

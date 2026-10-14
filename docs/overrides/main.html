@@ -1,8 +1,36 @@
 {% extends "base.html" %}
+
 {% block extrahead %}
   <link rel="apple-touch-icon" href="{{ 'assets/agentl-icon-180.png' | url }}">
   <meta property="og:image" content="https://agentl.com.br/assets/agentl-social-1280x640.png">
+  <meta name="twitter:card" content="summary_large_image">
+  {% if page and page.file and page.file.src_uri != "index.md" %}
+    {# The page as plain Markdown, for AI assistants and tools (written by tools/llms_txt.py). #}
+    <link rel="alternate" type="text/markdown" href="{{ 'index.md' }}" title="This page as Markdown">
+  {% endif %}
+  <link rel="alternate" type="text/plain" href="{{ 'llms.txt' | url }}" title="llms.txt">
 {% endblock %}
+
 {% block announce %}
-  agentl is in early development (v0.1). APIs may change. <a href="https://github.com/arimayuji/agentl">Star it on GitHub</a> to follow along.
+  <a href="{{ 'changelog/' | url }}"><strong>{{ config.extra.version_label }}</strong> is out: parallel steps,
+  chunked streaming, an Arrow fast path and cheaper agent steps.</a>
+{% endblock %}
+
+{% block content %}
+  {% if page and page.file and page.file.src_uri not in ("index.md",) %}
+    <div class="agt-ai-actions" data-md="{{ 'index.md' }}" data-url="{{ page.canonical_url }}">
+      <button type="button" class="agt-copy-md" title="Copy this page as Markdown for your AI assistant">
+        <span class="twemoji">{% include ".icons/material/content-copy.svg" %}</span> Copy as Markdown
+      </button>
+      <a class="agt-ask" target="_blank" rel="noopener"
+         href="https://claude.ai/new?q={{ ('Read ' ~ page.canonical_url ~ 'index.md and help me use agentl for my pipeline.') | urlencode }}">
+        Ask Claude
+      </a>
+      <a class="agt-ask" target="_blank" rel="noopener"
+         href="https://chatgpt.com/?q={{ ('Read ' ~ page.canonical_url ~ 'index.md and help me use agentl for my pipeline.') | urlencode }}">
+        Ask ChatGPT
+      </a>
+    </div>
+  {% endif %}
+  {{ super() }}
 {% endblock %}

@@ -18,7 +18,7 @@ _TYPES: dict[str, Any] = {"str": str, "int": int, "float": float, "bool": bool, 
 
 
 def schema_model(name: str, fields: dict[str, str]) -> type[BaseModel]:
-    """{"valor": "float", "obs": "str?"} -> pydantic model. `?` = optional."""
+    """{"amount": "float", "note": "str?"} -> pydantic model. `?` = optional."""
     defs: dict[str, Any] = {}
     for field, type_name in fields.items():
         optional = type_name.endswith("?")

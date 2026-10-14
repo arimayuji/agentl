@@ -22,13 +22,13 @@ def test_example_pipeline_runs(store, tmp_path, monkeypatch):
 
     root = pathlib.Path(__file__).parents[1]
     shutil.copytree(root / "examples", tmp_path.parent / "examples", dirs_exist_ok=True)
-    spec = load("examples/notas.yaml")
+    spec = load("examples/quickstart.yaml")
     result = Runner(spec, store=store).run()
     assert result.status == "succeeded", result.error
-    rows = result.outputs["classificar"]
-    assert [r["numero"] for r in rows] == ["1001", "1002", "1003"]
-    assert rows[0]["cliente"] == "Acme Ltda" and rows[2]["cliente"] is None
-    assert json.loads(pathlib.Path("out/notas.json").read_text())[1]["cliente"] == "Beta SA"
+    rows = result.outputs["classify"]
+    assert [r["number"] for r in rows] == ["1001", "1002", "1003"]
+    assert rows[0]["customer"] == "Acme Inc" and rows[2]["customer"] is None
+    assert json.loads(pathlib.Path("out/invoices.json").read_text())[1]["customer"] == "Beta Corp"
 
 
 def test_sections_chain_and_env(tmp_path):

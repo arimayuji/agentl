@@ -123,10 +123,10 @@ def clean(invoices, customers):
     df = df.dropna(subset=["number"]).drop_duplicates("number", keep="last")
     df["total"] = pd.to_numeric(df["total"], errors="coerce").fillna(0).round(2)
     df["issued_at"] = pd.to_datetime(df["issued_at"], errors="coerce", utc=True)
-    df["cnpj"] = df["cnpj"].astype(str).str.replace(r"\D", "", regex=True)
+    df["tax_id"] = df["tax_id"].astype(str).str.replace(r"\D", "", regex=True)
     cust = pd.DataFrame(customers)
-    cust["cnpj"] = cust["cnpj"].astype(str).str.replace(r"\D", "", regex=True)
-    df = df.merge(cust[["cnpj", "name", "segment"]], on="cnpj", how="left")
+    cust["tax_id"] = cust["tax_id"].astype(str).str.replace(r"\D", "", regex=True)
+    df = df.merge(cust[["tax_id", "name", "segment"]], on="tax_id", how="left")
     df["customer_known"] = df["name"].notna()
     return df
 
@@ -187,8 +187,8 @@ def classify(df, cache):
 
 # ---------------------------------------------------------------- load
 UPSERT = text("""
-INSERT INTO invoices (number, cnpj, name, segment, total, issued_at, category, needs_review, reason)
-VALUES (:number, :cnpj, :name, :segment, :total, :issued_at, :category, :needs_review, :reason)
+INSERT INTO invoices (number, tax_id, name, segment, total, issued_at, category, needs_review, reason)
+VALUES (:number, :tax_id, :name, :segment, :total, :issued_at, :category, :needs_review, :reason)
 ON CONFLICT (number) DO UPDATE SET
   total = EXCLUDED.total, category = EXCLUDED.category,
   needs_review = EXCLUDED.needs_review, reason = EXCLUDED.reason
@@ -201,7 +201,7 @@ def load(df):
         conn.execute(
             text("""
             CREATE TABLE IF NOT EXISTS invoices (
-              number TEXT PRIMARY KEY, cnpj TEXT, name TEXT, segment TEXT, total NUMERIC,
+              number TEXT PRIMARY KEY, tax_id TEXT, name TEXT, segment TEXT, total NUMERIC,
               issued_at TIMESTAMPTZ, category TEXT, needs_review BOOLEAN, reason TEXT)""")
         )
         for i in range(0, len(rows), BATCH):

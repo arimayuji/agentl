@@ -38,3 +38,5 @@ Postgres tests run only with `AGENTL_TEST_PG_DSN=postgresql://...` set.
 6. Every user-facing change gets docs and a CHANGELOG entry under `[Unreleased]`.
 7. Commits, PRs, issues and comments carry no AI attribution: no `Co-Authored-By`, no session
    links, no "Generated with" footers.
+8. Everything in the repository is in English: code, identifiers, examples, sample data, docs,
+   commits and PRs. No Portuguese pipeline names, step ids, field names or data values.

@@ -1,6 +1,33 @@
 import React from "react";
 import { AbsoluteFill, Easing, interpolate, spring, useCurrentFrame } from "remotion";
-import { brand, c, mono, sans } from "./theme";
+import { brand, mono, sans } from "./theme";
+
+// Carioca palette (same tokens as docs/assets/extra.css): white first, Rio sea blue, canary
+// yellow, Arpoador sunset orange, palm green. Shapes use the vivid colors; text uses the inks.
+const rio = {
+  primary: "#0070c9",
+  sun: "#ffd400",
+  sunInk: "#8f7500",
+  sunset: "#ff6b3d",
+  palm: "#009c3b",
+  ink: "#0b1b2b",
+};
+// The names below are kept from the first palette so every clip switches at once.
+const c = {
+  bg: "#ffffff",
+  panel: "#ffffff",
+  line: "#e2e9f0",
+  fg: rio.ink,
+  muted: "#5d6e7f",
+  indigo: rio.primary,
+  violet: rio.primary,
+  blue: rio.primary,
+  teal: rio.palm,
+  green: rio.palm,
+  amber: "#d97706",
+};
+// YAML sits on a navy code panel, like the code blocks on the site.
+const code = { bg: "#0b1b2b", fg: "#e6eef6", key: "#7cc4ff", str: rio.sun, comment: "#7a8896", value: "#5fe39a" };
 
 // Looping clips (1280x720, 30 fps, 8 s) that show one feature each in the docs. Every clip keeps
 // something moving the whole time (records flowing, counters, bars) and fills the frame: the YAML
@@ -12,7 +39,7 @@ export const CLIP_H = 720;
 
 const STAGE_W = 740;
 const STAGE_H = 584;
-const red = "#fb7185";
+const red = rio.sunset;
 
 const ease = Easing.bezier(0.16, 1, 0.3, 1);
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
@@ -75,7 +102,7 @@ const YAML_RE = /(#.*$)|(\$\{[^}]+\})|("[^"]*")|(^\s*-?\s*\$?\s*[\w.]+(?=:))/g;
 const Yaml: React.FC<{ lines: string[] }> = ({ lines }) => {
   const f = useCurrentFrame();
   return (
-    <div style={{ fontFamily: mono, fontSize: 20, lineHeight: "34px", whiteSpace: "pre", color: c.fg }}>
+    <div style={{ fontFamily: mono, fontSize: 20, lineHeight: "34px", whiteSpace: "pre", color: code.fg }}>
       {lines.map((l, i) => {
         const o = lerp(f, 4 + i * 2, 14 + i * 2, 0, 1);
         const parts: React.ReactNode[] = [];
@@ -83,7 +110,7 @@ const Yaml: React.FC<{ lines: string[] }> = ({ lines }) => {
         let k = 0;
         for (const m of l.matchAll(YAML_RE)) {
           if (m.index! > last) parts.push(l.slice(last, m.index));
-          const col = m[1] ? c.muted : m[2] ? c.amber : m[3] ? c.green : c.blue;
+          const col = m[1] ? code.comment : m[2] ? code.str : m[3] ? code.value : code.key;
           parts.push(
             <span key={k++} style={{ color: col }}>
               {m[0]}
@@ -105,15 +132,23 @@ const Yaml: React.FC<{ lines: string[] }> = ({ lines }) => {
 const Frame: React.FC<{ title: string; yaml: string[]; note: string; children: React.ReactNode }> = ({ title, yaml, note, children }) => {
   const f = useCurrentFrame();
   const drift = Math.sin((f / CLIP_FRAMES) * Math.PI * 2);
+  // slow push-in over the loop; the fade at both ends hides the jump back
+  const push = 1 + interpolate(f, [0, CLIP_FRAMES], [0, 0.02]);
   return (
     <AbsoluteFill style={{ background: c.bg, fontFamily: sans, opacity: loopFade(f) }}>
       <AbsoluteFill
         style={{
-          background: `radial-gradient(640px 460px at ${18 + drift * 6}% ${22 + drift * 4}%, ${c.indigo}26, transparent 70%), radial-gradient(620px 520px at ${84 - drift * 5}% ${78 - drift * 4}%, ${c.teal}1c, transparent 70%)`,
+          background: [
+            `radial-gradient(520px 360px at ${6 + drift * 3}% ${8 + drift * 3}%, ${rio.sun}33, transparent 70%)`,
+            `radial-gradient(520px 380px at ${96 - drift * 3}% ${12}%, ${rio.sunset}22, transparent 70%)`,
+            `radial-gradient(600px 420px at ${88 - drift * 4}% ${96 - drift * 3}%, ${rio.primary}1f, transparent 70%)`,
+            `radial-gradient(520px 380px at 10% 98%, ${rio.palm}1f, transparent 70%)`,
+          ].join(", "),
         }}
       />
+      <AbsoluteFill style={{ transform: `scale(${push})`, transformOrigin: "50% 50%" }}>
       <div style={{ position: "absolute", left: 40, top: 30, fontSize: 30, fontWeight: 700, color: c.fg }}>
-        <span style={{ fontFamily: brand, color: c.violet }}>agentl</span> · {title}
+        <span style={{ fontFamily: brand, color: rio.primary }}>agentl</span> · {title}
       </div>
       <div style={{ position: "absolute", right: 40, top: 40, fontSize: 17, color: c.muted, maxWidth: 560, textAlign: "right" }}>{note}</div>
       <div
@@ -124,9 +159,9 @@ const Frame: React.FC<{ title: string; yaml: string[]; note: string; children: R
           width: 420,
           bottom: 40,
           padding: "0 26px",
-          background: `${c.panel}ee`,
-          border: `1px solid ${c.line}`,
+          background: code.bg,
           borderRadius: 16,
+          boxShadow: `10px 10px 0 ${rio.sun}`,
           display: "flex",
           alignItems: "center",
           overflow: "hidden",
@@ -135,6 +170,7 @@ const Frame: React.FC<{ title: string; yaml: string[]; note: string; children: R
         <Yaml lines={yaml} />
       </div>
       <div style={{ position: "absolute", left: 500, top: 96, width: STAGE_W, height: STAGE_H }}>{children}</div>
+      </AbsoluteFill>
     </AbsoluteFill>
   );
 };
@@ -507,11 +543,11 @@ export const ClipUpsert: React.FC = () => {
   const f = useCurrentFrame();
   const run2 = f >= 120;
   const table = [
-    ["NF-1", "120.00", "120.00"],
-    ["NF-2", "80.00", "99.90"],
-    ["NF-3", "45.10", "45.10"],
-    ["NF-4", "310.00", "310.00"],
-    ["NF-5", "18.40", "18.40"],
+    ["INV-1", "120.00", "120.00"],
+    ["INV-2", "80.00", "99.90"],
+    ["INV-3", "45.10", "45.10"],
+    ["INV-4", "310.00", "310.00"],
+    ["INV-5", "18.40", "18.40"],
   ] as const;
   const incoming = (at: number) => (i: number) => lin(f, at + i * 10, at + i * 10 + 22, 0, 1);
   const in1 = incoming(14);
@@ -519,7 +555,7 @@ export const ClipUpsert: React.FC = () => {
   return (
     <Frame title="idempotent loads" note="Same file twice: no duplicates. Postgres, MySQL, SQL Server, Snowflake, BigQuery and more." yaml={["- id: save", "  use: postgres.write", "  input: invoices", "  with:", "    dsn: ${DATABASE_URL}", "    table: invoices", "    mode: upsert", "    key: number"]}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: c.fg }}>{run2 ? "run 2: same file, NF-2 changed" : "run 1: first load"}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: c.fg }}>{run2 ? "run 2: same file, INV-2 changed" : "run 1: first load"}</div>
         <Chip text={run2 ? "ON CONFLICT (number) DO UPDATE" : "INSERT"} color={run2 ? c.green : c.blue} />
       </div>
       <Cells widths={[200, 200, 260]} cells={["number", "total", "status"]} color={c.muted} style={{ height: 40 }} />

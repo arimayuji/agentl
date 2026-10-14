@@ -11,13 +11,13 @@ def test_cli_commands(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     db = ["--db", str(tmp_path / "db.sqlite")]
 
-    assert main(["validate", "examples/notas.yaml", *db]) == 0
-    assert "ok: notas-fiscais" in capsys.readouterr().out
+    assert main(["validate", "examples/quickstart.yaml", *db]) == 0
+    assert "ok: invoices" in capsys.readouterr().out
 
-    assert main(["diagram", "examples/notas.yaml"]) == 0
+    assert main(["diagram", "examples/quickstart.yaml"]) == 0
     assert "flowchart LR" in capsys.readouterr().out
 
-    assert main(["run", "examples/notas.yaml", *db]) == 0
+    assert main(["run", "examples/quickstart.yaml", *db]) == 0
     assert "run.succeeded" in capsys.readouterr().out
 
     assert main(["runs", *db]) == 0
