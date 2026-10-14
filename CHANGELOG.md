@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `graphql.query` (cursor pagination), `gsheets.read` / `gsheets.write`, `gdrive.files` /
+  `gdrive.upload` and `sharepoint.files` / `sharepoint.upload` (SharePoint and OneDrive through
+  Microsoft Graph, chunked uploads over 4 MB). Credentials from the environment; Google service
+  accounts need `agentl-etl[google]`.
 - `wait_until` steps: re-run a source step every `every` until a condition holds (`rows > 0`,
   `max(date) == today`, `changed`), for at most `timeout`, then fail or continue. Events
   `wait.polled`, `wait.done` and `wait.timeout`.

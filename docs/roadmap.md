@@ -32,7 +32,6 @@ Priorities change with feedback, so dates are intentionally left out.
 |---|---|
 | Triggers: schedules, webhooks and file arrivals | [#20](https://github.com/arimayuji/agentl/issues/20) |
 | Queues and streams: Kafka, RabbitMQ, SQS, Pub/Sub, MQTT | [#25](https://github.com/arimayuji/agentl/issues/25) |
-| GraphQL and SaaS: Google Sheets, Drive, SharePoint | [#26](https://github.com/arimayuji/agentl/issues/26) |
 | Cloud integrations: secrets managers, serverless runs, AWS / GCP / Azure services | [#29](https://github.com/arimayuji/agentl/issues/29) |
 
 ## Missing something?

@@ -382,6 +382,85 @@ missing). On other databases, rows with the same key are deleted and re-inserted
 transaction. Missing tables are created with types inferred from the records; text keys become
 `VARCHAR(255)` so they can be indexed. For Postgres-specific features prefer `postgres.write`.
 
+## GraphQL
+
+```yaml
+- id: issues
+  use: graphql.query
+  with:
+    url: https://api.github.com/graphql
+    headers: { Authorization: "Bearer ${GITHUB_TOKEN}" }
+    query: |
+      query($owner: String!, $after: String) {
+        organization(login: $owner) { repositories(first: 100, after: $after) {
+          nodes { name stargazerCount } pageInfo { hasNextPage endCursor } } }
+      }
+    variables: { owner: arimayuji }
+    items: organization.repositories.nodes
+    page_info: organization.repositories.pageInfo   # follow endCursor while hasNextPage
+```
+
+`items` is the path to the list inside `data`. With `page_info`, the query must take `$after`
+(or the name in `cursor_var`). With upstream records it runs once per record, filling `{field}` in
+`variables`. A response with `errors` fails the step with their messages.
+
+## Google Sheets and Drive
+
+```yaml
+- id: targets
+  use: gsheets.read
+  with: { spreadsheet_id: 1AbC..., range: "Targets!A:D" }   # first row is the header
+- id: publish
+  use: gsheets.write
+  input: report
+  with: { spreadsheet_id: 1AbC..., range: Report, mode: replace }   # or append
+- id: drops
+  use: gdrive.files
+  with: { folder_id: 1XyZ..., pattern: "*.csv" }   # downloads; records have `path`
+- id: rows
+  use: file.read
+  input: drops
+```
+
+`gdrive.files` exports Google Sheets as `.xlsx`, Docs as `.docx` and Slides as `.pdf`.
+`gdrive.upload` sends the files named in each record's `path` to a folder (for example the
+output of `excel.write`), replacing a file with the same name as a new version.
+
+Credentials: `GOOGLE_ACCESS_TOKEN`, or a service account JSON in `GOOGLE_APPLICATION_CREDENTIALS`
+(needs `pip install 'agentl-etl[google]'` to sign the token request). Share the sheet or folder
+with the service account's email.
+
+## SharePoint and OneDrive
+
+The shared-folder workflow: read the files people drop in a document library, and deliver the
+spreadsheet back there.
+
+```yaml
+- id: inbox
+  use: sharepoint.files
+  with: { site: "contoso.sharepoint.com:/sites/Finance", folder: /Inbox, pattern: "*.xlsx" }
+- id: rows
+  use: file.read
+  input: inbox
+# ... transform, check ...
+- id: xlsx
+  use: excel.write
+  input: verified
+  with: { path: "out/sales_{date}.xlsx" }
+- id: deliver
+  use: sharepoint.upload
+  input: xlsx
+  with: { site: "contoso.sharepoint.com:/sites/Finance", folder: /Reports }
+```
+
+Choose the drive with `site` (hostname and site path), `drive_id`, or `user` (a OneDrive, by
+user principal name). Uploads replace a file with the same name; files over 4 MB go in 5 MiB
+chunks through an upload session.
+
+Credentials: an app registration with the Graph application permission `Sites.ReadWrite.All` (or
+`Sites.Selected` granted on the site), through `MS_TENANT_ID`, `MS_CLIENT_ID` and
+`MS_CLIENT_SECRET`; or a ready token in `MS_ACCESS_TOKEN`. Standard library only.
+
 ## Remote storage
 
 Every reader, `file.read`, `csv.write`, `json.write` and `parquet.write` accept remote paths:
