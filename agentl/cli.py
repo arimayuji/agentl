@@ -66,6 +66,16 @@ def main(argv: list[str] | None = None) -> int:
     v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
     v.add_argument("--format", choices=["text", "json", "github"], default="text")
+    v.add_argument(
+        "--connect",
+        action="store_true",
+        help="also reach every database, URL, file and LLM key (reads no data)",
+    )
+    v.add_argument("--llm", action="store_true", help="with --connect: make one tiny test call per LLM")
+
+    pl = cmd("plan", "what a run would read, call and cost, without writing or calling an LLM")
+    pl.add_argument("pipeline")
+    pl.add_argument("--json", action="store_true")
 
     li = cmd("lint", "validate plus best-practice warnings (budget, checks, secrets, unused steps)")
     li.add_argument("pipeline")
@@ -145,7 +155,23 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"ok: {found.spec.name} ({len(found.spec.steps)} steps{w})")
                 else:
                     print(f"{len(found.errors)} error(s)", file=sys.stderr)
+            if a.cmd == "validate" and a.connect and not found.errors:
+                from . import preflight
+
+                checks = preflight.connect(a.pipeline, call_llm=a.llm)
+                for c in checks:
+                    mark = {"ok": "ok  ", "fail": "FAIL", "skip": "skip"}[c.status]
+                    print(f"  {mark} {c.what}: {c.detail}")
+                if any(c.status == "fail" for c in checks):
+                    return 2
             return 2 if found.errors else 1 if failed else 0
+        if a.cmd == "plan":
+            from . import preflight
+
+            with open_store(a.db) as store:
+                planned = preflight.plan(load(a.pipeline), store)
+            print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
+            return 0
         if a.cmd == "schema":
             from . import lint
 
