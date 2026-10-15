@@ -171,8 +171,8 @@ def main(argv: list[str] | None = None) -> int:
                     rows = store.state_list(a.pipeline)
                     for row in rows:
                         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
-                        run = f"run {row['run_id']}, {when}"
-                        print(f"{row['pipeline']}  {row['step']}  {row['value']!r}  ({run})")
+                        made = f"run {row['run_id']}, {when}"
+                        print(f"{row['pipeline']}  {row['step']}  {row['value']!r}  ({made})")
                     if not rows:
                         print("no cursors stored")
                     return 0
