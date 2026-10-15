@@ -11,6 +11,14 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl.read`, `agentl.write` and `agentl.http_get_all`: a short Python API for one-off jobs,
+  on the same readers and writers pipelines use (files and globs by extension, URLs, remote
+  storage, SQLite without SQLAlchemy, other databases by URL). The skill now picks the size first:
+  a script for one-off jobs, a pipeline for jobs that repeat, call an LLM, can fail halfway or need
+  checks.
+- Agent benchmark: an `agentl-python` arm and a reference solution with the Python API; the local
+  API is allowed through agentl's SSRF guard, which had blocked the agentl arms on the API task.
+
 - 20 recipes in `examples/recipes` (PDF invoices to Excel, paginated API to a database,
   incremental loads, web pages to Markdown, emails to fields, cascades, fallbacks, webhooks,
   schedules, alerts...), each run offline in CI, and a Recipes page in the docs.

@@ -62,3 +62,17 @@ def test_stops_early_and_shows_why_when_the_agent_itself_fails(tmp_path, capsys)
     assert rows[0]["models"] == ["claude-x"]
     printed = capsys.readouterr().out
     assert "Invalid API key" in printed and "stopped: the agent did not work" in printed
+
+
+def test_the_python_api_solves_every_task_too(tmp_path):
+    """reference_agentl.py: the ten tasks with al.read / al.write / al.http_get_all. Also checks the
+    harness lets agentl reach the local API (its SSRF guard blocks 127.0.0.1 by default)."""
+    pytest.importorskip("openpyxl")
+    pytest.importorskip("pypdf")
+    out = tmp_path / "r.jsonl"
+    script = REFERENCE.parent / "reference_agentl.py"
+    agent = subprocess.list2cmdline([sys.executable, str(script)])
+    args = ["run", "--arm", "agentl-python", "--runs", "1", "--agent", agent, "--out", str(out)]
+    assert agent_bench.main(args) == 0
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 10 and all(r["ok"] for r in rows), [r for r in rows if not r["ok"]]
