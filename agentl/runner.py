@@ -121,6 +121,15 @@ class BudgetExceeded(RuntimeError):
     """The run reached `budget.max_tokens` or `budget.max_usd`."""
 
 
+def _describe(e: BaseException) -> str:
+    text = f"{type(e).__name__}: {e}"
+    if "CERTIFICATE_VERIFY_FAILED" in text:  # netguard is not imported up front: it is heavy
+        from .netguard import describe
+
+        return describe(e)
+    return text
+
+
 def _hash(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -729,16 +738,19 @@ class Runner:
                 run_id,
                 "step.failed",
                 step_id,
-                error=f"{type(e).__name__}: {e}",
+                error=_describe(e),
                 **self._step_spend(step, result),
             )
             raise
         result.outputs[step_id] = out
+        # writers return one summary record per file; say how many records they wrote
+        written = sum(r.get("written", 0) for r in out) if isinstance(out, list) else 0
         self._emit(
             run_id,
             "step.succeeded",
             step_id,
             records=len(out),
+            **({"written": written} if written else {}),
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
         )
@@ -854,10 +866,7 @@ class Runner:
                     cost_usd=totals[2],
                 )
             for step in chain:
-                if step.id == culprit:
-                    error = f"{type(e).__name__}: {e}"
-                else:
-                    error = f"stopped: step '{culprit}' failed"
+                error = _describe(e) if step.id == culprit else f"stopped: step '{culprit}' failed"
                 self._emit(run_id, "step.failed", step.id, error=error, **self._step_spend(step, result))
             raise
         result.outputs[last.id] = out
@@ -923,7 +932,7 @@ class Runner:
             result.status = "succeeded"
         except Exception as e:
             result.status = "failed"
-            result.error = f"{type(e).__name__}: {e}"
+            result.error = _describe(e)
         finally:
             if self._toolbox is not None:  # MCP servers started for this run
                 self._toolbox.close()
@@ -1003,7 +1012,7 @@ class Runner:
                 elif on_failure is not None:
                     on_failure()
             except Exception as e:
-                self._emit(run_id, "ack.failed", error=f"{type(e).__name__}: {e}")
+                self._emit(run_id, "ack.failed", error=_describe(e))
                 if result.status == "succeeded":
                     result.status = "failed"
                     result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"

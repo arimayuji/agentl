@@ -13,6 +13,14 @@ They are always listed under **Changed** or **Removed**.
 
 - `agentl --version` (`-V`).
 
+### Fixed
+
+- HTTPS on a fresh macOS Python (python.org build without root certificates): agentl uses
+  certifi's CA bundle when it is installed, and a `CERTIFICATE_VERIFY_FAILED` error now says how to
+  fix it.
+- Writer steps report how many records they wrote (`written` in `step.succeeded`), not only the one
+  summary record per file.
+
 ## [0.8.0] - 2026-10-15
 
 ### Added

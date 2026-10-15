@@ -16,6 +16,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import cache
 from typing import Any
 
 
@@ -115,9 +116,38 @@ class _HTTPHandler(urllib.request.HTTPHandler):
         return self.do_open(_HTTPConnection, req)
 
 
+@cache
+def ssl_context() -> Any:
+    """TLS context for every HTTPS call agentl makes. Uses certifi's CA bundle when it is installed
+    and SSL_CERT_FILE / SSL_CERT_DIR are not set: Python from python.org on macOS ships without root
+    certificates until "Install Certificates.command" is run."""
+    import ssl
+
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context()
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+CERT_HINT = (
+    " (Python cannot verify HTTPS certificates. On macOS with Python from python.org run "
+    '"/Applications/Python 3.x/Install Certificates.command", or `pip install certifi`.)'
+)
+
+
+def describe(e: BaseException) -> str:
+    """`Type: message`, with a fix for the certificate error new macOS installs hit."""
+    text = f"{type(e).__name__}: {e}"
+    return text + CERT_HINT if "CERTIFICATE_VERIFY_FAILED" in text else text
+
+
 class _HTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req: Any) -> Any:
-        return self.do_open(_HTTPSConnection, req, context=self._context)  # type: ignore[attr-defined]
+        context = self._context or ssl_context()  # type: ignore[attr-defined]
+        return self.do_open(_HTTPSConnection, req, context=context)
 
 
 class _GuardedRedirects(urllib.request.HTTPRedirectHandler):

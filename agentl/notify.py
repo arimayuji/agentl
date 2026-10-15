@@ -64,7 +64,9 @@ def _post(url: str, payload: dict, headers: dict | None = None) -> None:
         headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=10).close()
+    from .netguard import ssl_context
+
+    urllib.request.urlopen(req, timeout=10, context=ssl_context()).close()
 
 
 def _failed(event: dict) -> bool:
