@@ -1,0 +1,19 @@
+# Classify support tickets with an LLM and save them as JSON.
+name: classify-tickets
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: tickets
+    use: csv.read
+    with: { path: tickets.csv }
+  - id: classify
+    input: tickets
+    agent: Classify the support ticket as bug, billing or account. Urgent if money or an outage is involved.
+    output:
+      category: str
+      urgent: bool
+  - id: save
+    use: json.write
+    input: classify
+    with: { path: out/tickets.json }

@@ -1,0 +1,21 @@
+# Declare prices and a budget, then run `agentl plan pipeline.yaml` to see calls and cost first.
+name: price-before-running
+llm:
+  default:
+    provider: openai
+    model: gpt-4o-mini
+    price: { input: 0.15, output: 0.6 }    # USD per million tokens, from the provider's page
+budget: { max_usd: 0.50, max_tokens: 200000 }
+steps:
+  - id: tickets
+    use: csv.read
+    with: { path: tickets.csv }
+  - id: classify
+    input: tickets
+    agent: Classify the support ticket as bug, billing or account.
+    output:
+      category: str
+  - id: save
+    use: json.write
+    input: classify
+    with: { path: out/tickets.json }

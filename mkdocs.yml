@@ -65,6 +65,7 @@ nav:
       - Observability: observability.md
       - Performance: performance.md
       - Evals: evals.md
+      - Recipes: recipes.md
       - Before and after: cases.md
       - Extending: extending.md
       - Migrate from pandas: migrate-from-pandas.md

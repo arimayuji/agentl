@@ -1,0 +1,10 @@
+# Read the tables of a web page as records and save them as CSV.
+name: web-table-to-csv
+steps:
+  - id: prices
+    use: html.read
+    with: { url: "${SITE_URL:-https://example.com}/release-notes.html" }
+  - id: save
+    use: csv.write
+    input: prices
+    with: { path: out/prices.csv }

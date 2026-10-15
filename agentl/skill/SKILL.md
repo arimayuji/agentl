@@ -7,6 +7,9 @@ description: Build, check and run data pipelines (extract, transform, load) with
 
 agentl runs pipelines declared in YAML. Each step reads, transforms, asks an LLM, checks or writes
 records (a record is a dict). Docs: https://agentl.com.br/llms.txt (every page also as Markdown).
+Start from the closest of 20 tested recipes (PDF invoices to Excel, paginated API to a database,
+incremental loads, web pages to Markdown, emails to fields, webhooks, schedules...):
+https://agentl.com.br/recipes/
 
 ## Loop: write, check, preview, plan, run
 

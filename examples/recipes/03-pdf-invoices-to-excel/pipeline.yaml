@@ -1,0 +1,26 @@
+# Read PDF invoices, extract the fields with an LLM and deliver a spreadsheet.
+# Needs: pip install "agentl-etl[pdf,excel]"
+name: pdf-invoices-to-excel
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: invoices
+    use: pdf.read
+    with: { path: "invoices/*.pdf" }
+  - id: extract
+    input: invoices
+    agent: Extract the invoice number, vendor, date (YYYY-MM-DD) and total as a number.
+    output:
+      number: str
+      vendor: str
+      date: str
+      total: float
+  - id: keep
+    use: select
+    input: extract
+    with: { fields: [number, vendor, date, total, path] }
+  - id: report
+    use: excel.write
+    input: keep
+    with: { path: out/invoices.xlsx, sheet: invoices }

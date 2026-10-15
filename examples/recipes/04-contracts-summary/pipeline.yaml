@@ -1,0 +1,21 @@
+# Summarize Word contracts: parties, duration and notice period.
+# Needs: pip install "agentl-etl[office]"
+name: contracts-summary
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: contracts
+    use: docx.read
+    with: { path: "contracts/*.docx" }
+  - id: summarize
+    input: contracts
+    agent: Summarize the contract in one sentence and list the parties.
+    output:
+      summary: str
+      parties: list[str]
+      notice_days: int?
+  - id: save
+    use: json.write
+    input: summarize
+    with: { path: out/contracts.json }

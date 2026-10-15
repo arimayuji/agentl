@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- 20 recipes in `examples/recipes` (PDF invoices to Excel, paginated API to a database,
+  incremental loads, web pages to Markdown, emails to fields, cascades, fallbacks, webhooks,
+  schedules, alerts...), each run offline in CI, and a Recipes page in the docs.
+- `llms-full.txt` includes the code of the examples instead of `--8<--` markers.
+
 - MCP tools `lint`, `plan`, `preview_step` and `new_pipeline`, so an agent can write, check,
   preview and price a pipeline before running it.
 - `agentl preview PIPELINE STEP`: the first records into and out of a step, running only readers
@@ -28,6 +33,11 @@ They are always listed under **Changed** or **Removed**.
 - `agentl plan`: reads sources and runs only safe steps, then shows cache hits, LLM calls, a token
   range and a cost range per agent step, and what would be written. No LLM call, no write.
 - The MCP `validate` tool returns the same findings.
+
+### Fixed
+
+- `sql.write` to a SQLite URL and `sqlite.write` create the database's folder when it does not
+  exist, as file writers do.
 
 ### Changed
 

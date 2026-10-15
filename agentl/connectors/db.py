@@ -16,6 +16,11 @@ MODES = ("append", "replace", "upsert")
 
 def _engine(url: str, engine_options: dict | None) -> Any:
     sa = require("sqlalchemy", "sql")
+    if url.startswith("sqlite:///") and ":memory:" not in url:
+        # a SQLite file in a folder that does not exist yet: create the folder, as file writers do
+        from pathlib import Path
+
+        Path(url.removeprefix("sqlite:///").split("?", 1)[0]).parent.mkdir(parents=True, exist_ok=True)
     return sa.create_engine(url, **(engine_options or {}))
 
 
