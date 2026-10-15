@@ -17,6 +17,8 @@ They are always listed under **Changed** or **Removed**.
 - An agent benchmark: ten ETL tasks with expected outputs, a harness that gives each to a coding
   agent with and without agentl and scores the output (`python -m benchmarks.agent_bench`), and a
   reference solution that passes all ten in CI. No results with a real agent yet.
+- `server.json` for the official MCP registry (`io.github.arimayuji/agentl`), and an `agentl-etl`
+  command (same as `agentl`) so `uvx agentl-etl mcp` works without installing.
 - `llms-full.txt` includes the code of the examples instead of `--8<--` markers.
 
 - MCP tools `lint`, `plan`, `preview_step` and `new_pipeline`, so an agent can write, check,

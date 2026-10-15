@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.arimayuji/agentl",
+  "title": "agentl",
+  "description": "Validate, plan, preview and run YAML data pipelines (ETL with LLM steps) and debug failed runs.",
+  "version": "0.8.1",
+  "websiteUrl": "https://agentl.com.br",
+  "repository": {
+    "url": "https://github.com/arimayuji/agentl",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "agentl-etl",
+      "version": "0.8.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "AGENTL_DB",
+          "description": "run store: SQLite path or postgresql:// URL (default .agentl/agentl.db)",
+          "isRequired": false
+        },
+        {
+          "name": "AGENTL_PROVIDER",
+          "description": "LLM provider for new_pipeline (anthropic, openai, openrouter, ...)",
+          "isRequired": false
+        },
+        {
+          "name": "AGENTL_MODEL",
+          "description": "model for new_pipeline",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
