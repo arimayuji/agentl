@@ -12,6 +12,7 @@ They are always listed under **Changed** or **Removed**.
 ### Added
 
 - `agentl --version` (`-V`).
+- `agentl serve` prints one line per run (pipeline, trigger, run id, status, error).
 
 ### Fixed
 

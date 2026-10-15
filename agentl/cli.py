@@ -186,8 +186,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
         if a.cmd == "serve":
+            import logging
+
             from .triggers import Service
 
+            serve_log = logging.getLogger("agentl.serve")
+            if not serve_log.handlers:  # one line per run on the terminal, unless logging is set up
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+                serve_log.addHandler(handler)
+                serve_log.setLevel(logging.INFO)
             specs = [load(p) for p in a.pipelines]
             for spec in specs:
                 assist.check(spec)
