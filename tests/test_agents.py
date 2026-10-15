@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from agentl import assist, lint
 from agentl.cli import main
 from agentl.mcp_server import Server
@@ -103,3 +105,26 @@ def test_the_skill_example_is_a_valid_pipeline():
     assert not report.errors, report.render()
     used = set(re.findall(r"use: ([a-z]+\.[a-z]+)", text))
     assert used <= set(__import__("agentl.registry", fromlist=["names"]).names())
+
+
+def test_mcp_registry_metadata_matches_the_package():
+    """server.json is what the official MCP registry lists; it must name the released version and
+    the README (the PyPI description) must carry the matching `mcp-name` line."""
+    import agentl
+
+    tomllib = pytest.importorskip("tomllib")  # Python 3.11+
+
+    root = Path(agentl.__file__).parent.parent
+    server = json.loads((root / "server.json").read_text())
+    assert server["version"] == agentl.__version__
+    pkg = server["packages"][0]
+    assert (pkg["registryType"], pkg["identifier"], pkg["version"]) == (
+        "pypi",
+        "agentl-etl",
+        agentl.__version__,
+    )
+    assert pkg["packageArguments"] == [{"type": "positional", "value": "mcp"}]
+    assert len(server["description"]) <= 100
+    assert f"<!-- mcp-name: {server['name']} -->" in (root / "README.md").read_text()
+    scripts = tomllib.loads((root / "pyproject.toml").read_text())["project"]["scripts"]
+    assert scripts["agentl-etl"] == scripts["agentl"] == "agentl.cli:main"  # `uvx agentl-etl mcp`

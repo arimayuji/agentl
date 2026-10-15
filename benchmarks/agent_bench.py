@@ -147,7 +147,8 @@ def _metrics(stdout: str) -> dict:
         "cost_usd": data.get("total_cost_usd"),
         "turns": data.get("num_turns"),
         "tokens": tokens or None,
-        "agent_error": bool(data.get("is_error")),
+        "agent_error": bool(data.get("is_error")) or data.get("subtype") not in (None, "success"),
+        "agent_says": str(data.get("result") or "")[:300],
     }
 
 
@@ -175,12 +176,12 @@ def run_one(task: Path, arm: str, agent: str, timeout: float) -> dict:
             proc = subprocess.run(
                 _argv(agent), input=prompt, cwd=ws, capture_output=True, text=True, timeout=timeout
             )
-            stdout, timed_out = proc.stdout, False
+            stdout, stderr, code, timed_out = proc.stdout, proc.stderr, proc.returncode, False
         except subprocess.TimeoutExpired as e:
-            stdout, timed_out = (
-                (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""),
-                True,
-            )
+            stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr, code, timed_out = "", None, True
+        except FileNotFoundError as e:
+            stdout, stderr, code, timed_out = "", f"agent command not found: {e}", 127, False
         seconds = round(time.time() - t0, 1)
         if api:
             api.close()
@@ -191,7 +192,10 @@ def run_one(task: Path, arm: str, agent: str, timeout: float) -> dict:
             **result,
             "seconds": seconds,
             "timed_out": timed_out,
+            "agent_exit": code,
             **_metrics(stdout),
+            # what the agent said when it ended, to tell "agent failed to start" from "wrong answer"
+            "agent_tail": (stderr.strip() or stdout.strip())[-300:] if not result["ok"] else "",
         }
 
 
@@ -230,6 +234,13 @@ def report(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _agent_broken(row: dict) -> bool:
+    """The agent itself failed (could not start, not logged in, refused), not the task."""
+    return not row["ok"] and (
+        row.get("agent_error") or row.get("agent_exit") not in (0, None) or (row.get("turns") or 0) <= 1
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m benchmarks.agent_bench")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -259,6 +270,15 @@ def main(argv: list[str] | None = None) -> int:
                     out.write(json.dumps(row) + "\n")
                     out.flush()
                     print(f"{task.name:<32} {arm:<7} {'ok' if row['ok'] else 'FAIL'} {row.get('detail', '')}")
+                    if not row["ok"] and row.get("agent_tail"):
+                        print(f"    agent: {row['agent_tail'][-200:]}")
+                    if len(rows) >= 2 and all(_agent_broken(r) for r in rows):
+                        print(
+                            "\nstopped: the agent did not work on the first runs (it ended at once with "
+                            "an error or no turns). Check the command alone, e.g.\n"
+                            "  echo 'write the word hi to out/hi.txt' | " + a.agent
+                        )
+                        return 2
     print()
     print(report(rows))
     return 0

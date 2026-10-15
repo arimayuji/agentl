@@ -42,6 +42,22 @@ Protect tags `v*` with a second ruleset (restrict creation, update and deletion 
    workflow `release.yml`, environment `pypi`. No API token is stored anywhere.
 2. In GitHub, create the environment `pypi` and add yourself as a required reviewer, restricted to tags `v*`.
 
+## MCP registry
+
+`server.json` lists `agentl mcp` in the [official MCP registry](https://registry.modelcontextprotocol.io)
+as `io.github.arimayuji/agentl`, installed with `uvx agentl-etl mcp`. The registry checks the
+`<!-- mcp-name: io.github.arimayuji/agentl -->` line in the README (the PyPI description), so a
+version can be listed only once it is on PyPI. A test keeps `server.json` on `__version__`.
+
+After each release is on PyPI:
+
+```bash
+brew install mcp-publisher        # once
+mcp-publisher login github        # once per machine; authorizes io.github.arimayuji/*
+mcp-publisher publish             # from the repo root, reads server.json
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.arimayuji/agentl"
+```
+
 ## Labels
 
 `bug`, `enhancement`, `connector`, `docs`, `triage`, `good first issue`, `help wanted`, `breaking`, `dependencies`.

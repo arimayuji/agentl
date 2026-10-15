@@ -39,3 +39,18 @@ def test_scorer_rejects_wrong_missing_and_extra_rows(tmp_path):
     assert not agent_bench.score(task, tmp_path)["ok"]
     result.write_text(json.dumps([{**r, "total": str(r["total"])} for r in good]))  # "150.0" == 150.0
     assert agent_bench.score(task, tmp_path)["ok"]
+
+
+def test_stops_early_and_shows_why_when_the_agent_itself_fails(tmp_path, capsys):
+    broken = tmp_path / "broken.py"
+    broken.write_text(
+        "import json, sys\nsys.stdin.read()\n"
+        "print(json.dumps({'is_error': True, 'num_turns': 1, 'result': 'Invalid API key'}))\n"
+    )
+    out = tmp_path / "r.jsonl"
+    agent = subprocess.list2cmdline([sys.executable, str(broken)])
+    assert agent_bench.main(["run", "--runs", "3", "--agent", agent, "--out", str(out)]) == 2
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 2 and rows[0]["agent_error"] and rows[0]["agent_says"] == "Invalid API key"
+    printed = capsys.readouterr().out
+    assert "Invalid API key" in printed and "stopped: the agent did not work" in printed

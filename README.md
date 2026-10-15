@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.arimayuji/agentl -->
 <p align="center">
   <a href="https://agentl.com.br">
     <img src="media/brand/assets/agentl-social-1280x640.png" alt="agentl: Agentic ETL for Python" width="820">
