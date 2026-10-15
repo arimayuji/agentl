@@ -247,7 +247,15 @@ class Service:
             try:
                 result = self._run(spec, records, kind)
                 ok = getattr(result, "status", "succeeded") == "succeeded"
-                log.info("%s: %s run %s", spec.name, kind, getattr(result, "status", "?"))
+                error = getattr(result, "error", None)
+                log.info(
+                    "%s: %s run %s %s%s",
+                    spec.name,
+                    kind,
+                    getattr(result, "run_id", ""),
+                    getattr(result, "status", "?"),
+                    f" ({error})" if error else "",
+                )
             except Exception:  # a broken run must not stop the service
                 log.exception("%s: %s run crashed", spec.name, kind)
             finally:

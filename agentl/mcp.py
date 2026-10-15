@@ -127,7 +127,9 @@ class _Http(_Transport):
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers, method="POST")
-        return urllib.request.urlopen(req, timeout=self.timeout)
+        from .netguard import ssl_context
+
+        return urllib.request.urlopen(req, timeout=self.timeout, context=ssl_context())
 
     def request(self, method: str, params: dict) -> dict:
         import urllib.error

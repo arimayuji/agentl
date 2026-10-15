@@ -322,12 +322,14 @@ class OpenAICompatibleProvider:
         import urllib.error  # imported here: most pipelines never use this provider
         import urllib.request
 
+        from .netguard import ssl_context
+
         headers = {"Content-Type": content_type or "application/json", **self._auth()}
         raw = data.encode() if isinstance(data, str) else data
         for attempt in range(self.retries + 1):
             req = urllib.request.Request(f"{self.base_url}{path}", raw, headers, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=self.timeout, context=ssl_context()) as resp:
                     return resp.read()
             except urllib.error.HTTPError as e:
                 if (e.code < 500 and e.code != 429) or attempt == self.retries:

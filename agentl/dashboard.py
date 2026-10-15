@@ -196,6 +196,8 @@ def step_stats(events: list[dict], graph: dict | None = None) -> dict:
         for k in ("records", "seconds", "cost_usd", "error"):
             if k in d:
                 st[k] = d[k]
+        if "written" in d:  # a writer: show records written, not its one summary record per file
+            st["records"] = d["written"]
     consumed = {a for a, _ in (graph or {}).get("edges", [])}
     for step, st in out.items():
         st["last"] = step not in consumed

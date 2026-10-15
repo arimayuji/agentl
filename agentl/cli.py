@@ -33,7 +33,10 @@ def _listeners(a: argparse.Namespace) -> list:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import __version__
+
     p = argparse.ArgumentParser(prog="agentl", description="Agentic ETL for Python")
+    p.add_argument("-V", "--version", action="version", version=f"agentl {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--db",
@@ -137,7 +140,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(registry.names()))
             return 0
         if a.cmd == "new":
-            text, spec = assist.new_pipeline(a.description, assist.llm_from_env(a.provider, a.model))
+            text, spec = assist.new_pipeline(
+                a.description,
+                assist.llm_from_env(a.provider, a.model),
+                llm_block=assist.llm_choice(a.provider, a.model),
+            )
             if a.output:
                 with open(a.output, "x", encoding="utf-8") as f:
                     f.write(text)
@@ -183,8 +190,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
         if a.cmd == "serve":
+            import logging
+
             from .triggers import Service
 
+            serve_log = logging.getLogger("agentl.serve")
+            if not serve_log.handlers:  # one line per run on the terminal, unless logging is set up
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+                serve_log.addHandler(handler)
+                serve_log.setLevel(logging.INFO)
             specs = [load(p) for p in a.pipelines]
             for spec in specs:
                 assist.check(spec)

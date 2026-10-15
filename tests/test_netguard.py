@@ -107,3 +107,32 @@ def test_pinned_connection_still_fetches(guarded, monkeypatch, redirector):
     monkeypatch.delenv("http_proxy", raising=False)
     with pytest.raises(netguard.BlockedURL):  # the redirect target is still refused
         netguard.urlopen(urllib.request.Request(redirector + "/x"), timeout=5)
+
+
+def test_certificate_errors_say_how_to_fix_them():
+    import urllib.error
+
+    from agentl.runner import _describe
+
+    e = urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    assert "Install Certificates.command" in _describe(e) and "pip install certifi" in _describe(e)
+    assert _describe(ValueError("x")) == "ValueError: x"
+
+
+def test_ssl_context_uses_certifi_unless_the_user_set_a_bundle(monkeypatch, tmp_path):
+    import ssl
+    import sys
+    import types
+
+    calls = []
+    monkeypatch.setattr(ssl, "create_default_context", lambda cafile=None: calls.append(cafile))
+    monkeypatch.setitem(sys.modules, "certifi", types.SimpleNamespace(where=lambda: "/x/cacert.pem"))
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    netguard.ssl_context.cache_clear()
+    netguard.ssl_context()
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "mine.pem"))
+    netguard.ssl_context.cache_clear()
+    netguard.ssl_context()
+    netguard.ssl_context.cache_clear()
+    assert calls == ["/x/cacert.pem", None]
