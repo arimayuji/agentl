@@ -79,7 +79,7 @@ def server():
             name = url.path.strip("/")
             base = root["dir"]
             files = [
-                base / "site" / name,
+                base / "pages" / name,
                 base / "api" / f"{name}.page{q.get('page', 1)}.json",
                 base / "api" / f"{name}.json",
             ]
