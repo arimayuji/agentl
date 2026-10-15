@@ -57,5 +57,8 @@ python -m benchmarks.agent_bench report benchmarks/agent-results.jsonl
 
 The default agent is Claude Code headless (`claude -p --output-format json --allowedTools
 Bash,Read,Write,Edit,Glob,Grep`); pass `--agent "<command>"` for any other agent that reads the
-request on stdin. Thirty runs per arm (ten tasks, three runs) is the smallest set worth publishing:
+request on stdin. Each run records the model(s) that did the work. To pin one, add it to the
+command, e.g. `--agent "claude -p --model sonnet --output-format json --allowedTools ..."`. With
+Claude Code the reported cost is the API price of the run; on a subscription it counts against the
+plan's usage instead of being billed. Thirty runs per arm (ten tasks, three runs) is the smallest set worth publishing:
 agents vary between runs, so one run of each says little.
