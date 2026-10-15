@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-15
+
 ### Added
 
 - `agentl --version` (`-V`).
@@ -23,6 +25,8 @@ They are always listed under **Changed** or **Removed**.
   `AGENTL_MODEL`) into the pipeline, instead of an llm the model guessed (often an old model id).
 - Writer steps report how many records they wrote (`written` in `step.succeeded`), not only the one
   summary record per file.
+- `join` no longer drops a right-side column that has the same name as a left one: it is kept as
+  `<name>_right` (`suffix` to change it).
 
 ## [0.8.0] - 2026-10-15
 
@@ -337,7 +341,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/arimayuji/agentl/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/arimayuji/agentl/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/arimayuji/agentl/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/arimayuji/agentl/compare/v0.6.0...v0.6.1

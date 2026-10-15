@@ -59,7 +59,11 @@ def dedupe(input: Any, on: str | list[str]) -> list[dict]:
 
 
 @connector("join")
-def join(input: Any, left: str, right: str, on: str, how: str = "inner") -> list[dict]:
+def join(
+    input: Any, left: str, right: str, on: str, how: str = "inner", suffix: str = "_right"
+) -> list[dict]:
+    """Records of `left` with the matching records of `right`. A right column with the same name
+    as a left one (other than `on`) is kept as `<name><suffix>` instead of being dropped."""
     if not isinstance(input, dict):
         raise ValueError("join needs two inputs: input: [left_step, right_step]")
     index: dict[Any, list[dict]] = {}
@@ -69,7 +73,14 @@ def join(input: Any, left: str, right: str, on: str, how: str = "inner") -> list
     for l in input[left]:
         matches = index.get(str(l.get(on)), [])
         if matches:
-            out.extend({**m, **l} for m in matches)
+            for m in matches:
+                row = dict(l)
+                for k, v in m.items():
+                    if k not in l:
+                        row[k] = v
+                    elif k != on:
+                        row[k + suffix] = v
+                out.append(row)
         elif how == "left":
             out.append(dict(l))
     return out
