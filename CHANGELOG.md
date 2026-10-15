@@ -9,6 +9,14 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `provider: openrouter`: hundreds of models behind one key (`OPENROUTER_API_KEY`), OpenRouter's
+  own model fallback (`options.models`), attribution headers, and the cost OpenRouter reports per
+  call, so budgets need no `price`.
+- `fallback:` on any llm: when a call fails, it goes to the next llm in the list, any provider.
+  Each answer is priced with the llm that gave it; switches are logged as `llm.fallback` events.
+
 ## [0.7.0] - 2026-10-14
 
 ### Security

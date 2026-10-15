@@ -3,9 +3,17 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:  # "Run workflow" button, e.g. from a phone: creates the tag and the release itself
+    inputs:
+      version:
+        description: "Version to release, without the v (must match agentl/__init__.py), e.g. 0.7.0"
+        required: true
 
 permissions:
   contents: read
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
 
 jobs:
   build:
@@ -24,7 +32,10 @@ jobs:
       - name: Check tag matches package version
         run: |
           pkg=$(python -c "import re;print(re.search(r'__version__ = \"(.+)\"', open('agentl/__init__.py').read())[1])")
-          test "v$pkg" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $pkg"; exit 1; }
+          test "v$pkg" = "$TAG" || { echo "tag $TAG != version $pkg"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && git ls-remote --exit-code --tags origin "$TAG" >/dev/null; then
+            echo "$TAG already exists: push the tag to release it, or pick a new version"; exit 1
+          fi
       - run: pip install --require-hashes -r requirements/release.txt  # build tools, pinned by hash
       - run: python -m build
       - name: SBOM (CycloneDX) of the installed wheel and its runtime dependencies
@@ -32,7 +43,7 @@ jobs:
           python -m venv /tmp/sbom-env
           /tmp/sbom-env/bin/pip install dist/*.whl
           mkdir -p sbom
-          cyclonedx-py environment /tmp/sbom-env/bin/python --of JSON -o "sbom/agentl-etl-${GITHUB_REF_NAME}.cdx.json"
+          cyclonedx-py environment /tmp/sbom-env/bin/python --of JSON -o "sbom/agentl-etl-${TAG}.cdx.json"
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
         id: attest
         with:
@@ -40,7 +51,7 @@ jobs:
       - name: Keep the signed provenance bundle with the release files
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$BUNDLE" "sbom/agentl-etl-${GITHUB_REF_NAME}.sigstore.json"
+        run: cp "$BUNDLE" "sbom/agentl-etl-${TAG}.sigstore.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
@@ -83,8 +94,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         # A release created by hand on github.com (e.g. from a phone) already exists: then only attach the files.
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+            # on a tag push the tag exists; from "Run workflow" this creates it on the commit that was built
+            gh release create "$TAG" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
           fi
