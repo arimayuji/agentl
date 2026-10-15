@@ -1,0 +1,21 @@
+{
+ "output": "out/result.json",
+ "key": "id",
+ "records": [
+  {
+   "id": 1,
+   "customer": "ana",
+   "total": 150.0
+  },
+  {
+   "id": 4,
+   "customer": "davi",
+   "total": 120.0
+  },
+  {
+   "id": 6,
+   "customer": "fabio",
+   "total": 400.0
+  }
+ ]
+}

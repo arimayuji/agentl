@@ -1,0 +1,41 @@
+{
+ "output": "out/result.json",
+ "key": "id",
+ "records": [
+  {
+   "id": 1,
+   "sku": "SKU-001",
+   "stock": 3
+  },
+  {
+   "id": 2,
+   "sku": "SKU-002",
+   "stock": 6
+  },
+  {
+   "id": 3,
+   "sku": "SKU-003",
+   "stock": 9
+  },
+  {
+   "id": 4,
+   "sku": "SKU-004",
+   "stock": 12
+  },
+  {
+   "id": 5,
+   "sku": "SKU-005",
+   "stock": 15
+  },
+  {
+   "id": 6,
+   "sku": "SKU-006",
+   "stock": 18
+  },
+  {
+   "id": 7,
+   "sku": "SKU-007",
+   "stock": 21
+  }
+ ]
+}

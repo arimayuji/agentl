@@ -1,0 +1,40 @@
+[
+ {
+  "id": "A1",
+  "customer": {
+   "name": "Ana",
+   "city": "Rio"
+  },
+  "items": [
+   {
+    "sku": "x",
+    "qty": 2
+   },
+   {
+    "sku": "y",
+    "qty": 1
+   }
+  ]
+ },
+ {
+  "id": "A2",
+  "customer": {
+   "name": "Bruno",
+   "city": "Niteroi"
+  },
+  "items": [
+   {
+    "sku": "z",
+    "qty": 5
+   }
+  ]
+ },
+ {
+  "id": "A3",
+  "customer": {
+   "name": "Carla",
+   "city": "Rio"
+  },
+  "items": []
+ }
+]

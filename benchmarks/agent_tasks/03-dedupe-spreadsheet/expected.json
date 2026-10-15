@@ -1,0 +1,21 @@
+{
+ "output": "out/result.csv",
+ "key": "id",
+ "records": [
+  {
+   "id": "1",
+   "name": "Ana Souza",
+   "email": "ana@example.com"
+  },
+  {
+   "id": "2",
+   "name": "Bruno Lima",
+   "email": "bruno@example.com"
+  },
+  {
+   "id": "3",
+   "name": "Carla Dias",
+   "email": "carla@example.com"
+  }
+ ]
+}

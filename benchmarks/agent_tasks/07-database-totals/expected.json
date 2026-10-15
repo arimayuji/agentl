@@ -1,0 +1,21 @@
+{
+ "output": "out/result.json",
+ "key": "region",
+ "records": [
+  {
+   "region": "east",
+   "orders": 1,
+   "total": 10.0
+  },
+  {
+   "region": "north",
+   "orders": 2,
+   "total": 162.0
+  },
+  {
+   "region": "south",
+   "orders": 2,
+   "total": 100.0
+  }
+ ]
+}

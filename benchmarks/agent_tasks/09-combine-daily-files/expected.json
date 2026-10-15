@@ -1,0 +1,31 @@
+{
+ "output": "out/result.csv",
+ "key": "date+store",
+ "records": [
+  {
+   "date": "2026-10-13",
+   "store": "rio",
+   "total": "100"
+  },
+  {
+   "date": "2026-10-13",
+   "store": "sp",
+   "total": "250"
+  },
+  {
+   "date": "2026-10-14",
+   "store": "rio",
+   "total": "80"
+  },
+  {
+   "date": "2026-10-15",
+   "store": "rio",
+   "total": "120"
+  },
+  {
+   "date": "2026-10-15",
+   "store": "sp",
+   "total": "90"
+  }
+ ]
+}

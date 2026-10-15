@@ -1,0 +1,27 @@
+{
+ "output": "out/result.csv",
+ "key": "id",
+ "records": [
+  {
+   "id": "A1",
+   "customer_name": "Ana",
+   "city": "Rio",
+   "item_count": "2",
+   "quantity": "3"
+  },
+  {
+   "id": "A2",
+   "customer_name": "Bruno",
+   "city": "Niteroi",
+   "item_count": "1",
+   "quantity": "5"
+  },
+  {
+   "id": "A3",
+   "customer_name": "Carla",
+   "city": "Rio",
+   "item_count": "0",
+   "quantity": "0"
+  }
+ ]
+}
