@@ -169,17 +169,18 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 if a.action == "show":
                     rows = store.state_list(a.pipeline)
-                    for r in rows:
-                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"]))
-                        print(f"{r['pipeline']}  {r['step']}  {r['value']!r}  (run {r['run_id']}, {when})")
+                    for row in rows:
+                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                        run = f"run {row['run_id']}, {when}"
+                        print(f"{row['pipeline']}  {row['step']}  {row['value']!r}  ({run})")
                     if not rows:
                         print("no cursors stored")
                     return 0
                 if not a.pipeline:
                     print("agentl state reset needs a pipeline name", file=sys.stderr)
                     return 2
-                n = store.state_reset(a.pipeline, a.step)
-                print(f"reset {n} cursor(s) of {a.pipeline}; the next run starts from `initial`")
+                count = store.state_reset(a.pipeline, a.step)
+                print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
         if a.cmd == "serve":
             from .triggers import Service
