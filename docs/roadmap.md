@@ -6,6 +6,11 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.9.0**: for people and AI agents alike: `agentl validate` and `agentl lint` with every error,
+  its line and its fix; `validate --connect` and `agentl plan` (calls and cost before a run);
+  `agentl preview`; a short Python API for one-off jobs (`agentl.read`, `write`,
+  `http_get_all`); a Claude Code skill; new MCP tools; 20 tested recipes; an agent benchmark; and
+  the MCP registry listing.
 - **0.8.1**: fixes from a first hands-on test: `agentl --version`, HTTPS on macOS Python without
   root certificates, records written by writers, `agentl serve` output, `agentl new` model choice,
   and `join` keeping same-name columns.

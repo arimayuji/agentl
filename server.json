@@ -3,7 +3,7 @@
   "name": "io.github.arimayuji/agentl",
   "title": "agentl",
   "description": "Validate, plan, preview and run YAML data pipelines (ETL with LLM steps) and debug failed runs.",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "websiteUrl": "https://agentl.com.br",
   "repository": {
     "url": "https://github.com/arimayuji/agentl",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "agentl-etl",
-      "version": "0.8.1",
+      "version": "0.9.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

@@ -34,7 +34,7 @@ live dashboard come built in.
 - **Honest numbers:** [benchmarks](https://agentl.com.br/performance/) and
   [evals](https://agentl.com.br/evals/) against plain Python, including where it loses.
 
-> Status: beta (v0.8). Minor releases may still change the API; every change is in the [changelog](CHANGELOG.md).
+> Status: beta (v0.9). Minor releases may still change the API; every change is in the [changelog](CHANGELOG.md).
 
 **For AI agents:** the docs are at [agentl.com.br/llms.txt](https://agentl.com.br/llms.txt), and every docs page has a raw Markdown copy (`<page>/index.md`).
 

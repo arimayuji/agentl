@@ -45,7 +45,7 @@ claude mcp add agentl -- agentl mcp            # Claude Code
 claude mcp add agentl -- uvx agentl-etl mcp    # without installing it first (needs uv)
 ```
 
-From the next release on, agentl is published to the
+From 0.9.0 on, agentl is published to the
 [official MCP registry](https://registry.modelcontextprotocol.io) as `io.github.arimayuji/agentl`,
 so clients that browse the registry can find and install it.
 

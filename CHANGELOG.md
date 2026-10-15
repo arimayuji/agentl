@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-15
+
 ### Added
 
 - `agentl.read`, `agentl.write` and `agentl.http_get_all`: a short Python API for one-off jobs,
@@ -389,7 +391,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/arimayuji/agentl/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/arimayuji/agentl/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/arimayuji/agentl/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/arimayuji/agentl/compare/v0.6.1...v0.7.0
