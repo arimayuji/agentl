@@ -226,6 +226,34 @@ steps:
 - The budget is checked before the batch is submitted, not while it runs: a batch is paid as a whole.
 - Events: `batch.submitted`, `batch.resumed`, `batch.ended` (with `succeeded`, `failed`, `seconds`).
 
+### Cheap model first
+
+Give a step a list of llms and it tries them in order, per record:
+
+```yaml
+llm:
+  cheap: { provider: openai, model: gpt-4o-mini, price: { input: 0.15, output: 0.6 } }
+  strong: { provider: anthropic, model: claude-opus-5-5, price: { input: 5, output: 25 } }
+steps:
+  - id: classify
+    input: tickets
+    agent: Classify the ticket and say how sure you are.
+    llm: [cheap, strong]
+    escalate_below: 0.7          # optional: also escalate low-confidence answers
+    output: { category: str, confidence: float }
+```
+
+A record goes to the next llm when its answer is still invalid after the retry, or, with
+`escalate_below`, when its `confidence` is lower than that. The last llm's answer is kept either
+way. Each call is priced with its own llm, and the step's spend says who answered:
+`"answered_by": {"cheap": 315, "strong": 35}`. Not with `mode: batch`.
+
+### Identical records are asked once
+
+Records that are exactly the same within a step are sent once and share the answer; the step logs
+an `agent.deduplicated` event with how many were saved. Across runs the cache does the same. Select
+only the fields the instruction needs first (a `select` step) so near-duplicates become identical.
+
 ## Tools and MCP servers
 
 An agent step can look things up while it answers: call an API, query a database, ask an MCP

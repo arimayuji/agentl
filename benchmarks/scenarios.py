@@ -334,6 +334,78 @@ def agent_call_shapes(scale: float) -> dict:
     }
 
 
+class _TierLLM(_FakeLLM):
+    """`model: cheap` cannot answer one record in ten (invalid output); `model: strong` answers all."""
+
+    def __init__(self, spec):
+        super().__init__(spec)
+        self.cheap = spec.model == "cheap"
+
+    def structured(self, instruction, record, schema, sleep=True):
+        if self.cheap and record.get("i", 1) % 10 == 0:
+            from agentl.llm import InvalidOutput
+
+            time.sleep(self.latency)
+            raise InvalidOutput("bad answer", self.prefix + self.per_in, self.per_out)
+        return super().structured(instruction, record, schema, sleep)
+
+
+register_provider("bench-tier", _TierLLM)
+
+
+def _dup_rows(input=None):
+    """500 records, 350 distinct: re-sent invoices, the same line in two files."""
+    return [{"i": i % 350, "description": f"invoice line {i % 350}"} for i in range(_N_AGENT)]
+
+
+def agent_cascade(scale: float) -> dict:
+    """500 records (350 distinct): one strong model for all vs `llm: [cheap, strong]` with dedup."""
+    global _N_AGENT
+    _N_AGENT = int(500 * scale)
+    tiers = {
+        "cheap": {"provider": "bench-tier", "model": "cheap", "price": {"input": 0.25, "output": 1.25}},
+        "strong": {"provider": "bench-tier", "model": "strong", "price": {"input": 3.0, "output": 15.0}},
+    }
+    d = _tmp()
+    out = {}
+    for name, llm in (("strong_only", "strong"), ("cascade", ["cheap", "strong"])):
+        spec = parse(
+            {
+                "name": "bench",
+                "llm": tiers,
+                "steps": [
+                    {"id": "src", "fn": "benchmarks.scenarios:_dup_rows"},
+                    {
+                        "id": "classify",
+                        "agent": "Classify.",
+                        "input": "src",
+                        "concurrency": 8,
+                        "llm": llm,
+                        "output": {"category": "str", "ok": "bool"},
+                    },
+                ],
+            }
+        )
+        with Store(d / f"{name}.db") as store:
+            r, s = _timed(lambda spec=spec, store=store: Runner(spec, store=store, use_cache=False).run())
+        assert r.status == "succeeded", r.error
+        out[name] = {
+            "calls": r.llm_calls,
+            "cost_usd": round(r.cost_usd, 4),
+            "answered_by": r.spend["classify"]["answered_by"],
+            "seconds": round(s, 2),
+        }
+    a, b = out["strong_only"]["cost_usd"], out["cascade"]["cost_usd"]
+    return {
+        "summary": (
+            f"strong only {a} USD in {out['strong_only']['calls']} calls; cascade + dedup {b} USD "
+            f"in {out['cascade']['calls']} calls ({a / b:.1f}x less)"
+        ),
+        "records": _N_AGENT,
+        **out,
+    }
+
+
 # ---------------------------------------------------------------- parallel steps
 def _slow_source(input=None, seconds=0.5):
     time.sleep(seconds)
@@ -532,6 +604,7 @@ ALL = [
     ("agent step", agent_step),
     ("agent cache re-run", agent_cache),
     ("agent call shapes", agent_call_shapes),
+    ("agent cascade", agent_cascade),
     ("parallel steps", parallel_steps),
     ("chunked", chunked),
     ("arrow csv-pandas-parquet", arrow_csv_pandas_parquet),
