@@ -226,3 +226,4 @@ __marimo__/
 # docs build
 site/
 benchmarks/results-*.json
+benchmarks/agent-results.jsonl

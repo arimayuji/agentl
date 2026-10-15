@@ -1,0 +1,3 @@
+The API at {api_url}/products returns products in pages: GET {api_url}/products?page=1, page=2...
+Each response has "data" (the products) and "next_page" (null on the last page).
+Write every product to out/result.json as a JSON array with the fields id, sku and stock.

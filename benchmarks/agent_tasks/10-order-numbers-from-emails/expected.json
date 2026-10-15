@@ -1,0 +1,18 @@
+{
+ "output": "out/result.json",
+ "key": "file",
+ "records": [
+  {
+   "file": "1.txt",
+   "order": "4521"
+  },
+  {
+   "file": "2.txt",
+   "order": "7788"
+  },
+  {
+   "file": "3.txt",
+   "order": null
+  }
+ ]
+}

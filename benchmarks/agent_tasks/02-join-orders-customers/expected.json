@@ -1,0 +1,26 @@
+{
+ "output": "out/result.csv",
+ "key": "order_id",
+ "records": [
+  {
+   "order_id": "100",
+   "customer_name": "Ana",
+   "total": "50.0"
+  },
+  {
+   "order_id": "101",
+   "customer_name": "Bruno",
+   "total": "20.5"
+  },
+  {
+   "order_id": "102",
+   "customer_name": "Ana",
+   "total": "7.9"
+  },
+  {
+   "order_id": "103",
+   "customer_name": "",
+   "total": "12.0"
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "output": "out/result.csv",
+ "key": "number",
+ "records": [
+  {
+   "number": "1001",
+   "total": 1250.0
+  },
+  {
+   "number": "1002",
+   "total": 89.9
+  },
+  {
+   "number": "1003",
+   "total": 15000.5
+  }
+ ]
+}

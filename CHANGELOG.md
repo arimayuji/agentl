@@ -14,6 +14,9 @@ They are always listed under **Changed** or **Removed**.
 - 20 recipes in `examples/recipes` (PDF invoices to Excel, paginated API to a database,
   incremental loads, web pages to Markdown, emails to fields, cascades, fallbacks, webhooks,
   schedules, alerts...), each run offline in CI, and a Recipes page in the docs.
+- An agent benchmark: ten ETL tasks with expected outputs, a harness that gives each to a coding
+  agent with and without agentl and scores the output (`python -m benchmarks.agent_bench`), and a
+  reference solution that passes all ten in CI. No results with a real agent yet.
 - `llms-full.txt` includes the code of the examples instead of `--8<--` markers.
 
 - MCP tools `lint`, `plan`, `preview_step` and `new_pipeline`, so an agent can write, check,

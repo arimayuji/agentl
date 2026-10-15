@@ -1,0 +1,7 @@
+id,customer,total,status
+1,ana,150.0,paid
+2,bruno,80.0,paid
+3,carla,230.5,refunded
+4,davi,120.0,paid
+5,eva,99.99,paid
+6,fabio,400.0,paid

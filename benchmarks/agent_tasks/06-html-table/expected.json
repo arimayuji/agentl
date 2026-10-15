@@ -1,0 +1,21 @@
+{
+ "output": "out/result.csv",
+ "key": "plan",
+ "records": [
+  {
+   "plan": "Starter",
+   "seats": "1",
+   "price": "9"
+  },
+  {
+   "plan": "Team",
+   "seats": "10",
+   "price": "29"
+  },
+  {
+   "plan": "Business",
+   "seats": "50",
+   "price": "99"
+  }
+ ]
+}
