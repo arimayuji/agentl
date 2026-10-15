@@ -95,6 +95,37 @@ class Server:
         add("validate", "Check a pipeline without running it.", {"pipeline": _PIPELINE}, self.validate)
         add("diagram", "The pipeline as a Mermaid diagram.", {"pipeline": _PIPELINE}, self.diagram)
         add(
+            "lint",
+            "Validate plus best-practice warnings (missing budget, delivery with no check, secrets in "
+            "the YAML, unused steps). JSON findings with line, code and fix.",
+            {"pipeline": _PIPELINE},
+            self.lint,
+        )
+        file_only = {"pipeline": {"type": "string", "description": "path to a pipeline YAML file"}}
+        add(
+            "plan",
+            "What a run would read, call and cost: records per step, cache hits, LLM calls, token "
+            "and cost ranges, and what would be written. Reads the sources; never writes, never calls "
+            "an LLM, never runs fn: code.",
+            file_only,
+            self.plan,
+        )
+        add(
+            "preview_step",
+            "The first records going into and out of one step, computed like plan (readers and "
+            "transforms only). Use it to check a transform before running the pipeline.",
+            {**file_only, "step": {"type": "string"}, "n": {"type": "integer", "description": "default 5"}},
+            self.preview_step,
+            required=["pipeline", "step"],
+        )
+        add(
+            "new_pipeline",
+            "Write a validated pipeline YAML from a description (calls the LLM set by AGENTL_PROVIDER / "
+            "AGENTL_MODEL, which costs a little). Returns the YAML; nothing is saved.",
+            {"description": {"type": "string", "description": "what the pipeline should do"}},
+            self.new_pipeline,
+        )
+        add(
             "run_pipeline",
             "Run a pipeline file and return its status, spend and how many records each step produced. "
             "Pipelines that run Python code (fn: steps, Python tools, local MCP servers) need the "
@@ -178,15 +209,51 @@ class Server:
     def diagram(self, args: dict) -> str:
         return graph.mermaid(_spec(args["pipeline"]))
 
+    def _file(self, args: dict, tool: str) -> PipelineSpec:
+        """A pipeline file under --root, loaded with the real environment."""
+        path = Path(args["pipeline"])
+        if "\n" in args["pipeline"] or not path.is_file():
+            raise ValueError(f"{tool} takes the path of a pipeline file, not YAML text")
+        if not path.resolve().is_relative_to(self.root):
+            raise ValueError(f"{tool} only runs files under {self.root}")
+        return _spec(str(path), real_env=True)
+
+    def lint(self, args: dict) -> dict:
+        from . import lint
+
+        pipeline = args["pipeline"]
+        if "\n" not in pipeline and Path(pipeline).is_file():
+            report = lint.check_file(pipeline, env=_Placeholders())
+        elif "\n" in pipeline:
+            report = lint.check_text(pipeline, env=_Placeholders())
+        else:
+            raise FileNotFoundError(f"no pipeline file '{pipeline}'")
+        return json.loads(report.render("json"))
+
+    def plan(self, args: dict) -> dict:
+        from . import preflight
+
+        spec = self._file(args, "plan")
+        with open_store(self.db) as store:
+            return preflight.plan(spec, store).to_dict()
+
+    def preview_step(self, args: dict) -> dict:
+        from . import preflight
+
+        spec = self._file(args, "preview_step")
+        with open_store(self.db) as store:
+            return preflight.preview(spec, store, args["step"], int(args.get("n") or 5))
+
+    def new_pipeline(self, args: dict) -> str:
+        text, _ = assist.new_pipeline(
+            args["description"], assist.llm_from_env(), llm_block=assist.llm_choice()
+        )
+        return text
+
     def run_pipeline(self, args: dict) -> dict:
         from .runner import Runner
 
-        path = Path(args["pipeline"])
-        if "\n" in args["pipeline"] or not path.is_file():
-            raise ValueError("run_pipeline takes the path of a pipeline file, not YAML text")
-        if not path.resolve().is_relative_to(self.root):
-            raise ValueError(f"run_pipeline only runs files under {self.root}")
-        spec = _spec(str(path), real_env=True)
+        spec = self._file(args, "run_pipeline")
         code = code_in(spec)
         if code and not self.allow_code:
             raise ValueError(

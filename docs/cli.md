@@ -4,6 +4,8 @@
 agentl run PIPELINE [--no-cache] [--show STEP]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
+agentl preview PIPELINE STEP [-n 5]
+agentl skill install|show [--project]
 agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl diagram PIPELINE

@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- MCP tools `lint`, `plan`, `preview_step` and `new_pipeline`, so an agent can write, check,
+  preview and price a pipeline before running it.
+- `agentl preview PIPELINE STEP`: the first records into and out of a step, running only readers
+  and transforms.
+- A Claude Code skill shipped with the package: `agentl skill install [--project]`.
 - `agentl validate` reports every error at once with file, line, column, a code and a fix
   ("Did you mean 'csv.read'?"), and unset `${VAR}`s without reading their values.
   `--format json|github`.

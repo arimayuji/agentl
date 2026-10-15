@@ -84,6 +84,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd("schema", "print the JSON Schema of a pipeline file (editor autocomplete)")
 
+    pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
+    pv.add_argument("pipeline")
+    pv.add_argument("step")
+    pv.add_argument("-n", type=int, default=5)
+
+    sk = cmd("skill", "install the agentl skill for Claude Code (teaches agents to use agentl)")
+    sk.add_argument("action", choices=["install", "show"])
+    sk.add_argument(
+        "--project", action="store_true", help="into ./.claude/skills instead of ~/.claude/skills"
+    )
+
     d = cmd("diagram", "print the pipeline as a Mermaid diagram")
     d.add_argument("pipeline")
 
@@ -171,6 +182,24 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 planned = preflight.plan(load(a.pipeline), store)
             print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
+            return 0
+        if a.cmd == "preview":
+            from . import preflight
+
+            with open_store(a.db) as store:
+                shown = preflight.preview(load(a.pipeline), store, a.step, a.n)
+            print(json.dumps(shown, indent=2, ensure_ascii=False, default=str))
+            return 0
+        if a.cmd == "skill":
+            source = Path(__file__).parent / "skill" / "SKILL.md"
+            if a.action == "show":
+                print(source.read_text(encoding="utf-8"))
+                return 0
+            root = Path(".claude") if a.project else Path.home() / ".claude"
+            target = root / "skills" / "agentl" / "SKILL.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"installed {target}")
             return 0
         if a.cmd == "schema":
             from . import lint

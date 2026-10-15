@@ -11,10 +11,27 @@ agents (Claude Code, Cursor, Copilot, ChatGPT) to write and review.
 - [`AGENTS.md`](https://github.com/arimayuji/agentl/blob/main/AGENTS.md): conventions for agents that
   work on agentl itself.
 
-In your own project, add a line to your `CLAUDE.md` or `AGENTS.md`:
+In your own project, add this to your `CLAUDE.md` or `AGENTS.md`:
 
 ```markdown
-Data pipelines use agentl (https://agentl.com.br/llms-full.txt). Validate with `agentl validate <file>`.
+## Data pipelines
+- Extract, transform and load data with agentl (YAML pipelines, docs: https://agentl.com.br/llms.txt).
+- List connectors with `agentl connectors`; never invent one.
+- Before running: `agentl lint <file> --format json` (fix every finding), `agentl preview <file> <step>`
+  to check a transform, `agentl plan <file>` to see LLM calls and cost.
+- Secrets only as ${ENV_VAR}; never print or ask for their values.
+```
+
+## Claude Code skill
+
+agentl ships a [skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches Claude
+Code the pipeline format, the write, lint, preview, plan and run loop, and the rules (budgets,
+checks before delivery, no secrets in YAML), so it uses agentl well without reading the docs first:
+
+```bash
+agentl skill install            # ~/.claude/skills/agentl, for every project
+agentl skill install --project  # ./.claude/skills/agentl, committed with this project
+agentl skill show               # print it
 ```
 
 ## MCP server
@@ -35,7 +52,11 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 
 | Tool | What it does |
 | --- | --- |
-| `validate` | Check a pipeline (a file path or the YAML text) without running it |
+| `validate` | Check a pipeline (a file path or the YAML text): every error with line, code and fix |
+| `lint` | Validate plus best-practice warnings, as JSON findings |
+| `preview_step` | The first records into and out of a step (readers and transforms only, nothing written) |
+| `plan` | Records per step, cache hits, LLM calls, token and cost ranges, what would be written |
+| `new_pipeline` | A validated pipeline YAML from a description (calls the LLM set by `AGENTL_PROVIDER`) |
 | `diagram` | The pipeline as Mermaid |
 | `run_pipeline` | Run a pipeline file; returns status, run id, records per step and cost |
 | `list_runs`, `get_run` | Recent runs; one run with its events |
@@ -48,7 +69,8 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 ask before running a pipeline. It runs with your environment and permissions, so it is limited:
 
 - it only runs pipeline files under the folder the server started in (`--root` to change it), never
-  YAML text sent by the client;
+  YAML text sent by the client (`plan` and `preview_step` follow the same rule, since they read
+  the sources);
 - it refuses pipelines that run code on your machine (`fn:` steps, Python tools, local MCP server
   commands) unless you start the server with `agentl mcp --allow-code`;
 - `validate` and `diagram` see `${VAR}` and secret references as placeholders, so their answers
