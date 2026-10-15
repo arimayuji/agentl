@@ -272,7 +272,8 @@ def _cost(
     return (low, high)
 
 
-def plan(spec: PipelineSpec, store: Any) -> Plan:
+def plan(spec: PipelineSpec, store: Any, records: dict | None = None) -> Plan:
+    """`records`, when given, receives the records of every step that ran (None when unknown)."""
     from .runner import Runner, RunResult, agent_cache_key
 
     spec = spec.model_copy(update={"arrow": False, "chunk_size": None, "notify": None})
@@ -364,4 +365,32 @@ def plan(spec: PipelineSpec, store: Any) -> Plan:
                 known[s.id] = None
                 out.steps.append(StepPlan(s.id, "use", "skipped", None, f"failed: {_describe(e)[:200]}"))
         scratch.close()
+    if records is not None:
+        records.update(known)
+    return out
+
+
+def preview(spec: PipelineSpec, store: Any, step_id: str, n: int = 5) -> dict:
+    """The first `n` records going into and coming out of a step, computed like `plan`: only
+    readers and transforms run, so agent, fn and writer steps show their input only."""
+    if step_id not in {s.id for s in spec.steps}:
+        from .lint import suggest
+
+        best = suggest(step_id, [s.id for s in spec.steps])
+        raise KeyError(f"no step '{step_id}'" + (f". Did you mean '{best}'?" if best else ""))
+    known: dict[str, Any] = {}
+    planned = plan(spec, store, known)
+    step = next(s for s in spec.steps if s.id == step_id)
+    sp = next(x for x in planned.steps if x.step == step_id)
+    out: dict[str, Any] = {"step": step_id, "kind": step.kind, "status": sp.status}
+    inputs = {r: known.get(r) for r in step.inputs}
+    out["input"] = {
+        r: (None if v is None else {"records": len(v), "first": v[:n]}) for r, v in inputs.items()
+    }
+    if sp.status in ("read", "ran") and known.get(step_id) is not None:
+        rows = known[step_id]
+        out["output"] = {"records": len(rows), "first": rows[:n]}
+    else:
+        out["output"] = None
+        out["why"] = sp.detail or f"{step.kind} steps do not run in a preview"
     return out
