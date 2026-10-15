@@ -63,3 +63,10 @@ def test_writers_report_records_written(tmp_path):
         run = Runner(spec, store=store).run()
         done = [e for e in store.events(run.run_id) if e["type"] == "step.succeeded" and e["step"] == "s"]
     assert done[0]["data"]["written"] == 3
+
+
+def test_dashboard_counts_records_written():
+    from agentl.dashboard import step_stats
+
+    events = [{"step": "s", "type": "step.succeeded", "data": {"records": 1, "written": 3, "seconds": 0}}]
+    assert step_stats(events)["s"]["records"] == 3
