@@ -138,6 +138,10 @@ class StepSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
     llm: str = "default"
+    # Cascade: `llm: [cheap, strong]` puts the rest here. A record whose answer stays invalid after
+    # the retry, or whose `confidence` is below `escalate_below`, goes to the next llm.
+    escalate: list[str] = Field(default_factory=list)
+    escalate_below: float | None = Field(default=None, ge=0, le=1)
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
     mode: Literal["sync", "batch"] = "sync"
@@ -149,6 +153,16 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
+
+    @model_validator(mode="before")
+    @classmethod
+    def _cascade(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and isinstance(raw.get("llm"), list):
+            names = [str(n) for n in raw["llm"]]
+            if not names:
+                raise ValueError(f"step '{raw.get('id')}': llm list is empty")
+            raw = {**raw, "llm": names[0], "escalate": names[1:]}
+        return raw
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
@@ -183,6 +197,17 @@ class StepSpec(BaseModel):
         for t in self.tools:
             if isinstance(t, dict) and len(t) != 1:
                 raise ValueError(f"step '{self.id}': write each tool with settings as its own item")
+        if self.escalate and not self.agent:
+            raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
+        if self.escalate and self.mode == "batch":
+            raise ValueError(f"step '{self.id}': a cascade of llms does not work with mode batch")
+        if self.escalate_below is not None:
+            if not self.escalate:
+                raise ValueError(
+                    f"step '{self.id}': escalate_below needs a list of llms, e.g. llm: [cheap, strong]"
+                )
+            if (self.output or {}).get("confidence", "").rstrip("?") not in ("float", "int"):
+                raise ValueError(f"step '{self.id}': escalate_below needs a 'confidence: float' output field")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
         return self
@@ -281,7 +306,7 @@ class PipelineSpec(BaseModel):
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
         if self.budget and self.budget.max_usd is not None:
-            used = {s.llm for s in self.steps if s.kind == "agent"}
+            used = {n for s in self.steps if s.kind == "agent" for n in [s.llm, *s.escalate]}
             used |= {f for n in used if n in self.llm for f in self.llm[n].fallback}
             unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
             free = ("echo", "ollama", "openrouter")  # openrouter reports the cost of each call
@@ -302,8 +327,9 @@ class PipelineSpec(BaseModel):
             for ref in s.inputs:
                 if ref not in ids:
                     raise ValueError(f"step '{s.id}': unknown input '{ref}'")
-            if s.kind == "agent" and s.llm not in self.llm:
-                raise ValueError(f"step '{s.id}': unknown llm '{s.llm}'")
+            for name in [s.llm, *s.escalate] if s.kind == "agent" else []:
+                if name not in self.llm:
+                    raise ValueError(f"step '{s.id}': unknown llm '{name}'")
             for t in s.tools:
                 name = t if isinstance(t, str) else next(iter(t))
                 server = name[4:].split("/", 1)[0]

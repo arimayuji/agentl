@@ -32,6 +32,7 @@ compare runs on the same machine, not across machines.
 | `arrow csv-pandas-parquet` | 6.47 s with dicts, 0.63 s with Arrow (10.3x), identical Parquet | 500k-row CSV through `csv.read` → `@dataframe` → `parquet.write` |
 | `arrow parquet-postgres` | 4.69 s INSERT, 0.21 s COPY from Arrow (22x), identical rows | 200k rows, `parquet.read` → `postgres.write`; needs `AGENTL_TEST_PG_DSN` |
 | `parallel steps` | 1.08 s one at a time, 0.51 s in parallel | Two independent 0.5 s sources and a step on one of them, `max_parallel_steps` 1 vs 4 |
+| `agent cascade` | 0.69 USD with one strong model, 0.13 with `llm: [cheap, strong]` (5.2x less) | 500 records, 350 distinct (both deduplicated to 350); the cheap model fails one record in ten, which goes to the strong one |
 | `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20`, 0.50 in batch mode | 500 records, fake provider with a 400-token fixed prefix (see below) |
 
 ## With agentl and without it

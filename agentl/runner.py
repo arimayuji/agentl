@@ -352,15 +352,19 @@ class Runner:
         prov = self._provider(step.llm)
         llm_spec = self.spec.llm[step.llm]
         cacheable = self.use_cache and step.cached
-        llm_key = llm_spec.model_dump(exclude={"price"})
+        chain = [step.llm, *step.escalate]
+        # Without a cascade the key stays what it was, so existing caches keep their hits.
+        llm_key: Any = llm_spec.model_dump(exclude={"price"})
+        if step.escalate:
+            llm_key = [self.spec.llm[n].model_dump(exclude={"price"}) for n in chain]
 
         tool_defs: list[dict] = []
         call_tool: llm.ToolCall | None = None
         if step.tools:
-            if not hasattr(prov, "structured_tools"):
-                raise ValueError(
-                    f"step '{step.id}': llm provider '{llm_spec.provider}' does not support tools"
-                )
+            for name in chain:
+                if not hasattr(self._provider(name), "structured_tools"):
+                    provider = self.spec.llm[name].provider
+                    raise ValueError(f"step '{step.id}': llm provider '{provider}' does not support tools")
             tool_defs, call_tool = self._tool_caller(run_id, step, result)
 
         def key(rec: dict) -> str:
@@ -369,31 +373,48 @@ class Runner:
                 return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
             return _hash("agent", step.agent, step.output, llm_key, rec)
 
-        def done(rec: dict, out: dict) -> tuple[dict, None]:
+        def done(rec: dict, out: dict, by: str = step.llm) -> tuple[dict, None]:
             if cacheable:
                 self.store.cache_set(key(rec), out)
+            with self._spend:
+                answered = result.spend[step.id].setdefault("answered_by", {})
+                answered[by] = answered.get(by, 0) + 1
             return {**rec, **out}, None
+
+        def unsure(out: dict) -> bool:
+            conf = out.get("confidence")
+            return (
+                step.escalate_below is not None
+                and isinstance(conf, int | float)
+                and conf < step.escalate_below
+            )
 
         def one(rec: dict) -> tuple[dict | None, dict | None]:
             last: Exception | None = None
-            for _ in range(2):  # one retry on invalid output
-                self._check_budget(result)
-                try:
-                    if call_tool is not None:
-                        res = prov.structured_tools(  # type: ignore[attr-defined]
-                            step.agent or "", rec, schema, tool_defs, call_tool, step.max_tool_calls
-                        )
-                    else:
-                        res = prov.structured(step.agent or "", rec, schema)
-                except BudgetExceeded:
-                    raise
-                except (ValidationError, ValueError, RuntimeError) as e:
-                    # Invalid answers still cost tokens: count them for budget and spend.
-                    self._charge(result, step, llm_spec, e)
-                    last = e
-                    continue
-                self._charge(result, step, llm_spec, res)
-                return done(rec, res.value.model_dump())
+            for n, name in enumerate(chain):
+                p, spec = self._provider(name), self.spec.llm[name]
+                for _ in range(2):  # one retry on invalid output
+                    self._check_budget(result)
+                    try:
+                        if call_tool is not None:
+                            res = p.structured_tools(  # type: ignore[attr-defined]
+                                step.agent or "", rec, schema, tool_defs, call_tool, step.max_tool_calls
+                            )
+                        else:
+                            res = p.structured(step.agent or "", rec, schema)
+                    except BudgetExceeded:
+                        raise
+                    except (ValidationError, ValueError, RuntimeError) as e:
+                        # Invalid answers still cost tokens: count them for budget and spend.
+                        self._charge(result, step, spec, e)
+                        last = e
+                        continue
+                    self._charge(result, step, spec, res)
+                    out = res.value.model_dump()
+                    if n + 1 < len(chain) and unsure(out):
+                        last = ValueError(f"confidence {out['confidence']} below {step.escalate_below}")
+                        break  # the next llm answers this record
+                    return done(rec, out, name)
             return None, {**rec, "_error": str(last)}
 
         batch_schema = _batch_schema(step.id, schema)
@@ -423,10 +444,16 @@ class Runner:
 
         slots: list[tuple[dict | None, dict | None] | None] = [None] * len(records)
         todo: list[int] = []
+        first: dict[str, int] = {}  # identical records are asked once per run
+        copies: list[tuple[int, int]] = []
         for i, rec in enumerate(records):
-            if cacheable and (hit := self.store.cache_get(key(rec))) is not None:
+            k = key(rec)
+            if k in first:
+                copies.append((i, first[k]))
+            elif cacheable and (hit := self.store.cache_get(k)) is not None:
                 slots[i] = ({**rec, **hit}, None)
             else:
+                first[k] = i
                 todo.append(i)
         size = step.records_per_call
         groups = [todo[n : n + size] for n in range(0, len(todo), size)]
@@ -450,6 +477,10 @@ class Runner:
             for g, answer in zip(groups, answers, strict=True):
                 for i, a in zip(g, answer, strict=True):
                     slots[i] = a
+        for i, src in copies:
+            slots[i] = slots[src]
+        if copies:
+            self._emit(run_id, "agent.deduplicated", step.id, records=len(copies))
         ok: Records = []
         bad: Records = []
         for slot in slots:

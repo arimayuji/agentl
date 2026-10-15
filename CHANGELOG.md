@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Model cascade: `llm: [cheap, strong]` on an agent step sends a record to the next llm when its
+  answer stays invalid, or with `escalate_below`, when its `confidence` is low. Spend per step
+  reports `answered_by`. Benchmark `agent cascade`: 5.2x cheaper than one strong model.
+- Agent steps send identical records once per run (`agent.deduplicated` event).
 - `provider: openrouter`: hundreds of models behind one key (`OPENROUTER_API_KEY`), OpenRouter's
   own model fallback (`options.models`), attribution headers, and the cost OpenRouter reports per
   call, so budgets need no `price`.
