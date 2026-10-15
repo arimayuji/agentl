@@ -18,7 +18,13 @@ def test_reference_solves_every_task_through_the_harness(tmp_path):
     pytest.importorskip("pypdf")
     out = tmp_path / "r.jsonl"
     agent = subprocess.list2cmdline([sys.executable, str(REFERENCE)])
-    assert agent_bench.main(["run", "--arm", "both", "--runs", "1", "--agent", agent, "--out", str(out)]) == 0
+    kept = tmp_path / "kept"
+    args = ["run", "--arm", "both", "--runs", "1", "--agent", agent, "--out", str(out), "--keep", str(kept)]
+    assert agent_bench.main(args) == 0
+    run = kept / "run1-01-filter-paid-orders-agentl"
+    assert (run / "workspace" / "out" / "result.json").is_file() and "num_turns" in (
+        run / "agent-stdout.txt"
+    ).read_text()
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert len(rows) == 20 and all(r["ok"] for r in rows), [r for r in rows if not r["ok"]]
     assert rows[0]["turns"] == 1 and rows[0]["tokens"] == 15

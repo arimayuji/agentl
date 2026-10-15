@@ -160,7 +160,7 @@ def _argv(command: str) -> list[str]:
     return [a[1:-1] if len(a) > 1 and a[0] == a[-1] == '"' else a for a in shlex.split(command, posix=False)]
 
 
-def run_one(task: Path, arm: str, agent: str, timeout: float) -> dict:
+def run_one(task: Path, arm: str, agent: str, timeout: float, keep: Path | None = None) -> dict:
     with tempfile.TemporaryDirectory(prefix=f"agentl-bench-{task.name}-") as tmp:
         ws = Path(tmp)
         shutil.copytree(task / "input", ws / "input")
@@ -184,6 +184,10 @@ def run_one(task: Path, arm: str, agent: str, timeout: float) -> dict:
         except FileNotFoundError as e:
             stdout, stderr, code, timed_out = "", f"agent command not found: {e}", 127, False
         seconds = round(time.time() - t0, 1)
+        if keep is not None:  # what the agent wrote and said, to see where its turns went
+            keep.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(ws, keep / "workspace", ignore=shutil.ignore_patterns("input", ".claude"))
+            (keep / "agent-stdout.txt").write_text(stdout, encoding="utf-8")
         if api:
             api.close()
         result = score(task, ws)
@@ -252,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--agent", default=DEFAULT_AGENT, help="command that reads the request on stdin")
     r.add_argument("--timeout", type=float, default=600)
     r.add_argument("--out", default="benchmarks/agent-results.jsonl")
+    r.add_argument(
+        "--keep",
+        metavar="DIR",
+        help="keep each run's files and the agent's output here (with `--output-format stream-json "
+        "--verbose` in the agent command, the whole transcript)",
+    )
     rep = sub.add_parser("report")
     rep.add_argument("results")
     a = p.parse_args(argv)
@@ -261,12 +271,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     tasks = sorted(t for t in TASKS.iterdir() if t.is_dir() and (not a.tasks or t.name in a.tasks))
     arms = ["agentl", "plain"] if a.arm == "both" else [a.arm]
+
+    def keep(n: int, task: Path, arm: str) -> Path | None:
+        return Path(a.keep) / f"run{n + 1}-{task.name}-{arm}" if a.keep else None
+
     rows = []
     with open(a.out, "a", encoding="utf-8") as out:
         for n in range(a.runs):
             for task in tasks:
                 for arm in arms:
-                    row = {"run": n + 1, "agent": a.agent, **run_one(task, arm, a.agent, a.timeout)}
+                    row = {
+                        "run": n + 1,
+                        "agent": a.agent,
+                        **run_one(task, arm, a.agent, a.timeout, keep(n, task, arm)),
+                    }
                     rows.append(row)
                     out.write(json.dumps(row) + "\n")
                     out.flush()
