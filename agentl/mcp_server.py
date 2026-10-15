@@ -159,8 +159,21 @@ class Server:
 
     # ------------------------------------------------------------ tools
     def validate(self, args: dict) -> str:
-        spec = _spec(args["pipeline"])
-        return f"ok: {spec.name} ({len(spec.steps)} steps)"
+        """Every problem at once with line, column, code and fix, so the client can correct the
+        YAML in one go. Environment values are never read (placeholders)."""
+        from . import lint
+
+        pipeline = args["pipeline"]
+        if "\n" not in pipeline and Path(pipeline).is_file():
+            report = lint.check_file(pipeline, env=_Placeholders())
+        elif "\n" in pipeline:
+            report = lint.check_text(pipeline, env=_Placeholders())
+        else:
+            raise FileNotFoundError(f"no pipeline file '{pipeline}'")
+        if report.errors or report.spec is None:
+            raise ValueError(report.render("text"))
+        head = f"ok: {report.spec.name} ({len(report.spec.steps)} steps)"
+        return "\n".join([head, report.render("text")]) if report.warnings else head
 
     def diagram(self, args: dict) -> str:
         return graph.mermaid(_spec(args["pipeline"]))

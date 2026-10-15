@@ -63,8 +63,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
 
-    v = cmd("validate", "check a pipeline without running it")
+    v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
+    v.add_argument("--format", choices=["text", "json", "github"], default="text")
+
+    li = cmd("lint", "validate plus best-practice warnings (budget, checks, secrets, unused steps)")
+    li.add_argument("pipeline")
+    li.add_argument("--format", choices=["text", "json", "github"], default="text")
+    li.add_argument("--strict", action="store_true", help="fail on warnings too")
+
+    cmd("schema", "print the JSON Schema of a pipeline file (editor autocomplete)")
 
     d = cmd("diagram", "print the pipeline as a Mermaid diagram")
     d.add_argument("pipeline")
@@ -122,10 +130,26 @@ def main(argv: list[str] | None = None) -> int:
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return 0 if result.status == "succeeded" else 1
-        if a.cmd == "validate":
-            spec = load(a.pipeline)
-            assist.check(spec)
-            print(f"ok: {spec.name} ({len(spec.steps)} steps)")
+        if a.cmd in ("validate", "lint"):
+            from . import lint
+
+            found = lint.check_file(a.pipeline, warnings=a.cmd == "lint")
+            failed = bool(found.errors) or (a.cmd == "lint" and a.strict and bool(found.warnings))
+            if a.format != "text":
+                print(found.render(a.format))
+            else:
+                if found.findings:
+                    print(found.render("text"), file=sys.stderr if failed else sys.stdout)
+                if found.spec is not None and not found.errors:
+                    w = f", {len(found.warnings)} warning(s)" if found.warnings else ""
+                    print(f"ok: {found.spec.name} ({len(found.spec.steps)} steps{w})")
+                else:
+                    print(f"{len(found.errors)} error(s)", file=sys.stderr)
+            return 2 if found.errors else 1 if failed else 0
+        if a.cmd == "schema":
+            from . import lint
+
+            print(json.dumps(lint.schema(), indent=2))
             return 0
         if a.cmd == "diagram":
             print(graph.mermaid(load(a.pipeline)))
