@@ -118,6 +118,16 @@ class WaitSpec(BaseModel):
         return self
 
 
+class CursorSpec(BaseModel):
+    """Incremental loading: the largest `field` seen in a successful run is kept in the run store
+    and replaces `{cursor}` in the step's `with` on the next run (`initial` on the first)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    initial: str | int | float | None = None
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -134,6 +144,7 @@ class StepSpec(BaseModel):
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
+    cursor: CursorSpec | None = None
     input: str | list[str] | None = None
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
@@ -197,6 +208,8 @@ class StepSpec(BaseModel):
         for t in self.tools:
             if isinstance(t, dict) and len(t) != 1:
                 raise ValueError(f"step '{self.id}': write each tool with settings as its own item")
+        if self.cursor and not (self.use or self.fn):
+            raise ValueError(f"step '{self.id}': cursor goes on a use or fn step that reads the data")
         if self.escalate and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":

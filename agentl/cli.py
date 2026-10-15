@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
     st.add_argument("--json", action="store_true", help="print the report as JSON")
 
+    sa = cmd("state", "cursors of incremental steps: show them, or reset to load from the start")
+    sa.add_argument("action", choices=["show", "reset"])
+    sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
+    sa.add_argument("--step", help="reset only this step's cursor")
+
     sv = cmd("serve", "run pipelines on their triggers: schedules, webhooks and new files")
     sv.add_argument("pipelines", nargs="+")
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
@@ -160,6 +165,22 @@ def main(argv: list[str] | None = None) -> int:
                 report = stats.compute(store, time.time() - parse_duration(a.since), a.pipeline)
             print(json.dumps(report, indent=2, default=str) if a.json else stats.text(report))
             return 0
+        if a.cmd == "state":
+            with open_store(a.db) as store:
+                if a.action == "show":
+                    rows = store.state_list(a.pipeline)
+                    for r in rows:
+                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"]))
+                        print(f"{r['pipeline']}  {r['step']}  {r['value']!r}  (run {r['run_id']}, {when})")
+                    if not rows:
+                        print("no cursors stored")
+                    return 0
+                if not a.pipeline:
+                    print("agentl state reset needs a pipeline name", file=sys.stderr)
+                    return 2
+                n = store.state_reset(a.pipeline, a.step)
+                print(f"reset {n} cursor(s) of {a.pipeline}; the next run starts from `initial`")
+                return 0
         if a.cmd == "serve":
             from .triggers import Service
 

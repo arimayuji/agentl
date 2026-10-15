@@ -131,9 +131,10 @@ Query parameters go in `params` (also filled per record). To follow pages:
   use: http.get
   with:
     url: https://api.example.com/invoices
-    params: { per_page: 500, updated_since: "${SINCE}" }
+    params: { per_page: 500, updated_since: "{cursor}" }   # see Concepts: cursor
     paginate: { param: page, next: next_page }   # also: start (1), max_pages (1000)
     items: items
+  cursor: { field: updated_at, initial: "2026-01-01" }
 ```
 
 URL fetches refuse loopback, private, link-local (for example cloud metadata at
