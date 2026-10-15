@@ -149,6 +149,7 @@ def _metrics(stdout: str) -> dict:
         "tokens": tokens or None,
         "agent_error": bool(data.get("is_error")) or data.get("subtype") not in (None, "success"),
         "agent_says": str(data.get("result") or "")[:300],
+        "models": sorted(data.get("modelUsage") or {}),  # which model(s) did the work
     }
 
 
