@@ -9,6 +9,22 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `agentl validate` reports every error at once with file, line, column, a code and a fix
+  ("Did you mean 'csv.read'?"), and unset `${VAR}`s without reading their values.
+  `--format json|github`.
+- `agentl lint`: best-practice warnings (no budget, delivery with no check, secrets in the YAML,
+  unused steps, missing `fn:` modules, unused cursors, unknown top-level fields), with
+  `lint: { disable: [...] }`, `# agentl: disable=...` and `--strict`.
+- `agentl schema`: JSON Schema of a pipeline file for editor autocomplete.
+- The MCP `validate` tool returns the same findings.
+
+### Changed
+
+- `agentl validate` no longer resolves secret references (`${aws-sm:...}`) or loads the pipeline
+  with real values; it only checks that environment variables are set.
+
 ## [0.8.1] - 2026-10-15
 
 ### Added

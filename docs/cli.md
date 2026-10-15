@@ -2,7 +2,9 @@
 
 ```text
 agentl run PIPELINE [--no-cache] [--show STEP]
-agentl validate PIPELINE
+agentl validate PIPELINE [--format text|json|github]
+agentl lint PIPELINE [--strict] [--format text|json|github]
+agentl schema
 agentl diagram PIPELINE
 agentl runs
 agentl connectors
@@ -16,6 +18,62 @@ agentl dashboard [--host 127.0.0.1] [--port 7070]
 
 Every command accepts `--db` to choose the run store: a SQLite path or a `postgresql://` URL
 (default: `$AGENTL_DB`, then `.agentl/agentl.db`).
+
+## Validate and lint
+
+`agentl validate` reports every error at once, each with file, line, column, a code and the fix:
+
+```text
+$ agentl validate tickets.yaml
+tickets.yaml:7:10  error AE003  step 'read': unknown connector 'csv.reed'. Did you mean 'csv.read'?
+    fix: use: csv.read
+tickets.yaml:10:12  error AE004  step 'classify': input 'raed' does not exist. Did you mean 'read'? Steps: read, classify, save
+    fix: input: read
+tickets.yaml:25:19  error AE008  environment variable PG_DSN is not set
+    fix: export PG_DSN=... (or write ${PG_DSN:-default})
+3 error(s)
+```
+
+Environment values and secret references are never read or printed: only whether a `${VAR}` is
+set. Exit code 2 when there are errors.
+
+`agentl lint` adds best-practice warnings:
+
+| Code | Warns when |
+|---|---|
+| AL001 | agent steps call a paid LLM and the run has no `budget` |
+| AL002 | a step delivers data (database, Sheets, Drive, SharePoint, queues, `http.post`, remote files) with no `check` before it |
+| AL003 | a value looks like a secret (API keys, tokens, a password in a DSN) instead of `${VAR}` |
+| AL004 | a step produces records no other step uses |
+| AL005 | an `fn:` module is neither next to the pipeline nor installed |
+| AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
+| AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
+
+Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
+`# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
+
+`--format json` is for scripts and AI agents (each finding has `code`, `level`, `message`,
+`line`, `col`, `fix`); `--format github` prints GitHub Actions annotations, so findings show up on
+the pull request:
+
+```yaml
+- run: agentl lint pipelines/*.yaml --strict --format github
+```
+
+The MCP server's `validate` tool returns the same findings.
+
+### Autocomplete in the editor
+
+`agentl schema` prints the JSON Schema of a pipeline file. With the VS Code YAML extension:
+
+```bash
+agentl schema > pipeline.schema.json
+```
+
+```yaml
+# yaml-language-server: $schema=./pipeline.schema.json
+name: tickets
+```
 
 ## Run store
 

@@ -73,7 +73,8 @@ Rules:
   a natural key, and mode: replace for aggregates that are recomputed in full.
 - Readers return CSV values as strings: cast types inside the function.
 - Credentials only as ${ENV_VAR}.
-- Run `agentl validate pipeline.yaml` (export placeholder values for ${VARS}) and fix any error.
+- Run `agentl lint pipeline.yaml --format json` (export placeholder values for ${VARS}) and fix
+  every finding: each one has the line, the code and the fix.
 
 <paste the script>
 ```

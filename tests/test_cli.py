@@ -31,7 +31,7 @@ def test_cli_reports_bad_spec(tmp_path, capsys):
     bad = tmp_path / "bad.yaml"
     bad.write_text("name: x\nsteps:\n  - id: a\n")
     assert main(["validate", str(bad)]) == 2
-    assert "error:" in capsys.readouterr().err
+    assert "bad.yaml:3:5  error AE002" in capsys.readouterr().err
 
 
 def test_version(capsys):

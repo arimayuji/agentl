@@ -132,9 +132,8 @@ def test_mcp_server_round_trip_with_our_own_client(tmp_path):
         assert tools["validate"]["annotations"]["readOnlyHint"] is True
         assert tools["run_pipeline"]["annotations"]["readOnlyHint"] is False
         assert client.call("validate", {"pipeline": str(pipeline)}) == "ok: hello (1 steps)"
-        assert client.call("validate", {"pipeline": GOOD.replace("csv.read", "nope")}).startswith(
-            "error: unknown connector 'nope'"
-        )
+        bad = client.call("validate", {"pipeline": GOOD.replace("csv.read", "csv.reed")})
+        assert "4:10  error AE003  step 'read': unknown connector 'csv.reed'. Did you mean 'csv.read'?" in bad
         run = json.loads(client.call("run_pipeline", {"pipeline": str(pipeline)}))
         assert run["status"] == "succeeded" and run["records"] == {"say": 1}
         events = json.loads(client.call("get_run", {"run_id": run["run_id"]}))["events"]
