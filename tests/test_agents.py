@@ -86,6 +86,7 @@ def test_cli_preview_and_skill_install(tmp_path, monkeypatch, capsys):
     assert main(["preview", "p.yaml", "some", "-n", "1", "--db", str(tmp_path / "s.db")]) == 0
     assert json.loads(capsys.readouterr().out)["output"]["records"] == 2
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # what Path.home() reads on Windows
     assert main(["skill", "install"]) == 0
     installed = tmp_path / "home" / ".claude" / "skills" / "agentl" / "SKILL.md"
     assert installed.read_text().startswith("---\nname: agentl\n")
