@@ -1,0 +1,18 @@
+# Check the data before it reaches the database: a failed check stops the run before the write.
+name: check-before-loading
+steps:
+  - id: sales
+    use: csv.read
+    with: { path: sales.csv }
+  - id: verify
+    check: sales
+    expect:
+      rows: { min: 1 }
+      not_null: [id, total]
+      unique: id
+      accepted: { region: [north, south, east, west] }
+    on_fail: stop
+  - id: load
+    use: sqlite.write
+    input: verify
+    with: { db: out/sales.db, table: sales, mode: replace }

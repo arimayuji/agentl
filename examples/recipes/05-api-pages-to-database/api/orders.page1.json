@@ -1,0 +1,15 @@
+{
+ "items": [
+  {
+   "id": 1,
+   "customer": "c1",
+   "total": 10.5
+  },
+  {
+   "id": 2,
+   "customer": "c2",
+   "total": 21.0
+  }
+ ],
+ "next_page": 2
+}

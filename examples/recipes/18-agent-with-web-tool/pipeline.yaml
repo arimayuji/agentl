@@ -1,0 +1,21 @@
+# An agent step that may look things up on the web, limited to allowed hosts.
+name: agent-with-web-tool
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1, max_tool_calls: 20 }
+steps:
+  - id: companies
+    use: csv.read
+    with: { path: companies.csv }
+  - id: describe
+    input: companies
+    agent: Read the company site and describe what the company does in one sentence.
+    tools:
+      - http.get: { allow_hosts: [example.com] }
+    max_tool_calls: 3
+    output:
+      description: str
+  - id: save
+    use: json.write
+    input: describe
+    with: { path: out/companies.json }

@@ -6,8 +6,9 @@ agents (Claude Code, Cursor, Copilot, ChatGPT) to write and review.
 ## Give the agent the docs
 
 - [`llms.txt`](https://agentl.com.br/llms.txt): index of every page, following [llmstxt.org](https://llmstxt.org).
-- [`llms-full.txt`](https://agentl.com.br/llms-full.txt): the whole documentation in one file. Paste it
-  or point the agent at the URL.
+- [`llms-full.txt`](https://agentl.com.br/llms-full.txt): the whole documentation in one file, code
+  of the examples included. Paste it or point the agent at the URL.
+- [Recipes](recipes.md): 20 short pipelines, tested in CI, for agents to start from.
 - [`AGENTS.md`](https://github.com/arimayuji/agentl/blob/main/AGENTS.md): conventions for agents that
   work on agentl itself.
 

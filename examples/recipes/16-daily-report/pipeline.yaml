@@ -1,0 +1,18 @@
+# A report every weekday at 07:00 Sao Paulo time: `agentl serve pipeline.yaml`.
+# Needs: pip install "agentl-etl[excel]"
+name: daily-report
+trigger:
+  - cron: "0 7 * * 1-5"
+    timezone: America/Sao_Paulo
+steps:
+  - id: sales
+    use: csv.read
+    with: { path: sales.csv }
+  - id: north
+    use: filter
+    input: sales
+    with: { where: { region: north } }
+  - id: report
+    use: excel.write
+    input: north
+    with: { path: "out/north-{date}.xlsx", latest: out/north-latest.xlsx, keep: 30 }

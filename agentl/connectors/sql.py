@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 from ..registry import connector, stream_reader, stream_writer
@@ -43,6 +44,8 @@ def sqlite_write_chunks(
         raise ValueError(f"invalid table name '{table}'")
     written = 0
     cols: list[str] = []
+    if db and db != ":memory:":
+        Path(db).parent.mkdir(parents=True, exist_ok=True)  # as file writers do
     with closing(sqlite3.connect(db)) as conn, conn:
         if mode == "replace":
             conn.execute(f'DROP TABLE IF EXISTS "{table}"')

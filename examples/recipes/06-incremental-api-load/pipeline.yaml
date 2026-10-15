@@ -1,0 +1,14 @@
+# Load only what changed since the last successful run (the cursor is kept in the run store).
+# Needs: pip install "agentl-etl[sql]"
+name: incremental-api-load
+steps:
+  - id: customers
+    use: http.get
+    with:
+      url: "${API_URL:-https://api.example.com}/customers"
+      params: { since: "{cursor}" }
+    cursor: { field: updated_at, initial: "2026-01-01T00:00:00" }
+  - id: load
+    use: sql.write
+    input: customers
+    with: { url: "${DATABASE_URL:-sqlite:///out/customers.db}", table: customers, mode: upsert, key: id }

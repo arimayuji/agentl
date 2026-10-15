@@ -24,7 +24,21 @@ def _walk(nav: list[Any], section: str = "Docs") -> list[tuple[str, str, str]]:
     return out
 
 
+SNIPPET = re.compile(r'^[ \t]*--8<--[ \t]+"([^"]+)"[ \t]*$', re.M)
+
+
+def _snippets(md: str) -> str:
+    """Inline `--8<-- "path"` includes, so llms-full.txt carries the code and not the marker."""
+
+    def sub(m: re.Match) -> str:
+        path = Path(m.group(1))
+        return path.read_text(encoding="utf-8").rstrip("\n") if path.is_file() else m.group(0)
+
+    return SNIPPET.sub(sub, md)
+
+
 def _clean(md: str) -> str:
+    md = _snippets(md)
     md = re.sub(HTML_TAG, "", md)  # raw HTML, keeping <placeholders> in prompts
     return re.sub(r"\n{3,}", "\n\n", md).strip()
 
