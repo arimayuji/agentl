@@ -140,7 +140,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(registry.names()))
             return 0
         if a.cmd == "new":
-            text, spec = assist.new_pipeline(a.description, assist.llm_from_env(a.provider, a.model))
+            text, spec = assist.new_pipeline(
+                a.description,
+                assist.llm_from_env(a.provider, a.model),
+                llm_block=assist.llm_choice(a.provider, a.model),
+            )
             if a.output:
                 with open(a.output, "x", encoding="utf-8") as f:
                     f.write(text)

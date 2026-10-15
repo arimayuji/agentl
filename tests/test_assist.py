@@ -55,7 +55,8 @@ def test_new_cli_writes_the_file(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(assist, "llm_from_env", lambda *a: Scripted(GOOD))
     out = tmp_path / "p.yaml"
     assert main(["new", "orders to json", "-o", str(out)]) == 0
-    assert out.read_text() == GOOD and "flowchart" in capsys.readouterr().err
+    expected = assist.with_llm(GOOD, assist.llm_choice())
+    assert out.read_text() == expected and "flowchart" in capsys.readouterr().err
     assert main(["new", "again", "-o", str(out)]) == 2  # never overwrites
 
 
@@ -197,3 +198,18 @@ def test_mcp_run_pipeline_guards(tmp_path, monkeypatch):
     err, text = call("validate", pipeline="name: x ${aws-sm:prod/db}\nsteps:\n  - id: a\n    use: csv.read\n")
     assert not err and "<aws-sm>" in text
     assert Server(None).allow_code is False
+
+
+def test_new_uses_the_llm_it_ran_with():
+    stale = GOOD.replace(
+        "name: orders\n", "name: orders\nllm:\n  provider: anthropic\n  model: claude-opus-4\n\n"
+    )
+    text, spec = assist.new_pipeline(
+        "x", Scripted(stale), llm_block={"provider": "openrouter", "model": "openai/gpt-4o-mini"}
+    )
+    assert "claude-opus-4" not in text and spec.llm["default"].provider == "openrouter"
+    assert text.startswith(
+        "name: orders\nllm:\n  default: { provider: openrouter, model: openai/gpt-4o-mini }\n"
+    )
+    text, spec = assist.new_pipeline("x", Scripted(GOOD), llm_block={"provider": "echo", "model": "m"})
+    assert spec.llm["default"].provider == "echo" and [s.id for s in spec.steps] == ["read", "save"]

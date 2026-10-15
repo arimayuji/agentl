@@ -39,16 +39,20 @@ def validate_text(text: str, env: Any = None) -> PipelineSpec:
 
 
 # ---------------------------------------------------------------- model
+def llm_choice(provider: str | None = None, model: str | None = None) -> dict:
+    """Provider and model for the assistant commands: flags first, then AGENTL_PROVIDER /
+    AGENTL_MODEL, then the default."""
+    return {
+        "provider": provider or os.environ.get("AGENTL_PROVIDER") or "anthropic",
+        "model": model or os.environ.get("AGENTL_MODEL") or LLMSpec().model,
+    }
+
+
 def llm_from_env(provider: str | None = None, model: str | None = None) -> Any:
-    """A provider for the assistant commands: flags first, then AGENTL_PROVIDER / AGENTL_MODEL."""
+    """A provider for the assistant commands (see `llm_choice`)."""
     from .llm import provider as make
 
-    spec = LLMSpec(
-        provider=provider or os.environ.get("AGENTL_PROVIDER") or "anthropic",
-        model=model or os.environ.get("AGENTL_MODEL") or LLMSpec().model,
-        max_tokens=8192,
-    )
-    return make(spec)
+    return make(LLMSpec(**llm_choice(provider, model), max_tokens=8192))
 
 
 def catalog() -> str:
@@ -86,12 +90,29 @@ def _yaml_of(answer: str) -> str:
     return (m.group(1) if m else answer).strip() + "\n"
 
 
-def new_pipeline(description: str, llm: Any, attempts: int = 3) -> tuple[str, PipelineSpec]:
-    """A validated pipeline YAML for `description`. Validation errors go back to the model."""
+def with_llm(text: str, llm_block: dict) -> str:
+    """`text` with its top-level `llm:` replaced by `llm_block` (the one `agentl new` ran with):
+    models do not know which provider and model ids the user has, so they guess old ones."""
+    import re
+
+    body = re.sub(r"(?ms)^llm:.*?(?=^\S)", "", text if text.endswith("\n") else text + "\n")
+    inline = ", ".join(f"{k}: {v}" for k, v in llm_block.items())
+    line = f"llm:\n  default: {{ {inline} }}\n"
+    m = re.search(r"(?m)^name:.*\n", body)
+    return body[: m.end()] + line + body[m.end() :] if m else line + body
+
+
+def new_pipeline(
+    description: str, llm: Any, attempts: int = 3, llm_block: dict | None = None
+) -> tuple[str, PipelineSpec]:
+    """A validated pipeline YAML for `description`. Validation errors go back to the model.
+    `llm_block` ({provider, model}) replaces whatever llm the model wrote."""
     instruction = NEW_INSTRUCTION.replace("{catalog}", catalog())
     prompt, last = description, ""
     for _ in range(attempts):
         text = _yaml_of(llm.text(instruction, prompt))
+        if llm_block:
+            text = with_llm(text, llm_block)
         try:
             return text, validate_text(text)
         except (SpecError, KeyError, ValueError) as e:

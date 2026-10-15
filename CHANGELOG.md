@@ -19,6 +19,8 @@ They are always listed under **Changed** or **Removed**.
 - HTTPS on a fresh macOS Python (python.org build without root certificates): agentl uses
   certifi's CA bundle when it is installed, and a `CERTIFICATE_VERIFY_FAILED` error now says how to
   fix it.
+- `agentl new` writes the provider and model it ran with (flags or `AGENTL_PROVIDER` /
+  `AGENTL_MODEL`) into the pipeline, instead of an llm the model guessed (often an old model id).
 - Writer steps report how many records they wrote (`written` in `step.succeeded`), not only the one
   summary record per file.
 
