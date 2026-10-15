@@ -110,6 +110,31 @@ load:
 `${VAR}` is replaced from the environment when the file is loaded. `${VAR:-default}` provides a
 fallback. A missing variable without a default is an error.
 
+## Incremental loading: cursor
+
+A source that should only read what changed since the last run keeps a cursor:
+
+```yaml
+- id: invoices
+  use: http.get
+  with:
+    url: https://api.example.com/invoices
+    params: { updated_since: "{cursor}" }
+  cursor: { field: updated_at, initial: "2026-01-01" }
+```
+
+After a run that **succeeds**, the largest `updated_at` the step returned is stored in the run store
+(SQLite or the shared Postgres store), per pipeline and step. The next run replaces `{cursor}` in the
+step's `with` with it; the first run uses `initial`. A failed run leaves the cursor where it was, so
+the same records are read again. A value that is exactly `"{cursor}"` keeps its type (a number stays
+a number); inside a longer string it is formatted as text. Works on `use` and `fn` steps; a step
+with a cursor is not streamed in chunks. Each move is logged as a `cursor.advanced` event.
+
+```bash
+agentl state show [pipeline]               # stored cursors
+agentl state reset <pipeline> [--step id]  # next run starts again from initial
+```
+
 ## Cache and resume
 
 <video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/cache.jpg" aria-label="A second run served from the per-record cache">

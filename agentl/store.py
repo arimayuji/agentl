@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_run ON events(run_id);
 CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS state (
+  pipeline TEXT, step TEXT, value TEXT, run_id TEXT, ts REAL, PRIMARY KEY (pipeline, step)
+);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -40,14 +43,18 @@ POSTGRES_SCHEMA = [
     "CREATE INDEX IF NOT EXISTS agentl_events_run ON agentl_events(run_id)",
     "CREATE INDEX IF NOT EXISTS agentl_runs_started ON agentl_runs(started DESC)",
     "CREATE TABLE IF NOT EXISTS agentl_cache (key TEXT PRIMARY KEY, value JSONB, ts DOUBLE PRECISION)",
+    """CREATE TABLE IF NOT EXISTS agentl_state (
+      pipeline TEXT, step TEXT, value JSONB, run_id TEXT, ts DOUBLE PRECISION,
+      PRIMARY KEY (pipeline, step))""",
 ]
 
 
 class Store:
     """SQLite store. Thread-safe within one process."""
 
-    T: ClassVar[dict[str, str]] = {"runs": "runs", "events": "events", "cache": "cache"}
+    T: ClassVar[dict[str, str]] = {"runs": "runs", "events": "events", "cache": "cache", "state": "state"}
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts) VALUES (?, ?, ?)"
+    UPSERT_STATE = "INSERT OR REPLACE INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?, ?, ?)"
 
     def __init__(self, path: str | Path = DEFAULT_DB):
         self.path = Path(path)
@@ -108,6 +115,31 @@ class Store:
     def cache_set(self, key: str, value: Any) -> None:
         self._exec(self.UPSERT_CACHE, (key, json.dumps(value, default=str), time.time()))
 
+    # cursors of incremental steps, per pipeline and step
+    def state_get(self, pipeline: str, step: str) -> Any | None:
+        rows = self._query("SELECT value FROM {state} WHERE pipeline = ? AND step = ?", (pipeline, step))
+        return self._load(rows[0]["value"])["v"] if rows else None
+
+    def state_set(self, pipeline: str, step: str, value: Any, run_id: str) -> None:
+        self._exec(
+            self.UPSERT_STATE, (pipeline, step, json.dumps({"v": value}, default=str), run_id, time.time())
+        )
+
+    def state_list(self, pipeline: str | None = None) -> list[dict]:
+        where, params = (" WHERE pipeline = ?", (pipeline,)) if pipeline else ("", ())
+        rows = self._query(
+            f"SELECT pipeline, step, value, run_id, ts FROM {{state}}{where} ORDER BY pipeline, step", params
+        )
+        return [{**r, "value": self._load(r["value"])["v"]} for r in rows]
+
+    def state_reset(self, pipeline: str, step: str | None = None) -> int:
+        n = len([r for r in self.state_list(pipeline) if step is None or r["step"] == step])
+        if step is None:
+            self._exec("DELETE FROM {state} WHERE pipeline = ?", (pipeline,))
+        else:
+            self._exec("DELETE FROM {state} WHERE pipeline = ? AND step = ?", (pipeline, step))
+        return n
+
     def runs(self, limit: int = 20) -> list[dict]:
         return self._query(
             "SELECT id, pipeline, status, started, finished, error FROM {runs} ORDER BY started DESC LIMIT ?",
@@ -144,12 +176,22 @@ class Store:
 
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
-    Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache."""
+    Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state."""
 
-    T: ClassVar[dict[str, str]] = {"runs": "agentl_runs", "events": "agentl_events", "cache": "agentl_cache"}
+    T: ClassVar[dict[str, str]] = {
+        "runs": "agentl_runs",
+        "events": "agentl_events",
+        "cache": "agentl_cache",
+        "state": "agentl_state",
+    }
     UPSERT_CACHE = (
         "INSERT INTO {cache} (key, value, ts) VALUES (?, ?::jsonb, ?) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts"
+    )
+    UPSERT_STATE = (
+        "INSERT INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?::jsonb, ?, ?) "
+        "ON CONFLICT (pipeline, step) DO UPDATE SET value = EXCLUDED.value, run_id = EXCLUDED.run_id, "
+        "ts = EXCLUDED.ts"
     )
 
     def __init__(self, dsn: str):

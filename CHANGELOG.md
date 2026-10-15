@@ -15,6 +15,9 @@ They are always listed under **Changed** or **Removed**.
   answer stays invalid, or with `escalate_below`, when its `confidence` is low. Spend per step
   reports `answered_by`. Benchmark `agent cascade`: 5.2x cheaper than one strong model.
 - Agent steps send identical records once per run (`agent.deduplicated` event).
+- Incremental loading: `cursor: {field, initial}` on a source step keeps the largest value seen in
+  the run store and puts it in `{cursor}` on the next run; only a successful run moves it.
+  `agentl state show|reset`.
 - `provider: openrouter`: hundreds of models behind one key (`OPENROUTER_API_KEY`), OpenRouter's
   own model fallback (`options.models`), attribution headers, and the cost OpenRouter reports per
   call, so budgets need no `price`.

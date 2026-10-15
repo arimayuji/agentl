@@ -146,6 +146,8 @@ class Runner:
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
+        self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
+        self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
 
@@ -705,7 +707,11 @@ class Runner:
         self._emit(run_id, "step.started", step_id, kind=step.kind)
         t0 = time.time()
         try:
+            if step.cursor:
+                step = self._with_cursor(step)
             out = self._run_step(run_id, step, result.outputs, result)
+            if step.cursor:
+                self._track_cursor(step, out)
         except Exception as e:
             if isinstance(e, BudgetExceeded):
                 with self._spend:
@@ -753,7 +759,7 @@ class Runner:
                 consumers[ref].append(s)
         chains = {}
         for head in self.spec.steps:
-            if not head.use or head.inputs or registry.streaming(head.use)[0] is None:
+            if not head.use or head.inputs or head.cursor or registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
@@ -923,6 +929,7 @@ class Runner:
                 self._toolbox.close()
                 self._toolbox = None
         self._finish_after_run(run_id, result)
+        self._save_cursors(run_id, result)
         self.store.finish_run(run_id, result.status, result.error)
         self._emit(
             run_id,
@@ -935,6 +942,55 @@ class Runner:
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+    # incremental loading -------------------------------------------------
+    def _with_cursor(self, step: StepSpec) -> StepSpec:
+        """The step with `{cursor}` in its `with` replaced by the stored cursor (or `initial`)."""
+        assert step.cursor is not None
+        stored = self.store.state_get(self.spec.name, step.id)
+        value = step.cursor.initial if stored is None else stored
+
+        def sub(v: Any) -> Any:
+            if isinstance(v, str):
+                if v == "{cursor}":
+                    return value  # keeps the type: a number stays a number
+                return v.replace("{cursor}", "" if value is None else str(value))
+            if isinstance(v, dict):
+                return {k: sub(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [sub(x) for x in v]
+            return v
+
+        self._cursor_start[step.id] = value
+        return step.model_copy(update={"with_": sub(step.with_)})
+
+    def _track_cursor(self, step: StepSpec, out: Any) -> None:
+        assert step.cursor is not None
+        field = step.cursor.field
+        values = out.column(field).to_pylist() if _is_table(out) else [r.get(field) for r in out]
+        best = self._cursor_start.get(step.id)
+        for v in values:
+            if v is None:
+                continue
+            try:
+                if best is None or v > best:
+                    best = v
+            except TypeError as e:  # e.g. "2026-01-01" vs 5
+                raise ValueError(
+                    f"step '{step.id}': cursor field '{field}' mixes types ({best!r} and {v!r})"
+                ) from e
+        self._cursor_new[step.id] = best
+
+    def _save_cursors(self, run_id: str, result: RunResult) -> None:
+        """Cursors move only when the whole run succeeded, so a failed run reads the same data again."""
+        new, self._cursor_new = self._cursor_new, {}
+        start, self._cursor_start = self._cursor_start, {}
+        if result.status != "succeeded":
+            return
+        for step_id, value in new.items():
+            if value is not None and value != start.get(step_id):
+                self.store.state_set(self.spec.name, step_id, value, run_id)
+                self._emit(run_id, "cursor.advanced", step_id, previous=start.get(step_id), cursor=value)
 
     def _finish_after_run(self, run_id: str, result: RunResult) -> None:
         """Acknowledge (on success) or release (on failure) what queue consumers read. A failed
