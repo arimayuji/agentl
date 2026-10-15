@@ -6,6 +6,9 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.8.0**: OpenRouter provider, fallback between LLM providers, model cascade (cheap model first,
+  strong one for the records it cannot answer), identical records asked once, incremental loading
+  with a persisted cursor (`agentl state`) and a release-by-button workflow.
 - **0.7.0**: agent tools and MCP servers, data checks, Excel and versioned outputs, web pages as
   Markdown, `agentl mcp` / `new` / `doctor` / `stats` / `serve` (schedules, webhooks, new files),
   `wait_until`, Google Sheets and Drive, SharePoint and OneDrive, GraphQL, Kafka / SQS / RabbitMQ /

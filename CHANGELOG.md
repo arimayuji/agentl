@@ -9,6 +9,8 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-15
+
 ### Added
 
 - Model cascade: `llm: [cheap, strong]` on an agent step sends a record to the next llm when its
@@ -23,6 +25,12 @@ They are always listed under **Changed** or **Removed**.
   call, so budgets need no `price`.
 - `fallback:` on any llm: when a call fails, it goes to the next llm in the list, any provider.
   Each answer is priced with the llm that gave it; switches are logged as `llm.fallback` events.
+- Release workflow can be started by hand (Actions → Release → Run workflow) with a version.
+
+### Changed
+
+- Agent steps no longer call the LLM twice for identical records in the same run, and their spend
+  includes `answered_by`.
 
 ## [0.7.0] - 2026-10-14
 
@@ -314,7 +322,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/arimayuji/agentl/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/arimayuji/agentl/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/arimayuji/agentl/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arimayuji/agentl/compare/v0.5.1...v0.6.0
