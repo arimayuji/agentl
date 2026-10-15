@@ -6,6 +6,9 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.8.1**: fixes from a first hands-on test: `agentl --version`, HTTPS on macOS Python without
+  root certificates, records written by writers, `agentl serve` output, `agentl new` model choice,
+  and `join` keeping same-name columns.
 - **0.8.0**: OpenRouter provider, fallback between LLM providers, model cascade (cheap model first,
   strong one for the records it cannot answer), identical records asked once, incremental loading
   with a persisted cursor (`agentl state`) and a release-by-button workflow.
