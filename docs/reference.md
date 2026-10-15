@@ -1,5 +1,11 @@
 # API reference
 
+::: agentl.read
+
+::: agentl.write
+
+::: agentl.http_get_all
+
 ::: agentl.load
 
 ::: agentl.parse

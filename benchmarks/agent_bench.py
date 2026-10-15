@@ -40,6 +40,10 @@ ARMS = {
         "Use agentl for this (it is installed: `agentl --help`, docs at https://agentl.com.br/llms.txt). "
         "Write the pipeline as pipeline.yaml in this folder and run it.\n\n"
     ),
+    "agentl-python": (
+        "Use agentl as a Python library for this (it is installed): a short script with "
+        "`import agentl as al` and al.read, al.write, al.http_get_all, then plain Python. No pipeline.\n\n"
+    ),
     "plain": "Use Python (the standard library, pandas or any installed package) but not agentl.\n\n",
 }
 
@@ -165,17 +169,20 @@ def run_one(task: Path, arm: str, agent: str, timeout: float, keep: Path | None 
         ws = Path(tmp)
         shutil.copytree(task / "input", ws / "input")
         api = _Api(ws / "input" / "api") if (ws / "input" / "api").is_dir() else None
-        if arm == "agentl":
+        if arm.startswith("agentl"):
             skill = Path(__file__).parent.parent / "agentl" / "skill" / "SKILL.md"
             (ws / ".claude" / "skills" / "agentl").mkdir(parents=True)
             shutil.copy(skill, ws / ".claude" / "skills" / "agentl" / "SKILL.md")
         prompt = ARMS[arm] + (task / "task.md").read_text(encoding="utf-8")
         if api:
             prompt = prompt.replace("{api_url}", api.url)
+        # The local API stands in for a public one: let agentl's SSRF guard reach it, as it would
+        # reach the real API, so no arm spends turns on the guard.
+        env = {**os.environ, "AGENTL_ALLOW_HOSTS": "127.0.0.1"}
         t0 = time.time()
         try:
             proc = subprocess.run(
-                _argv(agent), input=prompt, cwd=ws, capture_output=True, text=True, timeout=timeout
+                _argv(agent), input=prompt, cwd=ws, capture_output=True, text=True, timeout=timeout, env=env
             )
             stdout, stderr, code, timed_out = proc.stdout, proc.stderr, proc.returncode, False
         except subprocess.TimeoutExpired as e:
@@ -250,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m benchmarks.agent_bench")
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--arm", choices=["agentl", "plain", "both"], default="both")
+    r.add_argument("--arm", choices=[*ARMS, "both", "all"], default="both", help="both = agentl and plain")
     r.add_argument("--runs", type=int, default=3)
     r.add_argument("--tasks", nargs="*", help="task names (default: all)")
     r.add_argument("--agent", default=DEFAULT_AGENT, help="command that reads the request on stdin")
@@ -270,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         print(report(rows))
         return 0
     tasks = sorted(t for t in TASKS.iterdir() if t.is_dir() and (not a.tasks or t.name in a.tasks))
-    arms = ["agentl", "plain"] if a.arm == "both" else [a.arm]
+    arms = {"both": ["agentl", "plain"], "all": list(ARMS)}.get(a.arm, [a.arm])
 
     def keep(n: int, task: Path, arm: str) -> Path | None:
         return Path(a.keep) / f"run{n + 1}-{task.name}-{arm}" if a.keep else None

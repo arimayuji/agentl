@@ -5,24 +5,50 @@ description: Build, check and run data pipelines (extract, transform, load) with
 
 # agentl
 
-agentl runs pipelines declared in YAML. Each step reads, transforms, asks an LLM, checks or writes
-records (a record is a dict). Docs: https://agentl.com.br/llms.txt (every page also as Markdown).
-Start from the closest of 20 tested recipes (PDF invoices to Excel, paginated API to a database,
-incremental loads, web pages to Markdown, emails to fields, webhooks, schedules...):
-https://agentl.com.br/recipes/
+agentl reads, transforms and writes records (a record is a dict): from a short Python script for
+one-off jobs, or from a YAML pipeline for jobs that repeat. This file has what you need; do not
+fetch the docs for a job it covers.
 
-## Loop: write, check, preview, plan, run
+## Pick the size first
+
+- **One-off, small job** (convert, filter, join, combine files, one API, one database query): a
+  short Python script with agentl as a library. No pipeline, no lint, no plan. Run it, check the
+  output, done.
+- **A job that repeats** (runs again or on a schedule), **calls an LLM on many records**, can
+  **fail halfway** (APIs, many files), or must be **checked before delivery**: a pipeline. It adds
+  the per-record cache (re-runs and resumed runs pay nothing twice), retries, checks, cost budget
+  and run history.
+
+## One-off: Python
+
+```python
+import agentl as al
+
+rows = al.read("input/orders.csv")  # csv tsv json jsonl xlsx parquet pdf docx txt xml html, globs, URLs
+rows = al.read("input/book.xlsx", sheet="export")
+rows = al.read("sqlite:///shop.db", query="select * from orders")  # also postgresql://, mysql://...
+rows = al.http_get_all("https://api.example.com/items", items="data", next="next_page")
+al.write(rows, "out/result.csv")  # csv tsv json jsonl xlsx parquet, or a DB URL with table=
+```
+
+`al.read` gives a list of dicts (CSV values are strings; PDF, DOCX and TXT give `path` and
+`text` per file; HTML gives the rows of its tables). Everything between `read` and `write` is plain
+Python. URLs to private addresses are refused unless `AGENTL_ALLOW_HOSTS` allows them.
+
+## Pipelines: write, check, run
+
+Start from the closest of 20 tested recipes (PDF invoices to Excel, paginated API to a database,
+incremental loads, emails to fields, webhooks, schedules): https://agentl.com.br/recipes/
 
 1. Write `pipeline.yaml` (shape below). List connectors and their parameters with
    `agentl connectors`; never invent one.
 2. `agentl lint pipeline.yaml --format json` and fix every finding. Each has `line`, `code` and
    `fix`. Errors (`AE...`) block the run; warnings (`AL...`) are best practices.
-3. `agentl preview pipeline.yaml STEP` shows the first records into and out of a step (readers and
-   transforms only, nothing is written).
-4. `agentl plan pipeline.yaml` shows records, cache hits, LLM calls and a cost range. Show the
-   cost to the user before a large run.
-5. `agentl validate pipeline.yaml --connect` checks databases, URLs, files and LLM keys.
-6. `agentl run pipeline.yaml`. On failure: `agentl doctor` explains the failing step.
+3. If the pipeline calls a paid LLM on many records: `agentl plan pipeline.yaml` shows the LLM
+   calls and a cost range; show it to the user first. `agentl preview pipeline.yaml STEP` shows a
+   step's first records when a transform needs checking.
+4. `agentl run pipeline.yaml`. On failure: `agentl doctor` explains the failing step.
+   `agentl validate pipeline.yaml --connect` checks databases, URLs, files and LLM keys.
 
 With the MCP server (`agentl mcp`) the same steps are tools: `lint`, `preview_step`, `plan`,
 `run_pipeline`, `doctor`, `list_failures`, `pipeline_stats`.
