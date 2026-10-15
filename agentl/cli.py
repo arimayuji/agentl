@@ -33,7 +33,10 @@ def _listeners(a: argparse.Namespace) -> list:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import __version__
+
     p = argparse.ArgumentParser(prog="agentl", description="Agentic ETL for Python")
+    p.add_argument("-V", "--version", action="version", version=f"agentl {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--db",

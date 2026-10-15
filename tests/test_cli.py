@@ -32,3 +32,13 @@ def test_cli_reports_bad_spec(tmp_path, capsys):
     bad.write_text("name: x\nsteps:\n  - id: a\n")
     assert main(["validate", str(bad)]) == 2
     assert "error:" in capsys.readouterr().err
+
+
+def test_version(capsys):
+    import pytest
+
+    from agentl import __version__
+
+    with pytest.raises(SystemExit) as e:
+        main(["--version"])
+    assert e.value.code == 0 and capsys.readouterr().out.strip() == f"agentl {__version__}"

@@ -9,6 +9,10 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `agentl --version` (`-V`).
+
 ## [0.8.0] - 2026-10-15
 
 ### Added
