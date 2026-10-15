@@ -2,7 +2,8 @@
 
 ```text
 agentl run PIPELINE [--no-cache] [--show STEP]
-agentl validate PIPELINE [--format text|json|github]
+agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
+agentl plan PIPELINE [--json]
 agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl diagram PIPELINE
@@ -61,6 +62,48 @@ the pull request:
 ```
 
 The MCP server's `validate` tool returns the same findings.
+
+### Reach everything before the first run: --connect
+
+`agentl validate --connect` resolves environment variables and secret references, then touches
+each external system once without reading or writing data: an HTTP request to each URL (401/403
+fail as refused credentials), `select 1` on each database, a lookup for each local input file,
+and the key of each LLM in use. `--llm` also makes one tiny test call per LLM.
+
+```text
+$ agentl validate triage.yaml --connect
+ok: triage (4 steps)
+  ok   configuration: environment variables and secret references resolve
+  ok   csv.read tickets.csv: 1 file(s)
+  FAIL postgres.write postgresql://u:***@db:5432/x: OperationalError: connection refused
+  ok   llm cheap (openai gpt-4o-mini): configured (OPENAI_API_KEY set)
+  FAIL llm strong (anthropic claude-sonnet-4-5): ANTHROPIC_API_KEY is not set
+```
+
+Passwords in connection strings are masked. Remote files (`s3://`, ...) are not checked yet.
+
+### What a run would do and cost: agentl plan
+
+`agentl plan` reads the sources and runs the steps that cannot change anything (readers and
+transforms), then, for each agent step, counts the records already in the cache and estimates calls,
+tokens and cost. Nothing is written, no LLM is called, no message is taken from a queue and no
+`fn:` step runs; steps after one of those are shown as not known.
+
+```text
+$ agentl plan triage.yaml
+plan for triage (nothing is written, no LLM is called)
+
+  tickets            use    read            40 rec
+  triage             agent  estimated       40 rec   cache 0, calls 40, ~7,058-10,789 tokens, $0.0019-$0.0676   high: every record also goes to the last llm
+  save               use    writes          40 rec   would write to triage
+
+total: 40 LLM call(s), $0.0019-$0.0676
+```
+
+Costs are a range: the length of each answer is unknown until the model writes it (about 4
+characters per token, output between short and long answers), and with a cascade the high end
+assumes every record also goes to the last llm. An llm with no `price` shows "cost unknown".
+`--json` for scripts.
 
 ### Autocomplete in the editor
 

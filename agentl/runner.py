@@ -121,6 +121,18 @@ class BudgetExceeded(RuntimeError):
     """The run reached `budget.max_tokens` or `budget.max_usd`."""
 
 
+def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
+    """The per-record cache key of an agent step (also used by `agentl plan` to count hits)."""
+    # Without a cascade the key stays what it was, so existing caches keep their hits.
+    llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
+    if step.escalate:
+        llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
+    # records_per_call is not part of the key: the answer per record is the same.
+    if step.tools:  # tools can change the answer, so they are part of the key
+        return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
+    return _hash("agent", step.agent, step.output, llm_key, rec)
+
+
 def _describe(e: BaseException) -> str:
     text = f"{type(e).__name__}: {e}"
     if "CERTIFICATE_VERIFY_FAILED" in text:  # netguard is not imported up front: it is heavy
@@ -364,10 +376,6 @@ class Runner:
         llm_spec = self.spec.llm[step.llm]
         cacheable = self.use_cache and step.cached
         chain = [step.llm, *step.escalate]
-        # Without a cascade the key stays what it was, so existing caches keep their hits.
-        llm_key: Any = llm_spec.model_dump(exclude={"price"})
-        if step.escalate:
-            llm_key = [self.spec.llm[n].model_dump(exclude={"price"}) for n in chain]
 
         tool_defs: list[dict] = []
         call_tool: llm.ToolCall | None = None
@@ -379,10 +387,7 @@ class Runner:
             tool_defs, call_tool = self._tool_caller(run_id, step, result)
 
         def key(rec: dict) -> str:
-            # records_per_call is not part of the key: the answer per record is the same.
-            if step.tools:  # tools can change the answer, so they are part of the key
-                return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
-            return _hash("agent", step.agent, step.output, llm_key, rec)
+            return agent_cache_key(self.spec, step, rec)
 
         def done(rec: dict, out: dict, by: str = step.llm) -> tuple[dict, None]:
             if cacheable:

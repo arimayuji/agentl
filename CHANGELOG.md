@@ -18,6 +18,10 @@ They are always listed under **Changed** or **Removed**.
   unused steps, missing `fn:` modules, unused cursors, unknown top-level fields), with
   `lint: { disable: [...] }`, `# agentl: disable=...` and `--strict`.
 - `agentl schema`: JSON Schema of a pipeline file for editor autocomplete.
+- `agentl validate --connect [--llm]`: reaches every URL, database, input file and LLM key once,
+  without reading or writing data, and masks passwords.
+- `agentl plan`: reads sources and runs only safe steps, then shows cache hits, LLM calls, a token
+  range and a cost range per agent step, and what would be written. No LLM call, no write.
 - The MCP `validate` tool returns the same findings.
 
 ### Changed
