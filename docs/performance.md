@@ -87,6 +87,31 @@ What this says:
   reads more bytes because of the run state.
 - Peak MB of 0 means the job did not grow the process past what imports and setup had used.
 
+## HTTP and HTML against the usual libraries
+
+Same rules as above: fresh process per variant, identical output required. The HTTP cases hit a
+local server that answers every request after 10 ms, so they measure the client, not the internet.
+
+| Job | agentl | Others |
+| --- | --- | --- |
+| paginated API, 100 pages → JSON (10,000 rows) | 1.27 s | urllib 1.20 s, requests 1.19 s, httpx 1.25 s |
+| one request per record (500), 16 at a time | 1.20 to 1.55 s | requests loop 5.68 s, requests 16 threads 2.08 s, httpx async 1.37 to 1.52 s |
+| HTML table → CSV (20,000 rows) | 0.57 s, ≈0 MB | BeautifulSoup html.parser 1.56 s, BeautifulSoup lxml 1.22 s, pandas `read_html` 0.48 s |
+
+How to read it:
+
+- Pagination is one request after another, so it is bound by latency: every client lands near
+  100 × 10 ms plus start-up. agentl is about 6% behind the plain loops.
+- With one request per record agentl's `concurrency` is the fastest option measured, about 4.7x a
+  plain requests loop and ahead of a hand-written thread pool. The fan-out numbers swing between runs.
+- On HTML tables `html.read` is 2 to 3x faster than BeautifulSoup and close to pandas `read_html`,
+  without pandas in memory.
+- The test server sets `TCP_NODELAY`. Without it, Nagle plus delayed ACKs added ~40 ms per request
+  to keep-alive clients (requests, httpx) and not to urllib, which would have measured the server.
+
+The fan-out and HTML cases are in the regression gate, against requests (16 threads) and
+BeautifulSoup (lxml), with a 25% time tolerance.
+
 ## Regression gate
 
 Every pull request that touches `agentl/` or `benchmarks/` runs the comparison above at full size
@@ -97,7 +122,7 @@ python -m benchmarks --compare --check benchmarks/baseline.json
 ```
 
 The gate compares ratios, not seconds: agentl's time over a reference variant measured in the same
-run (plain Python for the CSV and LLM jobs, pandas for the Parquet job). A slower CI machine slows
+run (plain Python for the CSV and LLM jobs, pandas for the Parquet job, requests and BeautifulSoup for the HTTP and HTML jobs). A slower CI machine slows
 both and leaves the ratio where it was; only agentl getting slower moves it. A ratio more than 20%
 above the baseline fails (75% for the half-second Parquet job, whose ratio swings between runs on a
 shared machine), and so does peak memory more than 25% (plus 10 MB) above it.

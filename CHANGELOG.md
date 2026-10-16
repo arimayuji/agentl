@@ -15,6 +15,9 @@ They are always listed under **Changed** or **Removed**.
   run `python -m benchmarks --compare --check benchmarks/baseline.json`, which fails when agentl's
   time, as a ratio to plain Python or pandas in the same run, or its peak memory grows past the
   committed baseline. `--write-baseline` updates it.
+- New comparison cases (#157): a paginated API and one request per record against urllib, requests
+  and httpx, and an HTML table to CSV against BeautifulSoup and pandas `read_html`. The fan-out and
+  HTML cases join the regression gate. `--only` now also filters the `--compare` cases.
 
 ### Changed
 

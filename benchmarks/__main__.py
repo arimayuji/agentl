@@ -20,7 +20,7 @@ def main() -> int:
     p = argparse.ArgumentParser(prog="python -m benchmarks")
     p.add_argument("--quick", action="store_true", help="smaller inputs, for CI")
     p.add_argument("--json", metavar="PATH", help="also write the results as JSON")
-    p.add_argument("--only", nargs="*", help="run only these scenarios")
+    p.add_argument("--only", nargs="*", help="run only these scenarios (or, with --compare, these cases)")
     p.add_argument("--compare", action="store_true", help="the same jobs with and without agentl")
     p.add_argument(
         "--check",
@@ -84,7 +84,7 @@ def _compare(a: argparse.Namespace) -> int:
     from . import compare
 
     repeat = a.repeat or (1 if a.quick else 3)
-    results = compare.run_all(0.1 if a.quick else 1.0, repeat=repeat)
+    results = compare.run_all(0.1 if a.quick else 1.0, repeat=repeat, only=a.only)
     py, arch, cpus = platform.python_version(), platform.machine(), os.cpu_count()
     print(f"\nagentl {agentl.__version__} · Python {py} · {arch} · {cpus} CPUs")
     print(compare.table(results))

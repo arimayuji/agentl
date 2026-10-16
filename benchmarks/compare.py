@@ -20,6 +20,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 LLM_LATENCY = 0.02
 ANSWER = {"category": "software", "ok": True}
@@ -289,6 +290,309 @@ def parquet_result(d: Path) -> list:
     return sorted(tuple(r.values()) for r in t.to_pylist())
 
 
+# ---------------------------------------------------------------- cases 4 and 5: HTTP APIs
+API_LATENCY = 0.01  # seconds per request, like a fast real API
+PAGE = 100  # items per page
+
+
+def _api() -> str:
+    """A local JSON API with a fixed latency per request, started inside the measured process (its
+    CPU counts the same for every variant): /items?page=N (PAGE items, `next_page` null at the end)
+    and /items/<id>."""
+    import http.server
+    import threading
+
+    n = int(os.environ["BENCH_N"])
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep-alive, as real APIs
+
+        def setup(self) -> None:
+            super().setup()
+            # Headers and body go out in separate writes: without TCP_NODELAY, Nagle plus delayed
+            # ACKs add ~40 ms per request on keep-alive clients (requests, httpx) and not on
+            # urllib, which closes each connection. That would measure the test server.
+            import socket
+
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+        def log_message(self, *a: object) -> None:
+            pass
+
+        def do_GET(self) -> None:
+            time.sleep(API_LATENCY)
+            path, _, query = self.path.partition("?")
+            if path == "/items":
+                page = int(dict(p.split("=") for p in query.split("&") if p).get("page", 1))
+                lo = (page - 1) * PAGE
+                items = [
+                    {"id": i, "sku": f"SKU-{i:05d}", "stock": i % 37} for i in range(lo, min(lo + PAGE, n))
+                ]
+                body: dict[str, Any] = {"data": items, "next_page": page + 1 if lo + PAGE < n else None}
+            else:
+                i = int(path.rsplit("/", 1)[1])
+                body = {"id": i, "price": round(i * 1.25, 2), "currency": "BRL"}
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["AGENTL_ALLOW_HOSTS"] = "127.0.0.1"  # agentl's SSRF guard, for the local server
+    return f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def _agentl_run(d: Path, steps: list[dict]) -> Callable[[], None]:
+    from agentl import parse
+    from agentl.runner import Runner
+    from agentl.store import Store
+
+    spec = parse({"name": "bench", "steps": steps})
+
+    def run() -> None:
+        with Store(d / "state.db") as store:
+            r = Runner(spec, store=store, use_cache=False).run()
+        assert r.status == "succeeded", r.error
+
+    return run
+
+
+def pages_agentl(d: Path) -> Callable[[], None]:
+    base = _api()
+    return _agentl_run(
+        d,
+        [
+            {
+                "id": "items",
+                "use": "http.get",
+                "with": {
+                    "url": f"{base}/items",
+                    "items": "data",
+                    "paginate": {"param": "page", "next": "next_page"},
+                },
+            },
+            {"id": "save", "use": "json.write", "input": "items", "with": {"path": str(d / "out.jsonl")}},
+        ],
+    )
+
+
+def pages_urllib(d: Path) -> Callable[[], None]:
+    import urllib.request
+
+    base = _api()
+
+    def run() -> None:
+        out, page = [], 1
+        while page:
+            with urllib.request.urlopen(f"{base}/items?page={page}") as resp:
+                body = json.load(resp)
+            out += body["data"]
+            page = body["next_page"]
+        _write_jsonl(d, out)
+
+    return run
+
+
+def pages_requests(d: Path) -> Callable[[], None]:
+    import requests
+
+    base = _api()
+
+    def run() -> None:
+        out, page = [], 1
+        with requests.Session() as s:
+            while page:
+                body = s.get(f"{base}/items", params={"page": page}).json()
+                out += body["data"]
+                page = body["next_page"]
+        _write_jsonl(d, out)
+
+    return run
+
+
+def pages_httpx(d: Path) -> Callable[[], None]:
+    import httpx
+
+    base = _api()
+
+    def run() -> None:
+        out, page = [], 1
+        with httpx.Client() as c:
+            while page:
+                body = c.get(f"{base}/items", params={"page": page}).json()
+                out += body["data"]
+                page = body["next_page"]
+        _write_jsonl(d, out)
+
+    return run
+
+
+def _rows_from(path: Path) -> list[dict]:
+    with open(path, encoding="utf-8") as f:
+        text = f.read().strip()
+    if text.startswith("["):
+        return json.loads(text)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def pages_result(d: Path) -> list:
+    return sorted((r["id"], r["sku"], r["stock"]) for r in _rows_from(d / "out.jsonl"))
+
+
+def _ids(input=None) -> list[dict]:
+    return [{"id": i} for i in range(int(os.environ["BENCH_N"]))]
+
+
+def fanout_agentl(d: Path) -> Callable[[], None]:
+    base = _api()
+    return _agentl_run(
+        d,
+        [
+            {"id": "ids", "fn": "benchmarks.compare:_ids"},
+            {
+                "id": "prices",
+                "use": "http.get",
+                "input": "ids",
+                "with": {"url": base + "/items/{id}", "concurrency": 16},
+            },
+            {"id": "save", "use": "json.write", "input": "prices", "with": {"path": str(d / "out.jsonl")}},
+        ],
+    )
+
+
+def fanout_requests_loop(d: Path) -> Callable[[], None]:
+    import requests
+
+    base = _api()
+
+    def run() -> None:
+        with requests.Session() as s:
+            _write_jsonl(d, [s.get(f"{base}/items/{r['id']}").json() for r in _ids()])
+
+    return run
+
+
+def fanout_requests_threads(d: Path) -> Callable[[], None]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    import requests
+
+    base = _api()
+
+    def run() -> None:
+        def one(r: dict) -> dict:
+            return requests.get(f"{base}/items/{r['id']}").json()
+
+        with ThreadPoolExecutor(16) as pool:
+            _write_jsonl(d, list(pool.map(one, _ids())))
+
+    return run
+
+
+def fanout_httpx_async(d: Path) -> Callable[[], None]:
+    import asyncio
+
+    import httpx
+
+    base = _api()
+
+    def run() -> None:
+        async def main() -> list[dict]:
+            sem = asyncio.Semaphore(16)
+            async with httpx.AsyncClient() as c:
+
+                async def one(r: dict) -> dict:
+                    async with sem:
+                        return (await c.get(f"{base}/items/{r['id']}")).json()
+
+                return await asyncio.gather(*(one(r) for r in _ids()))
+
+        _write_jsonl(d, asyncio.run(main()))
+
+    return run
+
+
+def fanout_result(d: Path) -> list:
+    return sorted((r["id"], r["price"], r["currency"]) for r in _rows_from(d / "out.jsonl"))
+
+
+# ---------------------------------------------------------------- case 6: HTML table -> CSV
+def _make_html(d: Path, n: int) -> Path:
+    rows = "".join(
+        f"<tr><td>Plan {i}</td><td>{i % 50 + 1}</td><td>R$ {i * 9.9:.2f}</td></tr>" for i in range(n)
+    )
+    page = (
+        "<html><body><nav>menu</nav><table><thead><tr><th>Plan</th><th>Seats</th><th>Price</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table><footer>footer</footer></body></html>"
+    )
+    p = d / "page.html"
+    p.write_text(page, encoding="utf-8")
+    return p
+
+
+def html_agentl(d: Path) -> Callable[[], None]:
+    return _agentl_run(
+        d,
+        [
+            {"id": "table", "use": "html.read", "with": {"path": str(d / "page.html")}},
+            {"id": "save", "use": "csv.write", "input": "table", "with": {"path": str(d / "out.csv")}},
+        ],
+    )
+
+
+def html_bs4(d: Path) -> Callable[[], None]:
+    from bs4 import BeautifulSoup
+
+    def run() -> None:
+        soup = BeautifulSoup((d / "page.html").read_text(encoding="utf-8"), "html.parser")
+        table: Any = soup.find("table")
+        head = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
+        with open(d / "out.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(head)
+            for tr in table.find("tbody").find_all("tr"):
+                w.writerow([td.get_text(strip=True) for td in tr.find_all("td")])
+
+    return run
+
+
+def html_bs4_lxml(d: Path) -> Callable[[], None]:
+    from bs4 import BeautifulSoup
+
+    def run() -> None:
+        soup = BeautifulSoup((d / "page.html").read_text(encoding="utf-8"), "lxml")
+        table: Any = soup.find("table")
+        head = [th.get_text(strip=True) for th in table.find("thead").find_all("th")]
+        with open(d / "out.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(head)
+            for tr in table.find("tbody").find_all("tr"):
+                w.writerow([td.get_text(strip=True) for td in tr.find_all("td")])
+
+    return run
+
+
+def html_pandas(d: Path) -> Callable[[], None]:
+    import io
+
+    import pandas as pd
+
+    def run() -> None:
+        df = pd.read_html(io.StringIO((d / "page.html").read_text(encoding="utf-8")))[0].astype(str)
+        df.to_csv(d / "out.csv", index=False)
+
+    return run
+
+
+def html_result(d: Path) -> list:
+    with open(d / "out.csv", newline="", encoding="utf-8") as f:
+        return sorted(tuple(r[k] for k in ("Plan", "Seats", "Price")) for r in csv.DictReader(f))
+
+
 # ---------------------------------------------------------------- cases
 CASES: dict[str, dict] = {
     "csv -> clean -> sqlite": {
@@ -314,6 +618,42 @@ CASES: dict[str, dict] = {
             "plain Python (8 threads)": (llm_plain_threads, ()),
         },
     },
+    "paginated API -> JSON": {
+        "rows": 10_000,  # 100 pages of 100 items, 10 ms per request
+        "make": None,
+        "result": pages_result,
+        "needs": (),
+        "variants": {
+            "agentl (http.get, paginate)": (pages_agentl, ()),
+            "urllib (stdlib loop)": (pages_urllib, ()),
+            "requests (Session loop)": (pages_requests, ("requests",)),
+            "httpx (Client loop)": (pages_httpx, ("httpx",)),
+        },
+    },
+    "one request per record": {
+        "rows": 500,  # 500 GETs, 10 ms each
+        "make": None,
+        "result": fanout_result,
+        "needs": (),
+        "variants": {
+            "agentl (http.get, concurrency 16)": (fanout_agentl, ()),
+            "requests (Session loop)": (fanout_requests_loop, ("requests",)),
+            "requests (16 threads)": (fanout_requests_threads, ("requests",)),
+            "httpx (async, 16 at a time)": (fanout_httpx_async, ("httpx",)),
+        },
+    },
+    "HTML table -> CSV": {
+        "rows": 20_000,
+        "make": _make_html,
+        "result": html_result,
+        "needs": (),
+        "variants": {
+            "agentl (html.read)": (html_agentl, ()),
+            "BeautifulSoup (html.parser)": (html_bs4, ("bs4",)),
+            "BeautifulSoup (lxml)": (html_bs4_lxml, ("bs4", "lxml")),
+            "pandas (read_html)": (html_pandas, ("pandas", "lxml")),
+        },
+    },
     "csv -> pandas -> parquet": {
         "rows": 500_000,
         "make": _make_frames_csv,
@@ -336,6 +676,8 @@ GATES: list[tuple[str, str, str, float]] = [
     ("csv -> clean -> sqlite", "agentl (chunk_size 50k)", "plain Python (csv + sqlite3, batches)", 0.2),
     ("LLM call per record", "agentl (concurrency 8)", "plain Python (8 threads)", 0.2),
     ("csv -> pandas -> parquet", "agentl (@dataframe, Arrow)", "pandas only", 0.75),
+    ("one request per record", "agentl (http.get, concurrency 16)", "requests (16 threads)", 0.25),
+    ("HTML table -> CSV", "agentl (html.read)", "BeautifulSoup (lxml)", 0.25),
 ]
 
 
@@ -424,7 +766,7 @@ def _child(case: str, variant: str, workdir: str) -> None:
 
 def _measure(case: str, variant: str, d: Path, n: int) -> dict:
     env = {**os.environ, "BENCH_N": str(n)}
-    for f in ("out.db", "state.db", "out.jsonl", "out.parquet"):
+    for f in ("out.db", "state.db", "out.jsonl", "out.parquet", "out.csv"):
         (d / f).unlink(missing_ok=True)
     proc = subprocess.run(
         [sys.executable, "-m", "benchmarks.compare", case, variant, str(d)],
@@ -438,13 +780,15 @@ def _measure(case: str, variant: str, d: Path, n: int) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def run_all(scale: float, repeat: int) -> list[dict]:
+def run_all(scale: float, repeat: int, only: list[str] | None = None) -> list[dict]:
     try:
         import resource  # noqa: F401
     except ImportError as e:
         raise SystemExit("--compare needs the resource module (Linux or macOS)") from e
-    out = []
+    out: list[dict[str, Any]] = []
     for case, c in CASES.items():
+        if only and case not in only:
+            continue
         if not _has(*c["needs"]):
             out.append({"case": case, "skipped": f"needs {', '.join(c['needs'])}"})
             continue
