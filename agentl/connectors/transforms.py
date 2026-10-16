@@ -57,43 +57,180 @@ rowwise("filter")
 
 
 @connector("dedupe")
-def dedupe(input: Any, on: str | list[str]) -> list[dict]:
-    """Keep the first record for each `on` key, in input order."""
+def dedupe(input: Any, on: str | list[str], keep: str | dict[str, str] = "first") -> list[dict]:
+    """One record per `on` key. `keep: first` (default) or `last` keeps that one in input order;
+    `keep: {latest: field}` keeps the record with the largest `field` (empty values lose)."""
     on = _names(on)
-    seen, out = set(), []
+    latest = keep.get("latest") if isinstance(keep, dict) else None
+    if latest is None and keep not in ("first", "last"):
+        raise ValueError(f"dedupe keep must be first, last or {{latest: field}}, got {keep!r}")
+    best: dict[tuple, dict] = {}
     for r in single(input):
         key = tuple(r.get(k) for k in on)
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
-    return out
+        if key not in best or keep == "last":
+            best[key] = r
+        elif latest is not None:
+            cur, new = best[key].get(latest), r.get(latest)
+            if not _blank(new) and (_blank(cur) or _sortable(new) > _sortable(cur)):
+                best[key] = r
+    return list(best.values())
+
+
+def _sortable(v: Any) -> tuple:
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return (0, v, "")
+    try:
+        return (0, float(str(v)), "")
+    except ValueError:
+        return (1, 0, str(v))
 
 
 @connector("join")
 def join(
-    input: Any, left: str, right: str, on: str, how: str = "inner", suffix: str = "_right"
+    input: Any,
+    left: str,
+    right: str,
+    on: str | list[str] | None = None,
+    left_on: str | list[str] | None = None,
+    right_on: str | list[str] | None = None,
+    how: str = "inner",
+    suffix: str = "_right",
+    suffixes: list[str] | None = None,
 ) -> list[dict]:
-    """Records of `left` with the matching records of `right`. A right column with the same name
-    as a left one (other than `on`) is kept as `<name><suffix>` instead of being dropped."""
+    """Records of `left` with the matching records of `right`, on one key or several
+    (`on: [a, b]`, or `left_on` / `right_on` when the names differ). `how`: inner, left, right
+    or outer. A right column with the same name as a left one (other than a key) is kept as
+    `<name><suffix>`; `suffixes: [_l, _r]` renames both sides instead."""
     if not isinstance(input, dict):
         raise ValueError("join needs two inputs: input: [left_step, right_step]")
-    index: dict[Any, list[dict]] = {}
-    for r in input[right]:
-        index.setdefault(str(r.get(on)), []).append(r)
-    out: list[dict] = []
-    for l in input[left]:
-        matches = index.get(str(l.get(on)), [])
-        if matches:
-            for m in matches:
-                row = dict(l)
-                for k, v in m.items():
-                    if k not in l:
+    if how not in ("inner", "left", "right", "outer"):
+        raise ValueError(f"join how must be inner, left, right or outer, got {how!r}")
+    lk, rk = _names(left_on or on), _names(right_on or on)
+    if not lk or len(lk) != len(rk):
+        raise ValueError("join needs on, or left_on and right_on with the same number of fields")
+    ls, rs = (suffixes or ["", suffix])[:2]
+    lrows, rrows = list(input[left]), list(input[right])
+    for side, rows, keys in (("left", lrows, lk), ("right", rrows, rk)):
+        if rows and (missing := [k for k in keys if all(k not in r for r in rows)]):
+            step = left if side == "left" else right
+            raise ValueError(f"join key {', '.join(missing)} is not in the {side} input ({step!r})")
+    lcols = {k for r in lrows for k in r} - set(lk)
+    rcols = {k for r in rrows for k in r} - set(rk)
+    clash = lcols & rcols
+
+    def key(r: dict, keys: list[str]) -> tuple:
+        return tuple(str(r.get(k)) for k in keys)
+
+    def merge(l: dict | None, m: dict | None) -> dict:
+        row: dict = {}
+        if l is not None:
+            row.update({(k + ls if k in clash else k): v for k, v in l.items()})
+        else:  # right-only: its keys fill the left key names
+            row.update({a: m.get(b) for a, b in zip(lk, rk, strict=True)})  # type: ignore[union-attr]
+        if m is not None:
+            for k, v in m.items():
+                if k in rk:
+                    if k not in lk and k not in row:
                         row[k] = v
-                    elif k != on:
-                        row[k + suffix] = v
-                out.append(row)
-        elif how == "left":
-            out.append(dict(l))
+                    continue
+                row[k + rs if k in clash else k] = v
+        return row
+
+    index: dict[tuple, list[int]] = {}
+    for i, r in enumerate(rrows):
+        index.setdefault(key(r, rk), []).append(i)
+    used: set[int] = set()
+    out: list[dict] = []
+    for l in lrows:
+        matches = index.get(key(l, lk), [])
+        for i in matches:
+            used.add(i)
+            out.append(merge(l, rrows[i]))
+        if not matches and how in ("left", "outer"):
+            out.append(merge(l, None))
+    if how in ("right", "outer"):
+        out.extend(merge(None, r) for i, r in enumerate(rrows) if i not in used)
+    return out
+
+
+@connector("flatten")
+def flatten(input: Any, sep: str = ".", fields: str | list[str] | None = None) -> list[dict]:
+    """Nested objects become columns: {"a": {"b": 1}} -> {"a.b": 1}. `fields` limits it to
+    those columns. Lists are left as they are (see explode)."""
+    only = set(_names(fields)) if fields else None
+
+    def walk(prefix: str, v: Any, out: dict) -> None:
+        if isinstance(v, dict) and v:
+            for k, x in v.items():
+                walk(f"{prefix}{sep}{k}", x, out)
+        else:
+            out[prefix] = v
+
+    rows = []
+    for r in single(input):
+        row: dict = {}
+        for k, v in r.items():
+            if isinstance(v, dict) and (only is None or k in only):
+                walk(k, v, row)
+            else:
+                row[k] = v
+        rows.append(row)
+    return rows
+
+
+@connector("explode")
+def explode(input: Any, field: str, keep_empty: bool = True) -> list[dict]:
+    """One record per item of the list in `field`; the other columns repeat. An empty or missing
+    list keeps the record with `field: null` unless `keep_empty: false`."""
+    out = []
+    for r in single(input):
+        v = r.get(field)
+        items = v if isinstance(v, (list, tuple)) else [v] if v is not None else []
+        if not items:
+            if keep_empty:
+                out.append({**r, field: None})
+            continue
+        out.extend({**r, field: x} for x in items)
+    return out
+
+
+@connector("pivot")
+def pivot(input: Any, index: str | list[str], columns: str, values: str, agg: str = "first") -> list[dict]:
+    """Long to wide: one record per `index`, one column per distinct `columns` value holding
+    `values`. Repeated cells are combined with `agg` (first, last, sum, count, avg, min, max)."""
+    idx = _names(index)
+    groups: dict[tuple, dict[str, list]] = {}
+    names: list[str] = []
+    for r in single(input):
+        col = str(r.get(columns))
+        if col not in names:
+            names.append(col)
+        groups.setdefault(tuple(r.get(k) for k in idx), {}).setdefault(col, []).append(r.get(values))
+    if agg not in ("first", "last", "sum", "count", "count_distinct", "avg", "min", "max", "list"):
+        raise ValueError(f"pivot agg {agg!r} is not one of first, last, sum, count, avg, min, max, list")
+    out = []
+    for k, cells in groups.items():
+        row = dict(zip(idx, k, strict=True))
+        for c in names:
+            row[c] = _agg_value(agg, cells.get(c, []))
+        out.append(row)
+    return out
+
+
+@connector("unpivot")
+def unpivot(
+    input: Any,
+    columns: str | list[str],
+    name: str = "variable",
+    value: str = "value",
+) -> list[dict]:
+    """Wide to long: each of `columns` becomes its own record with `name` (the column) and
+    `value`; the other columns repeat."""
+    cols = _names(columns)
+    out: list[dict] = []
+    for r in single(input):
+        rest = {k: v for k, v in r.items() if k not in cols}
+        out.extend({**rest, name: c, value: r.get(c)} for c in cols if c in r)
     return out
 
 
