@@ -89,7 +89,9 @@ the text on screen carries the story. Numbers are formatted for a Brazilian audi
   peak memory. Post it once the release with those optimisations is out.
 - `XNfe`: a folder of NF-e XML files becoming a spreadsheet of items, marked "em breve" because
   `nfe.read` (#161) is not built yet. Fictitious data, labelled.
+- `XReceipt`: a receipt photo scanned, its fields boxed, and a row per receipt in a spreadsheet,
+  marked "em breve" because image reading (#160) is not built yet. Fictitious data, labelled.
 
 ```bash
-npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4, out/x-nfe.mp4
+npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4, out/x-nfe.mp4, out/x-receipt.mp4
 ```

@@ -306,3 +306,122 @@ export const Nfe: React.FC = () => {
     </AbsoluteFill>
   );
 };
+
+// ---------------------------------------------------------------- 4. receipt photo (coming soon, #160)
+export const RECEIPT_FRAMES = 390;
+const RECEIPTS = [
+  { store: "PADARIA PALMEIRA", cnpj: "12.345.678/0001-90", date: "14/10/2026", total: "38,70" },
+  { store: "MERCADO SOL", cnpj: "98.765.432/0001-10", date: "15/10/2026", total: "214,35" },
+  { store: "POSTO RIO AZUL", cnpj: "11.222.333/0001-81", date: "15/10/2026", total: "180,00" },
+];
+
+/** A paper receipt drawn in CSS: fictitious store and values. */
+const Receipt: React.FC<{ r: (typeof RECEIPTS)[number]; scan: number; marks: number }> = ({ r, scan, marks }) => {
+  const line = (t: string, bold = false, size = 22) => (
+    <div style={{ fontFamily: mono, fontSize: size, fontWeight: bold ? 700 : 400, color: "#2b2b2b", whiteSpace: "pre" }}>{t}</div>
+  );
+  const box = (on: number) => ({
+    outline: on > 0 ? `3px solid ${k.blue}` : "3px solid transparent",
+    background: on > 0 ? `rgba(0,112,201,${0.12 * on})` : "transparent",
+    borderRadius: 6,
+  });
+  return (
+    <div style={{ position: "relative", width: 380, padding: "26px 24px 30px", background: "#fffdf6",
+      boxShadow: "0 30px 60px rgba(11,27,43,.22)", clipPath:
+        "polygon(0 0,100% 0,100% 97%,95% 100%,90% 97%,85% 100%,80% 97%,75% 100%,70% 97%,65% 100%,60% 97%,55% 100%,50% 97%,45% 100%,40% 97%,35% 100%,30% 97%,25% 100%,20% 97%,15% 100%,10% 97%,5% 100%,0 97%)" }}>
+      <div style={box(marks >= 1 ? 1 : 0)}>{line(r.store, true, 24)}</div>
+      <div style={box(marks >= 2 ? 1 : 0)}>{line(`CNPJ ${r.cnpj}`, false, 18)}</div>
+      {line("------------------------------", false, 18)}
+      {line("PAO FRANCES KG      12,40", false, 18)}
+      {line("CAFE 500G           18,90", false, 18)}
+      {line("LEITE INTEGRAL 1L    7,40", false, 18)}
+      {line("------------------------------", false, 18)}
+      <div style={box(marks >= 3 ? 1 : 0)}>{line(`TOTAL R$     ${r.total.padStart(9)}`, true, 24)}</div>
+      <div style={box(marks >= 4 ? 1 : 0)}>{line(`${r.date} 08:41`, false, 18)}</div>
+      {line("CUPOM FISCAL ELETRONICO", false, 14)}
+      {scan > 0 && scan < 1 && (
+        <div style={{ position: "absolute", left: 0, right: 0, top: `${scan * 100}%`, height: 6,
+          background: k.sun, boxShadow: `0 0 30px 10px ${k.sun}aa` }} />
+      )}
+    </div>
+  );
+};
+
+export const ReceiptClip: React.FC = () => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const photoAt = 20;
+  const scanAt = 60;
+  const markAt = 100;
+  const tableAt = 190;
+  const enter = spring({ frame: f - photoAt, fps, config: { damping: 13, stiffness: 120 } });
+  const flash = interpolate(f, [photoAt, photoAt + 3, photoAt + 14], [0, 1, 0], clamp);
+  const toSide = lerp(f, tableAt - 20, tableAt + 10, 0, 1);
+  return (
+    <AbsoluteFill style={{ fontFamily: sans }}>
+      <Backdrop />
+      <Music frames={RECEIPT_FRAMES} />
+      <Sfx at={photoAt} src="sfx/key2.wav" volume={0.6} />
+      <Sfx at={scanAt} src="sfx/whoosh-in.wav" volume={0.3} />
+      {[0, 1, 2, 3].map((i) => <Sfx key={i} at={markAt + i * 14} src="sfx/tick.wav" volume={0.3} />)}
+      {RECEIPTS.map((_, i) => <Sfx key={`r${i}`} at={tableAt + 20 + i * 22} src={`sfx/ding${i}.wav`} volume={0.35} />)}
+      <AbsoluteFill style={{ padding: "96px 56px 64px" }}>
+        <Pop at={0} style={{ fontSize: 70, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
+          Foto do cupom.<br /><span style={{ color: k.blue }}>Linha na planilha.</span>
+        </Pop>
+      </AbsoluteFill>
+      <Pop at={6} style={{ position: "absolute", top: 34, left: 56, padding: "10px 20px", borderRadius: 999,
+        background: k.sun, color: k.ink, fontWeight: 800, fontSize: 24 }}>EM BREVE</Pop>
+      {/* the photo */}
+      <div style={{ position: "absolute", left: 300 - toSide * 240, top: 290 + toSide * 40,
+        transform: `scale(${(0.85 + enter * 0.35) * (1 - toSide * 0.45)}) rotate(${(1 - enter) * -12 - 3 + toSide * 3}deg)`,
+        transformOrigin: "top left", opacity: Math.min(1, enter * 1.5) }}>
+        <Receipt r={RECEIPTS[0]} scan={interpolate(f, [scanAt, scanAt + 36], [0, 1], clamp)}
+          marks={Math.floor(interpolate(f, [markAt, markAt + 56], [0, 4], clamp))} />
+      </div>
+      <AbsoluteFill style={{ background: "#fff", opacity: flash, pointerEvents: "none" }} />
+      {/* the agent step and fields */}
+      <div style={{ position: "absolute", left: 56, right: 56, bottom: 150, opacity: 1 - toSide }}>
+        <Pop at={markAt + 60} style={{ fontFamily: mono, fontSize: 26, background: k.white, border: `2px solid ${k.line}`,
+          borderRadius: 20, padding: "18px 24px" }}>
+          <span style={{ color: k.blue }}>agent:</span> Total, data, loja e CNPJ do cupom.<br />
+          <span style={{ color: k.blue }}>output:</span> {"{ total: float, date: str, store: str, cnpj: str }"}
+        </Pop>
+      </div>
+      {/* the spreadsheet */}
+      <div style={{ position: "absolute", left: 380, right: 40, top: 330, opacity: lerp(f, tableAt, tableAt + 10, 0, 1) }}>
+        <div style={{ background: k.white, border: `2px solid ${k.line}`, borderRadius: 20, overflow: "hidden",
+          boxShadow: "0 20px 50px rgba(11,27,43,.12)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 0.9fr", padding: "12px 16px",
+            background: "#e6f1fa", fontSize: 20, fontWeight: 700, color: k.blue }}>
+            {["loja", "data", "total (R$)"].map((h) => <div key={h}>{h}</div>)}
+          </div>
+          {RECEIPTS.map((r, i) => {
+            const s = spring({ frame: f - (tableAt + 20 + i * 22), fps, config: { damping: 14, stiffness: 170 } });
+            return (
+              <div key={r.store} style={{ padding: "12px 16px", borderTop: `1px solid ${k.line}`,
+                opacity: Math.min(1, s * 1.5), transform: `translateX(${(1 - s) * 40}px)` }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 0.9fr", fontSize: 20, color: k.ink }}>
+                  <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.store}</div>
+                  <div style={{ fontFamily: mono }}>{r.date}</div>
+                  <div style={{ fontFamily: mono, textAlign: "right" }}>{r.total}</div>
+                </div>
+                <div style={{ fontFamily: mono, fontSize: 15, color: k.muted }}>{r.cnpj}</div>
+              </div>
+            );
+          })}
+        </div>
+        <Pop at={tableAt + 100} style={{ marginTop: 18, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {["IA com visão ou OCR local", "não paga 2x a mesma foto"].map((t) => (
+            <div key={t} style={{ padding: "8px 16px", borderRadius: 999, background: k.white, border: `1px solid ${k.line}`,
+              fontSize: 20, color: k.ink }}>✓ {t}</div>
+          ))}
+        </Pop>
+      </div>
+      <Sign at={330} />
+      <div style={{ position: "absolute", bottom: 20, left: 0, right: 0, textAlign: "center", fontSize: 16, color: k.muted }}>
+        dados fictícios
+      </div>
+    </AbsoluteFill>
+  );
+};
