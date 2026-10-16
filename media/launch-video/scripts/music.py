@@ -58,6 +58,30 @@ def epiano(freq: float, dur: float, vel: float) -> np.ndarray:
     return tone * env * vel
 
 
+def horn(freq: float, dur: float, vel: float) -> np.ndarray:
+    """A soft muted horn, between a sax and a cup-muted trumpet: odd and even harmonics with a
+    gentle formant, a slow swell, a breath of air on the attack and vibrato that grows in."""
+    m = int(RATE * (dur + 0.35))
+    tt = np.arange(m) / RATE
+    vib = 1 + 0.006 * np.sin(2 * np.pi * 5.2 * tt) * np.clip((tt - 0.18) / 0.3, 0, 1)
+    phase = 2 * np.pi * freq * np.cumsum(vib) / RATE
+    tone = sum(
+        a * np.sin(h * phase) for h, a in ((1, 1.0), (2, 0.55), (3, 0.38), (4, 0.18), (5, 0.12), (6, 0.05))
+    )
+    tone = lowpass(tone, 1900)  # muted, round
+    air = lowpass(rng.normal(size=m), 3200) * np.exp(-tt * 9) * 0.25
+    swell = np.clip(tt / 0.09, 0, 1) * np.clip((dur + 0.35 - tt) / 0.35, 0, 1)
+    return (tone + air) * swell * vel
+
+
+# Horn melody over the four chords (MIDI, beat offset, beats): lazy, behind the beat, lots of space.
+MELODY = [
+    [(69, 0.5, 1.5), (72, 2.25, 0.75), (69, 3.0, 1.0)],
+    [(67, 0.75, 1.25), (65, 2.0, 0.5), (64, 2.5, 1.5)],
+    [(64, 1.0, 1.0), (67, 2.0, 0.75), (71, 2.75, 1.25)],
+    [(70, 0.5, 1.0), (69, 1.5, 0.5), (67, 2.0, 0.5), (65, 2.5, 1.5)],
+]
+
 # Chords (MIDI, voiced close): Dm9, G13, Cmaj9, A7(b13). One bar each.
 CHORDS = [
     [50, 53, 57, 60, 64],
@@ -77,6 +101,11 @@ for b in range(int(SECONDS / BAR) + 1):
         add(
             left, right, t0 + 1.5 * BEAT + SWING, epiano(hz(note + 12 if i == 3 else note), 0.4, 0.12), 0.6, 1
         )
+    # Horn: the melody on every bar after the first two, an octave lower every other pass.
+    if b >= 2:
+        shift = 0 if (b // 4) % 2 == 0 else -12
+        for note, at, beats in MELODY[b % len(MELODY)]:
+            add(left, right, t0 + at * BEAT + 0.03, horn(hz(note + shift), beats * BEAT, 0.16), 0.58, 1)
     # Bass: root on 1, fifth on 3, round and short.
     for when, note in ((0, chord[0] - 12), (2 * BEAT, chord[0] - 5)):
         m = int(RATE * 0.9)
@@ -93,19 +122,19 @@ for beat in range(int(SECONDS / BEAT)):
         m = int(RATE * 0.3)
         tt = np.arange(m) / RATE
         kick = np.sin(2 * np.pi * (48 + 70 * np.exp(-tt * 35)) * tt) * np.exp(-tt * 9)
-        add(left, right, bt + (BEAT / 2 + SWING if pos == 2 else 0), kick, 0.5, 0.3)
+        add(left, right, bt + (BEAT / 2 + SWING if pos == 2 else 0), kick, 0.5, 0.18)
     if pos in (1, 3):
         m = int(RATE * 0.12)
         tt = np.arange(m) / RATE
         rim = lowpass(rng.normal(size=m), 2500) * np.exp(-tt * 40) + 0.4 * np.sin(
             2 * np.pi * 820 * tt
         ) * np.exp(-tt * 60)
-        add(left, right, bt, rim, 0.45, 0.16)
+        add(left, right, bt, rim, 0.45, 0.07)
     for half in (0, 1):
         m = int(RATE * 0.06)
         tt = np.arange(m) / RATE
         hat = np.diff(rng.normal(size=m), prepend=0) * np.exp(-tt * 70)
-        add(left, right, bt + half * (BEAT / 2 + SWING), hat, 0.62, 0.035 if half else 0.05)
+        add(left, right, bt + half * (BEAT / 2 + SWING), hat, 0.62, 0.018 if half else 0.026)
 
 # Tape: slow wow (pitch wobble by resampling), warmth (low-pass) and soft saturation.
 wobble = 1 + 0.0018 * np.sin(2 * np.pi * 0.45 * t)

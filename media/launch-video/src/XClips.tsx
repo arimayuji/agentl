@@ -36,20 +36,80 @@ const ease = Easing.bezier(0.16, 1, 0.3, 1);
 const lerp = (f: number, a: number, b: number, from: number, to: number) =>
   interpolate(f, [a, b], [from, to], { ...clamp, easing: ease });
 
+const DOTS = Array.from({ length: 26 }, (_, i) => ({
+  x: (i * 37) % 100,
+  y: (i * 53) % 100,
+  r: 6 + ((i * 13) % 18),
+  speed: 0.6 + ((i * 7) % 10) / 10,
+  color: ["#9fd0f5", "#ffc2a8", "#a8e6c0", "#fff1a8"][i % 4],
+}));
+
+/** White with the brand's color mesh, now alive: the blobs wander and breathe, a soft light turns
+ * slowly, and pastel dots drift up at different speeds (parallax). */
 const Backdrop: React.FC = () => {
   const f = useCurrentFrame();
   const t = f / CLIP_X_FPS;
-  const blob = (x: number, y: number, col: string) => `radial-gradient(45% 40% at ${x}% ${y}%, ${col}cc, transparent 70%)`;
+  const blob = (x: number, y: number, size: number, col: string) =>
+    `radial-gradient(${size}% ${size * 0.9}% at ${x}% ${y}%, ${col}dd, transparent 70%)`;
+  const breathe = (p: number) => 42 + Math.sin(t * 0.9 + p) * 8;
   return (
-    <AbsoluteFill style={{
-      background: k.white,
-      backgroundImage: [
-        blob(6 + Math.sin(t * 0.5) * 6, 8, "#9fd0f5"),
-        blob(96, 6 + Math.cos(t * 0.4) * 6, "#ffc2a8"),
-        blob(100 - Math.sin(t * 0.4) * 5, 96, "#a8e6c0"),
-        blob(4, 98, "#fff1a8"),
-      ].join(", "),
-    }} />
+    <AbsoluteFill style={{ background: k.white, overflow: "hidden" }}>
+      <AbsoluteFill style={{
+        backgroundImage: [
+          blob(12 + Math.sin(t * 0.55) * 16, 12 + Math.cos(t * 0.4) * 10, breathe(0), "#9fd0f5"),
+          blob(88 + Math.cos(t * 0.5) * 14, 10 + Math.sin(t * 0.6) * 12, breathe(1.3), "#ffc2a8"),
+          blob(90 - Math.sin(t * 0.45) * 14, 90 + Math.cos(t * 0.5) * 8, breathe(2.1), "#a8e6c0"),
+          blob(10 + Math.cos(t * 0.35) * 12, 88 - Math.sin(t * 0.55) * 10, breathe(3.4), "#fff1a8"),
+        ].join(", "),
+      }} />
+      <AbsoluteFill style={{
+        background: `conic-gradient(from ${t * 18}deg at 50% 50%, transparent 0deg, rgba(255,255,255,.55) 60deg, transparent 140deg, transparent 360deg)`,
+        mixBlendMode: "soft-light",
+      }} />
+      {DOTS.map((d, i) => {
+        const y = (((d.y - t * 4 * d.speed) % 110) + 110) % 110 - 5;
+        const x = d.x + Math.sin(t * 0.8 + i) * 2;
+        return (
+          <div key={i} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, width: d.r, height: d.r,
+            borderRadius: "50%", background: d.color, opacity: 0.55, filter: "blur(1px)" }} />
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
+/** Headline words that spring in one by one (blur, rise, tilt, scale), then keep floating gently;
+ * the accent line carries a light sweep. */
+const Kinetic: React.FC<{ lines: Array<{ text: string; color: string }>; size?: number }> = ({ lines, size = 72 }) => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  let n = 0;
+  return (
+    <div style={{ fontSize: size, fontWeight: 800, letterSpacing: -2, lineHeight: 1.06 }}>
+      {lines.map((line, li) => (
+        <div key={li} style={{ display: "flex", flexWrap: "wrap", columnGap: size * 0.26 }}>
+          {line.text.split(" ").map((word, wi) => {
+            const idx = n++;
+            const s = spring({ frame: f - idx * 3, fps, config: { damping: 12, stiffness: 140, mass: 0.7 } });
+            const float = Math.sin(f / 22 + idx * 0.9) * 3;
+            const sweep = ((f * 1.6 - idx * 8) % 260) - 60;
+            const accent = li > 0;
+            return (
+              <span key={wi} style={{
+                display: "inline-block", color: line.color,
+                opacity: Math.min(1, s * 1.4),
+                transform: `translateY(${(1 - s) * 60 + float}px) rotate(${(1 - s) * 8}deg) scale(${0.82 + s * 0.18})`,
+                filter: s < 0.98 ? `blur(${(1 - s) * 12}px)` : undefined,
+                ...(accent ? {
+                  backgroundImage: `linear-gradient(100deg, ${line.color} ${sweep - 30}%, #ffffff ${sweep}%, ${line.color} ${sweep + 30}%)`,
+                  WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+                } : {}),
+              }}>{word}</span>
+            );
+          })}
+        </div>
+      ))}
+    </div>
   );
 };
 
@@ -73,12 +133,12 @@ const Sign: React.FC<{ at: number }> = ({ at }) => (
 );
 
 const Music: React.FC<{ frames: number }> = ({ frames }) => (
-  <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.22 * interpolate(f, [0, 15, frames - 30, frames], [0, 1, 1, 0], clamp)} />
+  <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.11 * interpolate(f, [0, 15, frames - 30, frames], [0, 1, 1, 0], clamp)} />
 );
 
 const Sfx: React.FC<{ at: number; src: string; volume?: number }> = ({ at, src, volume = 0.5 }) => (
   <Sequence from={at} durationInFrames={24} layout="none">
-    <Audio src={staticFile(src)} volume={volume} />
+    <Audio src={staticFile(src)} volume={volume * 0.6} />
   </Sequence>
 );
 
@@ -135,9 +195,7 @@ export const PayTwice: React.FC = () => {
       <Sfx at={130} src="sfx/enter.wav" />
       <Sfx at={190} src="sfx/ding1.wav" volume={0.4} />
       <AbsoluteFill style={{ padding: "70px 60px", gap: 34 }}>
-        <Pop at={0} style={{ fontSize: 76, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
-          Rodou a IA de novo<br /><span style={{ color: k.sunset }}>nos mesmos dados?</span>
-        </Pop>
+        <Kinetic size={76} lines={[{ text: "Rodou a IA de novo", color: k.ink }, { text: "nos mesmos dados?", color: k.sunset }]} />
         <div style={{ display: "flex", gap: 28, opacity: lerp(f, 8, 20, 0, 1) }}>
           <Lane title="script comum" tone={k.red} second={0.12} secondNote="500 chamadas de novo" at={10} />
           <Lane title="agentl" tone={k.palm} second={0} secondNote="0 chamadas: cache" at={10} />
@@ -172,9 +230,7 @@ export const Million: React.FC = () => {
         <Sfx key={r.name} at={start + Math.round((r.seconds / 1.4) * CLIP_X_FPS)} src={`sfx/ding${i}.wav`} volume={0.35} />
       ))}
       <AbsoluteFill style={{ padding: "70px 60px", gap: 26 }}>
-        <Pop at={0} style={{ fontSize: 72, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
-          1 milhão de linhas.<br /><span style={{ color: k.blue }}>CSV → filtro → SQLite.</span>
-        </Pop>
+        <Kinetic lines={[{ text: "1 milhão de linhas.", color: k.ink }, { text: "CSV → filtro → SQLite.", color: k.blue }]} />
         <Pop at={14} style={{ fontSize: 26, color: k.muted }}>mesma saída nas três, processo limpo, 4 CPUs</Pop>
         <div style={{ display: "flex", flexDirection: "column", gap: 30, marginTop: 18 }}>
           {RACE.map((r) => {
@@ -237,9 +293,7 @@ export const Nfe: React.FC = () => {
       ))}
       <Sfx at={tableAt + 95} src="sfx/ding2.wav" volume={0.4} />
       <AbsoluteFill style={{ padding: "96px 56px 64px" }}>
-        <Pop at={0} style={{ fontSize: 70, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
-          Uma pasta de XML de NF-e.<br /><span style={{ color: k.palm }}>Uma planilha de itens.</span>
-        </Pop>
+        <Kinetic size={70} lines={[{ text: "Uma pasta de XML de NF-e.", color: k.ink }, { text: "Uma planilha de itens.", color: k.palm }]} />
       </AbsoluteFill>
       {/* XML files fly into the YAML card */}
       {NFE_FILES.map((name, i) => {
@@ -366,9 +420,7 @@ export const ReceiptClip: React.FC = () => {
       {[0, 1, 2, 3].map((i) => <Sfx key={i} at={markAt + i * 14} src="sfx/tick.wav" volume={0.3} />)}
       {RECEIPTS.map((_, i) => <Sfx key={`r${i}`} at={tableAt + 20 + i * 22} src={`sfx/ding${i}.wav`} volume={0.35} />)}
       <AbsoluteFill style={{ padding: "96px 56px 64px" }}>
-        <Pop at={0} style={{ fontSize: 70, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
-          Foto do cupom.<br /><span style={{ color: k.blue }}>Linha na planilha.</span>
-        </Pop>
+        <Kinetic size={70} lines={[{ text: "Foto do cupom.", color: k.ink }, { text: "Linha na planilha.", color: k.blue }]} />
       </AbsoluteFill>
       <Pop at={6} style={{ position: "absolute", top: 34, left: 56, padding: "10px 20px", borderRadius: 999,
         background: k.sun, color: k.ink, fontWeight: 800, fontSize: 24 }}>EM BREVE</Pop>
