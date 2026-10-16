@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `flatten`, `explode`, `pivot` and `unpivot` steps; `join` on several keys (`on: [a, b]` or
+  `left_on` / `right_on`), `how: right|outer` and `suffixes`, with an error naming a missing key;
+  `dedupe keep: first|last|{latest: field}` (#120).
 - `compute`, `aggregate`, `sort`, `limit` and `fill` steps (#120). `compute` evaluates safe
   expressions (`price * qty`, `upper(trim(nome))`, `if(total > 1000, 'alta', 'baixa')`, regex, dates)
   from a closed list of operators and functions, with no way to run code; records it cannot compute

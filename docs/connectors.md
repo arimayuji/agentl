@@ -163,8 +163,12 @@ Other databases will ship as plugins.
 |---|---|---|
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
-| `dedupe` | `on` (name or list) | Keep the first record per key, in input order |
-| `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
+| `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
+| `flatten` | `sep` (`.`), `fields` | Nested objects become columns: `end.cidade` |
+| `explode` | `field`, `keep_empty` (true) | One record per item of a list |
+| `pivot` | `index`, `columns`, `values`, `agg` (`first`, `last`, `sum`, `count`, `avg`, `min`, `max`, `list`) | Long to wide |
+| `unpivot` | `columns`, `name` (`variable`), `value` (`value`) | Wide to long |
 | `concat` | | Append several inputs |
 | `cast` | `fields` (field: type), `locale`, `on_bad`, `strict` | Clean, typed values; bad rows rejected with the reason (below) |
 | `compute` | `fields` (field: expression), `on_error` (`reject`, `fail`, `null`) | New or replaced fields from safe expressions (below) |
