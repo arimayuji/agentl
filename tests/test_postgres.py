@@ -22,6 +22,64 @@ def read(table):
     return get("postgres.read")(None, dsn=DSN, query=f'SELECT * FROM "{table}" ORDER BY id')
 
 
+def test_upsert_rerun_leaves_table_unchanged(table):
+    write = get("postgres.write")
+    rows = [{"id": 1, "v": "a", "meta": {"x": 1}}, {"id": 2, "v": "b", "meta": None}]
+    first = write(rows, dsn=DSN, table=table, mode="upsert", key="id")[0]
+    assert (first["inserted"], first["updated"], first["unchanged"]) == (2, 0, 0)
+    before = read(table)
+    again = write(rows, dsn=DSN, table=table, mode="upsert", key="id")[0]
+    assert (again["written"], again["inserted"], again["updated"], again["unchanged"]) == (2, 0, 0, 2)
+    assert read(table) == before
+
+
+def test_upsert_counts_and_update_columns(table):
+    write = get("postgres.write")
+    write(
+        [{"id": 1, "v": "a", "n": 1}, {"id": 2, "v": "b", "n": 2}],
+        dsn=DSN,
+        table=table,
+        mode="upsert",
+        key="id",
+    )
+    out = write(
+        [{"id": 1, "v": "X", "n": 1}, {"id": 2, "v": "Y", "n": 20}, {"id": 3, "v": "c", "n": 3}],
+        dsn=DSN,
+        table=table,
+        mode="upsert",
+        key="id",
+        update_columns=["n"],
+    )[0]
+    assert (out["inserted"], out["updated"], out["unchanged"]) == (1, 1, 1)
+    assert [(r["id"], r["v"], r["n"]) for r in read(table)] == [(1, "a", 1), (2, "b", 20), (3, "c", 3)]
+
+
+def test_upsert_do_nothing_and_error(table):
+    write = get("postgres.write")
+    write([{"id": 1, "v": "a"}], dsn=DSN, table=table, mode="upsert", key="id")
+    out = write(
+        [{"id": 1, "v": "X"}, {"id": 2, "v": "b"}],
+        dsn=DSN,
+        table=table,
+        mode="upsert",
+        key="id",
+        on_conflict="do_nothing",
+    )[0]
+    assert (out["inserted"], out["updated"], out["unchanged"]) == (1, 0, 1)
+    psycopg = pytest.importorskip("psycopg")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        write([{"id": 1, "v": "Z"}], dsn=DSN, table=table, mode="upsert", key="id", on_conflict="error")
+    assert [(r["id"], r["v"]) for r in read(table)] == [(1, "a"), (2, "b")]
+
+
+def test_upsert_options_are_validated():
+    write = get("postgres.write")
+    with pytest.raises(ValueError, match="need mode: upsert"):
+        write([{"id": 1}], dsn=DSN, table="x", on_conflict="do_nothing")
+    with pytest.raises(ValueError, match="on_conflict must be one of"):
+        write([{"id": 1}], dsn=DSN, table="x", mode="upsert", key="id", on_conflict="merge")
+
+
 def test_append_creates_typed_table(table):
     rows = [{"id": 1, "name": "Ana", "score": 9.5, "ok": True, "meta": {"a": 1}}, {"id": 2, "name": None}]
     out = get("postgres.write")(rows, dsn=DSN, table=table)

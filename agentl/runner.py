@@ -43,6 +43,8 @@ class RunResult:
     tool_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
+    # per upsert step: {"inserted": n, "updated": n, "unchanged": n}
+    writes: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
@@ -55,6 +57,7 @@ class RunResult:
 
 
 SAMPLE_ROWS = 5
+UPSERT_COUNTS = ("inserted", "updated", "unchanged")
 SAMPLE_CHARS = 200
 
 
@@ -815,12 +818,21 @@ class Runner:
         self._sample(run_id, step_id, out)
         # writers return one summary record per file; say how many records they wrote
         written = sum(r.get("written", 0) for r in out) if isinstance(out, list) else 0
+        # upserts also say how many rows were inserted, updated or left unchanged
+        counts: dict[str, int] = {}
+        for r in out if isinstance(out, list) else []:
+            for k in UPSERT_COUNTS:
+                if isinstance(r, dict) and isinstance(r.get(k), int):
+                    counts[k] = counts.get(k, 0) + r[k]
+        if counts:
+            result.writes[step_id] = counts
         self._emit(
             run_id,
             "step.succeeded",
             step_id,
             records=len(out),
             **({"written": written} if written else {}),
+            **counts,
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
         )
