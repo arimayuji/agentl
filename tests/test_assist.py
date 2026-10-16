@@ -136,6 +136,11 @@ def test_mcp_server_round_trip_with_our_own_client(tmp_path):
         assert "4:10  error AE003  step 'read': unknown connector 'csv.reed'. Did you mean 'csv.read'?" in bad
         run = json.loads(client.call("run_pipeline", {"pipeline": str(pipeline)}))
         assert run["status"] == "succeeded" and run["records"] == {"say": 1}
+        broken = tmp_path / "broken.yaml"
+        broken.write_text(GOOD.replace("csv.read", "csv.reed"))
+        stopped = json.loads(client.call("run_pipeline", {"pipeline": str(broken)}))
+        assert stopped["status"] == "not_started" and stopped["error"]["code"] == "AE003"
+        assert "csv.read" in stopped["error"]["message"]
         events = json.loads(client.call("get_run", {"run_id": run["run_id"]}))["events"]
         assert events[0]["type"] == "run.started"
         assert json.loads(client.call("list_failures", {})) == []
