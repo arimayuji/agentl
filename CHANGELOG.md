@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- A performance regression gate in CI (#157). Pull requests that touch `agentl/` or `benchmarks/`
+  run `python -m benchmarks --compare --check benchmarks/baseline.json`, which fails when agentl's
+  time, as a ratio to plain Python or pandas in the same run, or its peak memory grows past the
+  committed baseline. `--write-baseline` updates it.
+
 ### Changed
 
 - Faster record work (#157): `csv.read` builds records from `csv.reader` instead of `DictReader`,

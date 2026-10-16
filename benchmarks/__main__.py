@@ -22,6 +22,17 @@ def main() -> int:
     p.add_argument("--json", metavar="PATH", help="also write the results as JSON")
     p.add_argument("--only", nargs="*", help="run only these scenarios")
     p.add_argument("--compare", action="store_true", help="the same jobs with and without agentl")
+    p.add_argument(
+        "--check",
+        metavar="BASELINE",
+        help="with --compare: fail (exit 1) when agentl got slower or heavier than in BASELINE",
+    )
+    p.add_argument(
+        "--write-baseline", metavar="PATH", help="with --compare: write the ratios the gate compares to PATH"
+    )
+    p.add_argument(
+        "--repeat", type=int, help="with --compare: runs per variant (median); default 3, 1 with --quick"
+    )
     a = p.parse_args()
 
     import agentl
@@ -72,7 +83,8 @@ def _compare(a: argparse.Namespace) -> int:
 
     from . import compare
 
-    results = compare.run_all(0.1 if a.quick else 1.0, repeat=1 if a.quick else 3)
+    repeat = a.repeat or (1 if a.quick else 3)
+    results = compare.run_all(0.1 if a.quick else 1.0, repeat=repeat)
     py, arch, cpus = platform.python_version(), platform.machine(), os.cpu_count()
     print(f"\nagentl {agentl.__version__} · Python {py} · {arch} · {cpus} CPUs")
     print(compare.table(results))
@@ -87,6 +99,32 @@ def _compare(a: argparse.Namespace) -> int:
         }
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "compare": results}, f, indent=2)
+    if a.write_baseline:
+        base = {
+            "agentl": agentl.__version__,
+            "quick": a.quick,
+            "repeat": repeat,
+            "ratios": compare.ratios(results),
+        }
+        with open(a.write_baseline, "w") as f:
+            json.dump(base, f, indent=2)
+            f.write("\n")
+        print(f"\nbaseline written to {a.write_baseline}")
+    if a.check:
+        with open(a.check) as f:
+            baseline = json.load(f)
+        problems = compare.check(results, baseline)
+        print("\nregression gate against " + a.check + f" (agentl {baseline.get('agentl')}):")
+        for case, r in compare.ratios(results).items():
+            b = baseline.get("ratios", {}).get(case, {})
+            print(
+                f"  {case}: {r['time_ratio']:.2f}x the reference "
+                f"(baseline {b.get('time_ratio', 'n/a')}x), {r['peak_mb']:.0f} MB"
+            )
+        if problems:
+            print("FAILED:\n  " + "\n  ".join(problems))
+            return 1
+        print("passed")
     return 0
 
 

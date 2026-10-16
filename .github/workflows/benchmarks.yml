@@ -3,13 +3,44 @@ name: Benchmarks
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths: ["agentl/**", "benchmarks/**", "pyproject.toml", ".github/workflows/benchmarks.yml"]
+  pull_request:
+    paths: ["agentl/**", "benchmarks/**", "pyproject.toml", ".github/workflows/benchmarks.yml"]
   workflow_dispatch:
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # Fails the pull request when agentl got slower or heavier than benchmarks/baseline.json, measured
+  # as a ratio to plain Python (or pandas) in the same run, so a slow runner does not fail it (#157).
+  perf-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[pandas,parquet]"
+      - run: python -m benchmarks --compare --check benchmarks/baseline.json --json compare.json
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: perf-gate-${{ github.sha }}
+          path: compare.json
+
   bench:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
