@@ -48,6 +48,48 @@ def _checked(path: str) -> bool:
     return False
 
 
+def _mcp_install(a: argparse.Namespace) -> int:
+    from . import mcp_install as mi
+
+    try:
+        if a.action == "status":
+            rows = mi.status()
+            if not rows:
+                print("agentl is not set up in any MCP client. Run: agentl mcp install --client NAME")
+            for r in rows:
+                print(f"{r['client']} ({r['scope']}): {r['path']}\n  {r['command']}")
+            return 0
+        if not a.client:
+            print(f"--client is required: one of {', '.join(mi.CLIENTS)}", file=sys.stderr)
+            return 2
+        t = mi.target(a.client, a.project)
+        if a.action == "uninstall":
+            if a.client == "claude-code" and mi.shutil.which("claude"):
+                scope = "project" if a.project else "user"
+                done = mi.subprocess.run(["claude", "mcp", "remove", mi.NAME, "-s", scope]).returncode == 0
+            else:
+                done = mi.uninstall(t)
+            print(f"removed agentl from {t.path}" if done else f"agentl was not in {t.path}")
+            return 0
+        argv = mi.command(a.root, a.allow_code, a.db, a.uvx)
+        if a.client == "claude-code" and mi.claude_cli(argv, a.project):
+            print(
+                "added agentl to Claude Code with `claude mcp add-json` "
+                f"({'project' if a.project else 'user'} scope)"
+            )
+        else:
+            state = mi.install(t, argv)
+            backup = t.path.with_name(t.path.name + ".bak")
+            note = f" (backup: {backup.name})" if state != "unchanged" and backup.exists() else ""
+            print(f"{state}: agentl in {t.path}{note}")
+        print("  " + " ".join(argv))
+        print(mi.RESTART[a.client])
+        return 0
+    except mi.InstallError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -151,7 +193,21 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
     sv.add_argument("--port", type=int, default=7071)
 
-    mc = cmd("mcp", "serve agentl as an MCP server over stdio (Claude Code, Claude Desktop, Cursor)")
+    mc = cmd("mcp", "serve agentl as an MCP server over stdio, or install it in an MCP client")
+    mc.add_argument(
+        "action",
+        nargs="?",
+        default="serve",
+        choices=["serve", "install", "uninstall", "status"],
+        help="serve (default); install / uninstall the server in --client's config; status",
+    )
+    mc.add_argument(
+        "--client",
+        choices=["claude-desktop", "claude-code", "cursor", "vscode", "windsurf"],
+        help="install/uninstall: which MCP client",
+    )
+    mc.add_argument("--project", action="store_true", help="install/uninstall: this folder only")
+    mc.add_argument("--uvx", action="store_true", help="install: start it with `uvx agentl-etl`")
     mc.add_argument("--root", help="run_pipeline only runs files under this folder (default: here)")
     mc.add_argument(
         "--allow-code",
@@ -333,10 +389,12 @@ def main(argv: list[str] | None = None) -> int:
                 Service(specs, store).serve(a.host, a.port)
             return 0
         if a.cmd == "mcp":
-            from .mcp_server import serve as serve_mcp
+            if a.action == "serve":
+                from .mcp_server import serve as serve_mcp
 
-            serve_mcp(a.db, a.root, a.allow_code)
-            return 0
+                serve_mcp(a.db, a.root, a.allow_code)
+                return 0
+            return _mcp_install(a)
         if a.cmd == "dashboard":
             from .dashboard import serve
 

@@ -40,6 +40,26 @@ agentl skill show               # print it
 `agentl mcp` serves agentl over MCP (stdio), so Claude Code, Claude Desktop, Cursor and other MCP
 clients can validate, run and debug your pipelines directly.
 
+One command sets it up in your client, without editing JSON:
+
+```bash
+agentl mcp install --client claude-desktop     # or claude-code, cursor, vscode, windsurf
+agentl mcp install --client cursor --project   # this folder only (claude-code, cursor, vscode)
+agentl mcp status                              # which clients have it, and the command they run
+agentl mcp uninstall --client cursor
+```
+
+It finds the client's config file for your OS, adds or updates the `agentl` entry and keeps every
+other entry. Before a change it writes a backup next to the file (`<file>.bak`); running it twice
+changes nothing; a file with comments or trailing commas is left alone with a message. The entry
+runs the Python you ran the command with, so the client gets the same agentl version and extras;
+`--uvx` uses `uvx agentl-etl` instead. `--root`, `--allow-code` and `--db` are passed to the
+server; a `--db` URL with a password is refused (set `AGENTL_DB` in the client's environment). For
+Claude Code it uses `claude mcp add-json` when the `claude` CLI is installed. Restart the client
+afterwards; the command says how.
+
+By hand:
+
 ```bash
 claude mcp add agentl -- agentl mcp            # Claude Code
 claude mcp add agentl -- uvx agentl-etl mcp    # without installing it first (needs uv)

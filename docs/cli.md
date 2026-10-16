@@ -16,7 +16,9 @@ agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071]
-agentl mcp
+agentl mcp [--root DIR] [--allow-code]   # serve over stdio
+agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
+agentl mcp status
 agentl dashboard [--host 127.0.0.1] [--port 7070]
 ```
 
