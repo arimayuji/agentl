@@ -47,45 +47,49 @@ python -m benchmarks --compare            # full run, median of 3
 python -m benchmarks --compare --quick    # 10% of the data, one run
 ```
 
-agentl 0.6.1, Python 3.13, x86_64, 4 CPUs (a shared cloud container). Peak MB is the growth of
-the process peak RSS during the job; read and written MB are bytes through system calls
-(`/proc/self/io`, Linux only), so they include the run state agentl keeps in SQLite.
+agentl 0.10.0 (with #159), Python 3.13, x86_64, 4 CPUs (a shared cloud container), median of 3.
+Peak MB is how much the process peak RSS (`VmHWM`) grew during the job; read and written MB are
+bytes through system calls (`/proc/self/io`, Linux only), so they include the run state agentl
+keeps in SQLite.
 
 **CSV → drop empty notes → keep 3 columns → SQLite**, 1M rows (70 MB CSV)
 
 | Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
 | --- | --- | --- | --- | --- | --- |
-| agentl, `chunk_size: 50000` | 5.33 | 5.13 | 60 | 67.2 | 33.3 |
-| plain Python, `csv` + `sqlite3` in batches | 3.01 | 2.90 | 0 | 65.7 | 32.9 |
-| pandas, `read_csv` + `to_sql` | 4.00 | 3.88 | 156 | 65.8 | 32.9 |
+| agentl, `chunk_size: 50000` | 4.07 | 3.94 | 64 | 67.3 | 33.3 |
+| plain Python, `csv` + `sqlite3` in batches | 2.77 | 2.69 | 15 | 65.7 | 32.9 |
+| pandas, `read_csv` + `to_sql` | 4.78 | 4.64 | 574 | 65.8 | 32.9 |
 
 **One LLM call per record**, 500 records, fake provider with 20 ms latency
 
 | Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
 | --- | --- | --- | --- | --- | --- |
-| agentl, `concurrency: 8` | 1.37 | 0.14 | 0 | 0.9 | 0.4 |
+| agentl, `concurrency: 8` | 1.38 | 0.15 | 6 | 1.1 | 0.4 |
 | agentl, second run (answers from the cache) | 0.03 | 0.02 | 0 | 0.1 | 0.3 |
-| plain Python, a loop | 10.10 | 0.03 | 0 | 0.0 | 0.0 |
-| plain Python, 8 threads | 1.28 | 0.05 | 0 | 0.0 | 0.0 |
+| plain Python, a loop | 10.09 | 0.03 | 0 | 0.0 | 0.0 |
+| plain Python, 8 threads | 1.28 | 0.05 | 1 | 0.0 | 0.0 |
 
 **CSV → pandas function → Parquet**, 500k rows
 
 | Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
 | --- | --- | --- | --- | --- | --- |
-| agentl, `@dataframe` with the Arrow path | 0.63 | 0.97 | 0 | 32.0 | 2.9 |
-| pandas only | 0.97 | 0.96 | 0 | 20.1 | 2.5 |
+| agentl, `@dataframe` with the Arrow path | 0.74 | 1.10 | 268 | 32.1 | 2.9 |
+| pandas only | 0.94 | 0.94 | 128 | 20.1 | 2.5 |
 
 What this says:
 
-- On plain record work agentl costs time: about 1.8x the hand-written loop and 1.3x pandas on the
-  CSV job, for streaming in bounded memory (60 MB against 156 MB for pandas), run state, retries
-  and the event log. A tight script that streams by hand is faster and uses less memory.
+- On plain record work agentl costs time: about 1.5x the hand-written loop on the CSV job, and a
+  little faster than pandas. It streams in bounded memory (64 MB against 574 MB for pandas), with
+  run state, retries and the event log. A tight script that streams by hand is faster and smaller.
 - On LLM work the time is the provider's. agentl matches 8 hand-written threads and is 7x faster
   than a loop; the gain over hand-written code is the cache (a re-run of unchanged records makes
   no calls), budgets and spend tracking, not raw speed.
-- With pandas, the Arrow path reads CSV with pyarrow and was faster than `pd.read_csv` here; it
-  reads more bytes because of the run state.
-- Peak MB of 0 means the job did not grow the process past what imports and setup had used.
+- With pandas, the Arrow path reads CSV with pyarrow and was faster than `pd.read_csv` here, but
+  peaks at about twice pandas' memory (Arrow table plus DataFrame). Its time swings between runs
+  (0.6 to 1.0 s seen), as pyarrow uses several threads on a shared machine.
+- Earlier versions of this page showed 0 MB for several jobs. That was the measurement: Linux
+  carries `ru_maxrss` over from the parent process, so a child's growth read 0 whenever the
+  parent had been bigger. The numbers above use `VmHWM`, which starts fresh in each process.
 
 ## HTTP and HTML against the usual libraries
 
@@ -94,48 +98,43 @@ local server that answers every request after 10 ms, so they measure the client,
 
 | Job | agentl | Others |
 | --- | --- | --- |
-| paginated API, 100 pages → JSON (10,000 rows) | 1.27 s | urllib 1.20 s, requests 1.19 s, httpx 1.25 s |
-| one request per record (500), 16 at a time | 1.20 to 1.55 s | requests loop 5.68 s, requests 16 threads 2.08 s, httpx async 1.37 to 1.52 s |
-| HTML table → CSV (20,000 rows) | 0.57 s, ≈0 MB | BeautifulSoup html.parser 1.56 s, BeautifulSoup lxml 1.22 s, pandas `read_html` 0.48 s |
+| paginated API, 100 pages → JSON (10,000 rows) | 1.28 s, 8 MB | urllib 1.20 s, requests 1.20 s, httpx 1.25 s |
+| one request per record (500), 16 at a time | 1.23 s, 7 MB | requests loop 5.71 s, requests 16 threads 2.17 s, httpx async 1.18 s |
+| HTML table → CSV (20,000 rows) | 0.66 s, 19 MB | BeautifulSoup html.parser 1.69 s / 72 MB, BeautifulSoup lxml 1.17 s / 69 MB, pandas `read_html` 0.48 s / 49 MB |
 
 How to read it:
 
 - Pagination is one request after another, so it is bound by latency: every client lands near
   100 × 10 ms plus start-up. agentl is about 6% behind the plain loops.
-- With one request per record agentl's `concurrency` is the fastest option measured, about 4.7x a
-  plain requests loop and ahead of a hand-written thread pool. The fan-out numbers swing between runs.
-- On HTML tables `html.read` is 2 to 3x faster than BeautifulSoup and close to pandas `read_html`,
-  without pandas in memory.
+- With one request per record, agentl's `concurrency` is 4.6x a plain requests loop and ahead of
+  a hand-written thread pool, level with httpx async (which needs async code). These numbers swing
+  between runs.
+- On HTML tables `html.read` is about 2x faster than BeautifulSoup with a third of its memory;
+  pandas `read_html` is faster still.
 - The test server sets `TCP_NODELAY`. Without it, Nagle plus delayed ACKs added ~40 ms per request
   to keep-alive clients (requests, httpx) and not to urllib, which would have measured the server.
 
-The fan-out and HTML cases are in the regression gate, against requests (16 threads) and
-BeautifulSoup (lxml), with a 25% time tolerance.
-
 ## Regression gate
 
-Every pull request that touches `agentl/` or `benchmarks/` runs the comparison above at full size
-and fails when agentl got slower or heavier than `benchmarks/baseline.json`:
+Every pull request that touches `agentl/` or `benchmarks/` runs the comparison at full size twice
+over on the same runner: with its own agentl and with the base branch's, checked out next to it.
 
 ```bash
-python -m benchmarks --compare --check benchmarks/baseline.json
+git worktree add ../agentl-base origin/main
+python -m benchmarks --compare --against ../agentl-base
 ```
 
-The gate compares ratios, not seconds: agentl's time over a reference variant measured in the same
-run (plain Python for the CSV and LLM jobs, pandas for the Parquet job, requests and BeautifulSoup for the HTTP and HTML jobs). A slower CI machine slows
-both and leaves the ratio where it was; only agentl getting slower moves it. A ratio more than 20%
-above the baseline fails (75% for the half-second Parquet job, whose ratio swings between runs on a
-shared machine), and so does peak memory more than 25% (plus 10 MB) above it.
+For each gated job (CSV to SQLite, LLM per record, Parquet, one request per record, HTML table)
+the run alternates the two agentls run by run, so drift on a shared machine hits both. It fails
+when this agentl takes more than 20% longer than the base (25% for the HTTP and HTML jobs, 75%
+for the sub-second Parquet job, whose time swings), or peaks more than 25% plus 10 MB above it.
 
-`--quick` is not used for the gate: on 10% of the data agentl's start-up cost swamps the job, and the
-Parquet ratio moved from 3.6x to 5.5x between two identical runs.
+An earlier version compared against a committed ratio to plain Python. That ratio did not hold
+across machines on the CPU-bound CSV job (1.3x locally, 1.8x to 2.2x on CI runners with the same
+code), so it failed on main. Comparing agentl with agentl on one machine removes the hardware from
+the question. `--check` and `--write-baseline` still exist for comparing runs by hand.
 
-When a change is meant to cost time (a new safety check, say), update the baseline in the same pull
-request, where the reviewer sees the new numbers:
-
-```bash
-python -m benchmarks --compare --write-baseline benchmarks/baseline.json
-```
+`--quick` is not used for the gate: on 10% of the data agentl's start-up cost swamps the job.
 
 ## Call shapes
 

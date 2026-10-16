@@ -726,6 +726,52 @@ def check(results: list[dict], baseline: dict, mb_tolerance: float = 0.25) -> li
     return problems
 
 
+def check_against(results: list[dict], mb_tolerance: float = 0.25) -> tuple[dict[str, dict], list[str]]:
+    """Regressions of this agentl against the one measured as `<variant> @ base` on the same machine
+    (run_all's `against`): time more than its gate's tolerance above the base's, or peak memory more
+    than `mb_tolerance` (plus 10 MB) above it. Returns the per-gate numbers and the problems."""
+    by_case = {
+        c["case"]: {v["variant"]: v for v in c.get("variants", []) if "skipped" not in v} for c in results
+    }
+    rows: dict[str, dict] = {}
+    problems = []
+    ran = {c["case"] for c in results}
+    base_skipped = {
+        (c["case"], v["variant"]) for c in results for v in c.get("variants", []) if "skipped" in v
+    }
+    for case, mine, _, tolerance in GATES:
+        if case not in ran:  # left out with --only
+            continue
+        v = by_case.get(case, {})
+        if mine in v and (case, mine + BASE) in base_skipped:
+            rows[case] = {"note": "new in this change: the base cannot run it"}
+            continue
+        if mine not in v or mine + BASE not in v:
+            problems.append(f"{case}: not measured against the base (a variant was skipped or renamed)")
+            continue
+        head, base = v[mine], v[mine + BASE]
+        ratio = head["seconds"] / base["seconds"] if base["seconds"] > 0 else 1.0
+        # Whole-process peak RSS, not growth over setup: growth reads 0 or the full amount from run to
+        # run, depending on whether setup had already pushed the high-water mark past it.
+        rows[case] = {
+            "time_ratio": round(ratio, 3),
+            "rss_mb": head["max_rss_mb"],
+            "base_rss_mb": base["max_rss_mb"],
+        }
+        if ratio > 1 + tolerance:
+            problems.append(
+                f"{case}: {head['seconds']:.2f} s, base {base['seconds']:.2f} s "
+                f"({ratio:.2f}x, limit {1 + tolerance:.2f}x)"
+            )
+        mb_limit = base["max_rss_mb"] * (1 + mb_tolerance) + 10
+        if head["max_rss_mb"] > mb_limit:
+            problems.append(
+                f"{case}: peak RSS {head['max_rss_mb']:.0f} MB, base {base['max_rss_mb']:.0f} MB "
+                f"(limit {mb_limit:.0f})"
+            )
+    return rows, problems
+
+
 # ---------------------------------------------------------------- measurement (child process)
 def _io() -> tuple[int, int]:
     try:
@@ -736,6 +782,23 @@ def _io() -> tuple[int, int]:
         return -1, -1
 
 
+def _hwm_mb() -> float:
+    """This process's peak RSS in MB. Linux: VmHWM, which starts fresh at exec; ru_maxrss there is
+    carried over from the parent that spawned us, so it can sit above everything this process does.
+    Elsewhere: ru_maxrss (bytes on macOS)."""
+    import resource
+
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss / 2**20 if sys.platform == "darwin" else rss / 1024
+
+
 def _child(case: str, variant: str, workdir: str) -> None:
     import resource
 
@@ -743,29 +806,34 @@ def _child(case: str, variant: str, workdir: str) -> None:
     fn, _ = CASES[case]["variants"][variant]
     run = fn(d)  # imports and preparation happen here, outside the measurement
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    rss0, cpu0, (r0, w0) = usage.ru_maxrss, usage.ru_utime + usage.ru_stime, _io()
+    rss0, cpu0, (r0, w0) = _hwm_mb(), usage.ru_utime + usage.ru_stime, _io()
     t0 = time.perf_counter()
     run()
     wall = time.perf_counter() - t0
     usage = resource.getrusage(resource.RUSAGE_SELF)
     r1, w1 = _io()
-    unit = 1 if sys.platform == "darwin" else 1024  # macOS reports bytes, Linux KiB
+    rss1 = _hwm_mb()
     print(
         json.dumps(
             {
                 "seconds": wall,
                 "cpu_s": usage.ru_utime + usage.ru_stime - cpu0,
-                "peak_mb": (usage.ru_maxrss - rss0) * unit / 2**20,
+                "peak_mb": rss1 - rss0,
+                "max_rss_mb": rss1,
                 "read_mb": (r1 - r0) / 2**20 if r0 >= 0 else None,
                 "written_mb": (w1 - w0) / 2**20 if w0 >= 0 else None,
                 "imports_agentl": "agentl" in sys.modules,
+                "agentl_file": getattr(sys.modules.get("agentl"), "__file__", "") or "",
             }
         )
     )
 
 
-def _measure(case: str, variant: str, d: Path, n: int) -> dict:
+def _measure(case: str, variant: str, d: Path, n: int, src: str | None = None) -> dict:
     env = {**os.environ, "BENCH_N": str(n)}
+    env.pop("AGENTL_BENCH_SRC", None)
+    if src:
+        env["AGENTL_BENCH_SRC"] = str(Path(src).resolve())
     for f in ("out.db", "state.db", "out.jsonl", "out.parquet", "out.csv"):
         (d / f).unlink(missing_ok=True)
     proc = subprocess.run(
@@ -777,10 +845,21 @@ def _measure(case: str, variant: str, d: Path, n: int) -> dict:
     )
     if proc.returncode:
         raise RuntimeError(f"{case} / {variant} failed:\n{proc.stderr[-2000:]}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    if src and not out.get("agentl_file", "").startswith(env["AGENTL_BENCH_SRC"]):
+        raise RuntimeError(f"{case} / {variant}: agentl was not loaded from {src}")
+    return out
 
 
-def run_all(scale: float, repeat: int, only: list[str] | None = None) -> list[dict]:
+BASE = " @ base"  # suffix of a gated agentl variant measured with --against's agentl
+
+
+def run_all(
+    scale: float, repeat: int, only: list[str] | None = None, against: str | None = None
+) -> list[dict]:
+    """Every case and variant. With `against` (a source tree of another agentl, such as the base
+    branch), each gated agentl variant is also measured with that agentl, alternating runs on the
+    same machine, as an extra variant named `<variant> @ base`."""
     try:
         import resource  # noqa: F401
     except ImportError as e:
@@ -797,28 +876,53 @@ def run_all(scale: float, repeat: int, only: list[str] | None = None) -> list[di
         if c["make"]:
             c["make"](d, n)
         results, reference = [], None
+        gated = {g[1] for g in GATES if g[0] == case} if against else set()
         for variant, (_, needs) in c["variants"].items():
             if not _has(*needs):
                 results.append({"variant": variant, "skipped": f"needs {', '.join(needs)}"})
                 continue
             print(f"… {case} / {variant}", file=sys.stderr, flush=True)
-            runs = [_measure(case, variant, d, n) for _ in range(repeat)]
-            data = c["result"](d)
-            if reference is None:
-                reference = data
-            if data != reference:
-                raise AssertionError(f"{case}: '{variant}' wrote different data from the first variant")
-            best = {k: statistics.median(r[k] for r in runs) for k in ("seconds", "cpu_s", "peak_mb")}
-            last = runs[-1]
-            results.append(
-                {
-                    "variant": variant,
-                    **{k: round(v, 3) for k, v in best.items()},
-                    "read_mb": None if last["read_mb"] is None else round(last["read_mb"], 1),
-                    "written_mb": None if last["written_mb"] is None else round(last["written_mb"], 1),
-                    "imports_agentl": last["imports_agentl"],
+            # A gated variant alternates this agentl and the base's run by run, so drift on a shared
+            # machine hits both alike.
+            srcs: list[str | None] = [None, against] if variant in gated else [None]
+            runs: dict[str | None, list[dict]] = {src: [] for src in srcs}
+            base_error = None
+            for _ in range(repeat):
+                for src in list(srcs):
+                    try:
+                        runs[src].append(_measure(case, variant, d, n, src))
+                    except RuntimeError as e:
+                        if not src:
+                            raise
+                        # The base's agentl cannot run this job (a feature new in this change):
+                        # nothing to compare with, which check_against reports without failing.
+                        base_error = str(e).splitlines()[-1][:200]
+                        srcs.remove(src)
+                        continue
+                    data = c["result"](d)
+                    if reference is None:
+                        reference = data
+                    if data != reference:
+                        name = variant + (BASE if src else "")
+                        raise AssertionError(f"{case}: '{name}' wrote different data from the first variant")
+            for src in srcs:
+                rs = runs[src]
+                best = {
+                    k: statistics.median(r[k] for r in rs)
+                    for k in ("seconds", "cpu_s", "peak_mb", "max_rss_mb")
                 }
-            )
+                last = rs[-1]
+                results.append(
+                    {
+                        "variant": variant + (BASE if src else ""),
+                        **{k: round(v, 3) for k, v in best.items()},
+                        "read_mb": None if last["read_mb"] is None else round(last["read_mb"], 1),
+                        "written_mb": None if last["written_mb"] is None else round(last["written_mb"], 1),
+                        "imports_agentl": last["imports_agentl"],
+                    }
+                )
+            if base_error:
+                results.append({"variant": variant + BASE, "skipped": f"the base failed: {base_error}"})
         out.append({"case": case, "rows": n, "identical_output": True, "variants": results})
     return out
 
@@ -846,4 +950,6 @@ def table(results: list[dict]) -> str:
 
 
 if __name__ == "__main__":
+    if os.environ.get("AGENTL_BENCH_SRC"):  # --against: import agentl from that source tree
+        sys.path.insert(0, os.environ["AGENTL_BENCH_SRC"])
     _child(*sys.argv[1:4])

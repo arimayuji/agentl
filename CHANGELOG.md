@@ -12,12 +12,19 @@ They are always listed under **Changed** or **Removed**.
 ### Added
 
 - A performance regression gate in CI (#157). Pull requests that touch `agentl/` or `benchmarks/`
-  run `python -m benchmarks --compare --check benchmarks/baseline.json`, which fails when agentl's
-  time, as a ratio to plain Python or pandas in the same run, or its peak memory grows past the
-  committed baseline. `--write-baseline` updates it.
+  run `python -m benchmarks --compare --against <base checkout>`, which measures the gated jobs
+  with the pull request's agentl and the base branch's on the same runner, alternating, and fails
+  when time or peak memory grows past a per-job tolerance. `--check` and `--write-baseline`
+  compare against a saved file by hand.
 - New comparison cases (#157): a paginated API and one request per record against urllib, requests
   and httpx, and an HTML table to CSV against BeautifulSoup and pandas `read_html`. The fan-out and
   HTML cases join the regression gate. `--only` now also filters the `--compare` cases.
+
+### Fixed
+
+- `--compare` peak memory (#157): it read `ru_maxrss`, which Linux carries over from the parent
+  process, so a job's growth often read 0. It now reads `VmHWM`, which starts fresh in each process;
+  the published numbers changed (pandas on the CSV job: 574 MB, not 156).
 
 ### Changed
 

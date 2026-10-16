@@ -31,6 +31,12 @@ def main() -> int:
         "--write-baseline", metavar="PATH", help="with --compare: write the ratios the gate compares to PATH"
     )
     p.add_argument(
+        "--against",
+        metavar="SRC",
+        help="with --compare: also run the gated agentl variants with the agentl in source tree SRC "
+        "(the base branch, say), alternating on this machine, and fail (exit 1) on a regression",
+    )
+    p.add_argument(
         "--repeat", type=int, help="with --compare: runs per variant (median); default 3, 1 with --quick"
     )
     a = p.parse_args()
@@ -84,7 +90,7 @@ def _compare(a: argparse.Namespace) -> int:
     from . import compare
 
     repeat = a.repeat or (1 if a.quick else 3)
-    results = compare.run_all(0.1 if a.quick else 1.0, repeat=repeat, only=a.only)
+    results = compare.run_all(0.1 if a.quick else 1.0, repeat=repeat, only=a.only, against=a.against)
     py, arch, cpus = platform.python_version(), platform.machine(), os.cpu_count()
     print(f"\nagentl {agentl.__version__} · Python {py} · {arch} · {cpus} CPUs")
     print(compare.table(results))
@@ -110,6 +116,21 @@ def _compare(a: argparse.Namespace) -> int:
             json.dump(base, f, indent=2)
             f.write("\n")
         print(f"\nbaseline written to {a.write_baseline}")
+    if a.against:
+        rows, problems = compare.check_against(results)
+        print(f"\nregression gate against the agentl in {a.against}, same machine:")
+        for case, r in rows.items():
+            if "note" in r:
+                print(f"  {case}: {r['note']}")
+                continue
+            print(
+                f"  {case}: {r['time_ratio']:.2f}x the base's time, "
+                f"peak RSS {r['rss_mb']:.0f} MB (base {r['base_rss_mb']:.0f})"
+            )
+        if problems:
+            print("FAILED:\n  " + "\n  ".join(problems))
+            return 1
+        print("passed")
     if a.check:
         with open(a.check) as f:
             baseline = json.load(f)
