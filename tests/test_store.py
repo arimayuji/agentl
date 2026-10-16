@@ -104,3 +104,14 @@ def test_workers_share_history_and_cache(monkeypatch):
 
     with open_store(DSN) as store:
         assert sum(r["pipeline"] == "shared" for r in store.runs(limit=500)) >= 3
+
+
+def test_rejected_contract(store):
+    rid, pipe = uuid.uuid4().hex, f"p_{uuid.uuid4().hex[:6]}"
+    store.rejected_add(rid, pipe, "a", [{"n": 1, "_error": "bad"}, {"n": 2, "_error": "worse"}])
+    rows = store.rejected_list(pipe)
+    assert [(r["step"], r["error"], r["record"]["n"]) for r in rows] == [("a", "bad", 1), ("a", "worse", 2)]
+    assert store.rejected_get(rows[0]["id"])["record"] == {"n": 1, "_error": "bad"}
+    store.rejected_retried([rows[0]["id"]], "r2")
+    assert [r["record"]["n"] for r in store.rejected_list(pipe, "a", pending=True)] == [2]
+    assert store.rejected_list(pipe, "b") == []

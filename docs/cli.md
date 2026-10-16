@@ -141,6 +141,37 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+## Rejected records
+
+Records a step rejects (an agent answer that does not match the `output` schema, a value `cast`
+cannot read, an expression `compute` cannot evaluate) do not stop the run. Besides the
+`item.rejected` event, each one is kept in the run store with the run id, the pipeline, the step,
+the reason (`_error`) and the whole record as the step received it (`cast` adds the bad values
+under `_raw`). Postgres keeps them in `agentl_rejected`.
+
+```bash
+agentl rejected list                              # pending ones, every pipeline
+agentl rejected list --pipeline invoices --step classify
+agentl rejected show 42                           # one record, as JSON
+agentl rejected retry invoices.yaml --step classify
+```
+
+`retry` starts a new run with only the pending rejected records of one step (`--step` is needed
+when several steps have some). They go through that step and every step downstream of it; steps
+that only feed other branches do not run, and a join input from another branch runs again. Records
+that passed before are not sent again, and agent steps keep their per-record cache, so nothing is
+paid twice. Fix the cause first (the prompt, the schema, the `cast` type, the source); retried
+records are stripped of `_error` and `_raw`. When the retry run succeeds they are marked with its
+run id (`list --all` shows them); records rejected again are kept under the new run. In Python:
+`agentl.runner.retry_rejected(spec, store, step="classify")`.
+
+!!! warning "Privacy"
+    Rejected records hold raw data, personal data included, and stay in the store until you delete
+    them. Secret values are masked with `***` as in step samples (cloud secret references and
+    environment variables with secret-looking names), which also means a retried record carries
+    `***` where a secret was. Set `AGENTL_QUARANTINE=0` to keep no rejected records in the store;
+    `result.rejected` and the `item.rejected` event still report them.
+
 `validate` parses the YAML, checks the graph and that every connector exists. It does not connect to
 databases or URLs. It does resolve `${VAR}`, so every variable without a default must be set; in CI,
 export placeholders (`DATABASE_URL=postgresql://ci@localhost/ci agentl validate ...`).

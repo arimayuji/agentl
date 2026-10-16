@@ -181,3 +181,31 @@ def test_invoices_example_end_to_end(tmp_path, monkeypatch):
     assert rows[0]["name"] == "Acme" and rows[0]["needs_review"] is False
     assert rows[1]["name"] is None and rows[1]["needs_review"] is True
     assert (tmp_path / "invoices" / "2026-10-13" / "raw.json").exists()
+
+
+def test_rejected_records_are_kept_and_retried_on_postgres():
+    from agentl import connector, parse
+    from agentl.runner import Runner, retry_rejected
+    from agentl.store import open_store
+
+    @connector("test.pg_quarantine_src")
+    def src(input):
+        return [{"n": "1"}, {"n": "x"}]
+
+    pipe = f"pg_q_{uuid.uuid4().hex[:6]}"
+    spec = parse(
+        {
+            "name": pipe,
+            "steps": [
+                {"id": "src", "use": "test.pg_quarantine_src"},
+                {"id": "typed", "use": "cast", "input": "src", "with": {"fields": {"n": "int"}}},
+            ],
+        }
+    )
+    with open_store(DSN) as store:
+        Runner(spec, store=store).run()
+        (row,) = store.rejected_list(pipe)
+        assert row["step"] == "typed" and row["record"]["n"] == "x"
+        result = retry_rejected(spec, store)
+        assert result is not None and result.status == "succeeded"
+        assert store.rejected_get(row["id"])["retried_by"] == result.run_id
