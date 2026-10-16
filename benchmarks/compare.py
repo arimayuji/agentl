@@ -243,6 +243,10 @@ def _make_frames_csv(d: Path, n: int) -> Path:
 
 
 def parquet_agentl(d: Path) -> Callable[[], None]:
+    import pandas  # noqa: F401  (imported before the clock, as the pandas variant does)
+    import pyarrow.csv
+    import pyarrow.parquet  # noqa: F401
+
     from agentl import parse
     from agentl.runner import Runner
     from agentl.store import Store
@@ -253,6 +257,39 @@ def parquet_agentl(d: Path) -> Callable[[], None]:
             "steps": [
                 {"id": "read", "use": "csv.read", "with": {"path": str(d / "in.csv")}},
                 {"id": "clean", "fn": "benchmarks.frames:clean", "input": "read"},
+                {
+                    "id": "save",
+                    "use": "parquet.write",
+                    "input": "clean",
+                    "with": {"path": str(d / "out.parquet")},
+                },
+            ],
+        }
+    )
+
+    def run() -> None:
+        with Store(d / "state.db") as store:
+            r = Runner(spec, store=store, use_cache=False).run()
+        assert r.status == "succeeded", r.error
+
+    return run
+
+
+def parquet_agentl_polars(d: Path) -> Callable[[], None]:
+    import polars  # noqa: F401  (imported before the clock, as the polars variants do)
+    import pyarrow.csv
+    import pyarrow.parquet  # noqa: F401
+
+    from agentl import parse
+    from agentl.runner import Runner
+    from agentl.store import Store
+
+    spec = parse(
+        {
+            "name": "frames",
+            "steps": [
+                {"id": "read", "use": "csv.read", "with": {"path": str(d / "in.csv")}},
+                {"id": "clean", "fn": "benchmarks.frames:clean_polars", "input": "read"},
                 {
                     "id": "save",
                     "use": "parquet.write",
@@ -686,6 +723,7 @@ CASES: dict[str, dict] = {
         "needs": ("pandas", "pyarrow"),
         "variants": {
             "agentl (@dataframe, Arrow)": (parquet_agentl, ()),
+            "agentl (polars @dataframe, Arrow)": (parquet_agentl_polars, ("polars",)),
             "pandas only": (parquet_pandas, ()),
             "polars (read_csv)": (parquet_polars, ("polars",)),
             "polars (lazy, scan_csv + sink_parquet)": (parquet_polars_lazy, ("polars",)),

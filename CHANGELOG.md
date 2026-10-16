@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- polars steps (#171): `from agentl.polars import dataframe` wraps `fn(df) -> DataFrame` like
+  `agentl.pandas.dataframe`, with records or, next to Arrow readers and writers, a pyarrow Table
+  wrapped without copying. New extra `agentl-etl[polars]`. On the CSV → Parquet comparison it runs
+  in 0.57 s against 0.83 s for the pandas step; plain polars takes 0.07 s.
+
 - A performance regression gate in CI (#157). Pull requests that touch `agentl/` or `benchmarks/`
   run `python -m benchmarks --compare --against <base checkout>`, which measures the gated jobs
   with the pull request's agentl and the base branch's on the same runner, alternating, and fails
@@ -20,7 +25,8 @@ They are always listed under **Changed** or **Removed**.
   and httpx, and an HTML table to CSV against BeautifulSoup and pandas `read_html`. The fan-out and
   HTML cases join the regression gate. `--only` now also filters the `--compare` cases.
 - polars in the CSV → Parquet comparison (#157), eager and lazy. It is 10x to 18x faster than
-  agentl's `@dataframe` path on that job, and the docs say so.
+  agentl's `@dataframe` path on that job, and the docs say so. The agentl variants now import
+  their libraries before the clock, as the pandas and polars variants already did.
 
 ### Fixed
 

@@ -145,3 +145,23 @@ def revenue(dfs):
   fn: steps:revenue
   input: [orders, users]
 ```
+
+### polars
+
+The same with polars (`pip install 'agentl-etl[polars]'`):
+
+```python
+import polars as pl
+from agentl.polars import dataframe
+
+
+@dataframe
+def clean(df, min_total=0):
+    return df.with_columns(pl.col("total").cast(pl.Float64)).filter(pl.col("total") >= min_total)
+```
+
+The step receives a polars DataFrame (a dict of them with several inputs) and may return a
+DataFrame, a Series or a LazyFrame, which is collected. Next to an Arrow-capable reader or writer
+the Table is wrapped without copying, both ways. On the CSV → Parquet job in
+[Performance](performance.md) a polars step is about 1.5x faster than the same step in pandas;
+reading and writing are still pyarrow's, which is why plain polars is faster still (#171).
