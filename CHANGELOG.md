@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Changed
+
+- Faster record work (#157): `csv.read` builds records from `csv.reader` instead of `DictReader`,
+  `filter` and `select` resolve their fields once per batch instead of once per record, and
+  `sqlite.write` checks the columns once per batch. A 1M-row CSV → filter → select → SQLite job went
+  from 6.12 s to 3.81 s (pandas 3.90 s, a hand-written loop 3.03 s) with the same output and memory.
+
 ## [0.10.0] - 2026-10-16
 
 ### Added

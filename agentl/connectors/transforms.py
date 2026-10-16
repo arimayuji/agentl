@@ -17,10 +17,15 @@ def _names(value: str | list[str] | None) -> list[str]:
 def select(
     input: Any, fields: str | list[str] | None = None, rename: dict[str, str] | None = None
 ) -> list[dict]:
+    names = _names(fields)  # once, not per record: this runs on millions of records
+    renames = list((rename or {}).items())
+    rows = single(input)
+    if names and not renames:
+        return [{k: r.get(k) for k in names} for r in rows]
     out = []
-    for r in single(input):
-        row = {k: r.get(k) for k in _names(fields)} if fields else dict(r)
-        for old, new in (rename or {}).items():
+    for r in rows:
+        row = {k: r.get(k) for k in names} if names else dict(r)
+        for old, new in renames:
             if old in row:
                 row[new] = row.pop(old)
         out.append(row)
@@ -34,12 +39,15 @@ def filter_(
     """Keep records whose `where` fields equal the given values (`where: { status: paid }`) and
     whose `not_empty` fields have a value. Comparisons such as `total > 100` need a `fn:` step."""
     rows = single(input)
-    where = where or {}
+    conds = list((where or {}).items())
+    filled = _names(not_empty)  # once, not per record
+    if not conds and len(filled) == 1:  # the common case, without the generator per record
+        (k,) = filled
+        return [r for r in rows if r.get(k) not in (None, "")]
     return [
         r
         for r in rows
-        if all(r.get(k) == v for k, v in where.items())
-        and all(r.get(k) not in (None, "") for k in _names(not_empty))
+        if all(r.get(k) == v for k, v in conds) and all(r.get(k) not in (None, "") for k in filled)
     ]
 
 
