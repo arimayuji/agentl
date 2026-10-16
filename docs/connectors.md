@@ -167,6 +167,38 @@ Other databases will ship as plugins.
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
 | `cast` | `fields` (field: type), `locale`, `on_bad`, `strict` | Clean, typed values; bad rows rejected with the reason (below) |
+| `compute` | `fields` (field: expression), `on_error` (`reject`, `fail`, `null`) | New or replaced fields from safe expressions (below) |
+| `aggregate` | `group_by` (name or list), `metrics` (name: `sum(f)`, `count()`, `avg(f)`, `min(f)`, `max(f)`, `count_distinct(f)`, `first(f)`, `last(f)`, `list(f)`) | One record per group |
+| `sort` | `by` (`[region, -total]` or `{total: desc}`) | Order records; empty values last |
+| `limit` | `n`, `offset` | The first `n` records |
+| `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
+
+### Expressions: `compute`
+
+```yaml
+- id: totals
+  use: compute
+  input: orders
+  with:
+    fields:
+      total: "price * qty"
+      nome: "upper(trim(nome))"
+      faixa: "if(total > 1000, 'alta', 'baixa')"
+      cep: "regex(endereco, '\\d{5}-?\\d{3}')"
+      dias: "date_diff(today(), criado_em)"
+```
+
+Fields are computed in order, so a later one can use an earlier one. An expression has field
+names, numbers, quoted text, `+ - * / // %`, comparisons, `in`, `and` / `or` / `not`,
+`a if cond else b`, and these functions: `upper`, `lower`, `trim`, `title`, `unaccent`, `replace`,
+`regex` (first match, or a group), `regex_replace`, `substr`, `concat`, `split`, `len`, `coalesce`,
+`if`, `round`, `abs`, `floor`, `ceil`, `min`, `max`, `int`, `float`, `str`, `is_null`, `today`,
+`year`, `month`, `day`, `date_diff` (days, weeks, months or years), and `field("a name with
+spaces")`. Nothing else is accepted: no attribute access, indexing, imports or other calls, so a
+pipeline file cannot run code through an expression. A missing field is null, arithmetic with null
+gives null, division by zero gives null, and a value that is not a number where one is needed sends
+the record to the rejected records with the reason. Text in quotes is taken as written, so a regex
+keeps its backslashes. For more than this, use a `fn:` step.
 
 ### Clean types: `cast`
 

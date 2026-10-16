@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `compute`, `aggregate`, `sort`, `limit` and `fill` steps (#120). `compute` evaluates safe
+  expressions (`price * qty`, `upper(trim(nome))`, `if(total > 1000, 'alta', 'baixa')`, regex, dates)
+  from a closed list of operators and functions, with no way to run code; records it cannot compute
+  are rejected with the reason. `aggregate` groups with sum, count, avg, min, max, count_distinct,
+  first, last and list.
+
 - `cast` step and semantic types (#119): dates (one day/month order per column, Excel serials,
   "3 out 2026"), datetimes with zones, locale numbers (pt-BR `1.234,56`), money, percent, bool
   (`sim`/`não`), enum with synonyms, text, names, e-mail, CPF and CNPJ (check digits), CEP, UF and
