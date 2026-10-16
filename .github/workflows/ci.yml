@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     # A pull request that only changes these skips CI; main still runs everything after the merge.
     paths-ignore:
       - "docs/**"
@@ -38,13 +39,14 @@ jobs:
       - run: mypy
 
   test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Pull requests: the oldest and newest Python, and Windows (it catches path and home-folder
         # bugs). After the merge, main also runs 3.11, 3.12 and macOS.
-        include: ${{ fromJSON(github.event_name == 'pull_request'
+        include: ${{ fromJSON(github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci')
           && '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"}]'
           || '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.11"},{"os":"ubuntu-latest","python":"3.12"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"},{"os":"macos-latest","python":"3.13"}]') }}
     steps:
@@ -77,6 +79,8 @@ jobs:
       - run: twine check --strict dist/*
 
   postgres:
+    # Slow, rarely touched: after the merge on main, or on a pull request labeled full-ci.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -103,6 +107,8 @@ jobs:
       - run: pytest tests/test_postgres.py tests/test_store.py tests/test_sql.py -v
 
   browser:
+    # Slow, rarely touched: after the merge on main, or on a pull request labeled full-ci.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
