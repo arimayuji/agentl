@@ -101,28 +101,58 @@ def sqlite_write_chunks(
             if missing:
                 raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
             check_update_columns("sqlite.write", upd, cols)
-            if conflict != "error":
-                rows = list({tuple(r.get(k) for k in keys): r for r in rows}.values())  # last one wins
-            where = " AND ".join(f"{_quote(k)} IS ?" for k in keys)
-            rest = upd if upd is not None else [c for c in cols if c not in keys]
-            sets = ", ".join(f"{_quote(c)} = ?" for c in rest)
-            same = " AND ".join(f"{_quote(c)} IS ?" for c in rest)
-            change = f'UPDATE "{table}" SET {sets} WHERE {where} AND NOT ({same})'
-            exists = f'SELECT 1 FROM "{table}" WHERE {where} LIMIT 1'
-            for r in rows:
-                kv = [r.get(k) for k in keys]
-                if conflict == "update" and rest:
-                    new_vals = [r.get(c) for c in rest]
-                    if conn.execute(change, [*new_vals, *kv, *new_vals]).rowcount:
-                        updated += 1
-                        continue
-                if conn.execute(exists, kv).fetchone() is None:
-                    conn.execute(insert, tuple(map(r.get, cols)))
-                    inserted += 1
-                elif conflict == "error":
-                    found = dict(zip(keys, kv, strict=True))
+            # Set-based, so a large load stays fast: the chunk goes to a temp table, then one
+            # UPDATE for changed rows and one INSERT for new keys.
+            tmp = '"_agentl_upsert"'
+            conn.execute(f"DROP TABLE IF EXISTS temp.{tmp}")
+            conn.execute(f"CREATE TEMP TABLE {tmp} ({names}, _hit)")
+            conn.executemany(
+                f"INSERT INTO temp.{tmp} ({names}) VALUES ({ph})", [tuple(map(r.get, cols)) for r in rows]
+            )
+            klist = ", ".join(map(_quote, keys))
+            conn.execute(f"CREATE INDEX temp._agentl_upsert_k ON {tmp} ({klist})")
+            if conflict == "error":
+                dup = conn.execute(
+                    f"SELECT {klist} FROM temp.{tmp} GROUP BY {klist} HAVING count(*) > 1"
+                ).fetchone()
+                if dup is not None:
+                    found = dict(zip(keys, dup, strict=True))
+                    raise ValueError(f"sqlite.write: on_conflict: error and key {found} repeats in the input")
+            else:  # last one wins
+                conn.execute(
+                    f"DELETE FROM temp.{tmp} WHERE rowid NOT IN "
+                    f"(SELECT max(rowid) FROM temp.{tmp} GROUP BY {klist})"
+                )
+            match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
+            # CROSS JOIN keeps the target table outside: one scan of it, probing the indexed temp table
+            # (the target may have no index on the key).
+            conn.execute(
+                f"UPDATE temp.{tmp} SET _hit = 1 WHERE rowid IN "
+                f'(SELECT s.rowid FROM "{table}" AS t CROSS JOIN temp.{tmp} AS s WHERE {match})'
+            )
+            if conflict == "error":
+                hit = conn.execute(f"SELECT {klist} FROM temp.{tmp} WHERE _hit = 1 LIMIT 1").fetchone()
+                if hit is not None:
+                    found = dict(zip(keys, hit, strict=True))
                     raise ValueError(f"sqlite.write: on_conflict: error and a row with key {found} exists")
-            written += len(rows)
+            rest = upd if upd is not None else [c for c in cols if c not in keys]
+            if conflict == "update" and rest:
+                sets = ", ".join(
+                    f"{_quote(c)} = (SELECT s.{_quote(c)} FROM temp.{tmp} AS s WHERE {match})" for c in rest
+                )
+                same = " AND ".join(f"s.{_quote(c)} IS t.{_quote(c)}" for c in rest)
+                cur = conn.execute(
+                    f'UPDATE "{table}" AS t SET {sets} '
+                    f"WHERE EXISTS (SELECT 1 FROM temp.{tmp} AS s WHERE {match} AND NOT ({same}))"
+                )
+                updated += cur.rowcount
+            cur = conn.execute(
+                f'INSERT INTO "{table}" ({names}) SELECT {names} FROM temp.{tmp} WHERE _hit IS NULL'
+            )
+            inserted += cur.rowcount
+            n = conn.execute(f"SELECT count(*) FROM temp.{tmp}").fetchone()[0]
+            conn.execute(f"DROP TABLE temp.{tmp}")
+            written += n
     out: dict[str, Any] = {"table": table, "written": written}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
