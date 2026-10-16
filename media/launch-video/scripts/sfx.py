@@ -55,6 +55,22 @@ def tick() -> np.ndarray:
     return np.sin(2 * np.pi * 1400 * t) * env(n, 0.0005, 0.008)
 
 
+def ding(freq: float) -> np.ndarray:
+    """A notification chime: two soft bell partials."""
+    n = int(RATE * 0.7)
+    t = np.arange(n) / RATE
+    bell = np.sin(2 * np.pi * freq * t) + 0.4 * np.sin(2 * np.pi * freq * 2.76 * t) * np.exp(-t * 6)
+    return bell * env(n, 0.003, 0.22)
+
+
+def alert() -> np.ndarray:
+    """A low two-note buzz for a failed run."""
+    n = int(RATE * 0.5)
+    t = np.arange(n) / RATE
+    tone = np.where(t < 0.18, np.sin(2 * np.pi * 220 * t), np.sin(2 * np.pi * 175 * t))
+    return np.tanh(tone * 2.5) * env(n, 0.005, 0.2)
+
+
 OUT.mkdir(parents=True, exist_ok=True)
 for i in range(6):
     save(f"key{i}.wav", key(i, pitch=0.9 + 0.05 * i))
@@ -62,3 +78,6 @@ save("enter.wav", key(42, pitch=0.6, body=1.8))
 save("tick.wav", tick())
 save("whoosh-in.wav", whoosh(True))
 save("whoosh-out.wav", whoosh(False))
+for i, f in enumerate((988, 1175, 1319)):  # B5, D6, E6: varied so a burst of alerts is not one note
+    save(f"ding{i}.wav", ding(f))
+save("alert.wav", alert())

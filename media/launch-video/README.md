@@ -64,3 +64,15 @@ ffmpeg -i out/agentl-launch.mp4 -vf scale=1280:-2 -c:v libvpx-vp9 -b:v 0 -crf 38
 - Numbers shown in the run scene are illustrative.
 
 Remotion is free for individuals and small teams; check its license before using it in a larger company.
+
+## Notifications video
+
+`Notify` and `NotifyVertical` (`src/Notify.tsx`, 15 s): the `notify:` block, a run that fails, and
+the alert landing on a phone from WhatsApp, Slack, Telegram, SMS, Discord, Teams, ntfy and email,
+each with a chime. Services are named color chips, not their logos (trademarks). Chimes and the
+failure buzz come from `scripts/sfx.py`. Sample output, labelled.
+
+```bash
+npm run render:notify            # out/agentl-notify.mp4
+npm run render:notify-vertical   # out/agentl-notify-vertical.mp4
+```
