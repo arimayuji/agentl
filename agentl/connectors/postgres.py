@@ -217,6 +217,10 @@ def postgres_write_arrow(
 ) -> list[dict]:
     """append/replace from an Arrow table with COPY, one transaction. Nested or binary columns fall
     back to the normal writer."""
+    from ..polars import from_polars, untag
+
+    if from_polars(data):
+        data = untag(data)
     name = table
     pg_types = {f.name: _arrow_pg_type(f.type) for f in data.schema}
     if None in pg_types.values() or not data.num_columns:

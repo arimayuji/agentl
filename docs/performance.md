@@ -74,11 +74,11 @@ variants import pandas, polars and pyarrow before the clock, as the others do)
 
 | Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
 | --- | --- | --- | --- | --- | --- |
-| agentl, `@dataframe` with the Arrow path | 0.83 | 1.18 | 226 | 25.0 | 2.9 |
-| agentl, polars `@dataframe` with the Arrow path | 0.57 | 0.84 | 230 | 21.5 | 2.9 |
-| pandas only | 1.02 | 1.02 | 128 | 20.1 | 2.5 |
-| polars, `read_csv` | 0.08 | 0.20 | 105 | 0.0 | 0.6 |
-| polars, lazy (`scan_csv` + `sink_parquet`) | 0.06 | 0.19 | 85 | 0.0 | 0.6 |
+| agentl, `@dataframe` with the Arrow path | 0.72 | 1.01 | 219 | 24.9 | 2.9 |
+| agentl, polars `@dataframe` | 0.21 | 0.38 | 182 | 1.3 | 2.5 |
+| pandas only | 0.94 | 0.94 | 128 | 20.1 | 2.5 |
+| polars, `read_csv` | 0.07 | 0.20 | 105 | 0.0 | 0.6 |
+| polars, lazy (`scan_csv` + `sink_parquet`) | 0.06 | 0.18 | 85 | 0.0 | 0.6 |
 
 What this says:
 
@@ -91,11 +91,11 @@ What this says:
 - With pandas, the Arrow path reads CSV with pyarrow and was faster than `pd.read_csv` here, but
   peaks at about twice pandas' memory (Arrow table plus DataFrame). Its time swings between runs
   (0.6 to 1.0 s seen), as pyarrow uses several threads on a shared machine.
-- polars does this job about 7x faster than agentl even with a polars step, and with less
-  memory. Of agentl's 0.57 s, polars itself takes about 0.03 s: the rest is pyarrow reading the
-  CSV (0.16 s), pyarrow writing Parquet (0.25 s) and agentl's run state. Handing the whole chain
-  to polars (`scan_csv` → step → `sink_parquet`) is the next step (#171). polars reads the file
-  through a memory map, which `/proc/self/io` does not count, hence 0 read MB.
+- With a polars step, polars also reads the CSV (when every consumer of `csv.read` is a polars
+  step) and writes the Parquet, so the job runs in 0.21 s: 4.5x faster than pandas and 3x behind
+  plain polars. Most of the gap is agentl's fixed cost per run (about 0.08 s on a 10-row file:
+  imports, the run state in SQLite, the event log). polars reads the file through a memory map,
+  which `/proc/self/io` does not count, hence its 0 read MB.
 - Earlier versions of this page showed 0 MB for several jobs. That was the measurement: Linux
   carries `ru_maxrss` over from the parent process, so a child's growth read 0 whenever the
   parent had been bigger. The numbers above use `VmHWM`, which starts fresh in each process.

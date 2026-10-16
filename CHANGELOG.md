@@ -13,8 +13,10 @@ They are always listed under **Changed** or **Removed**.
 
 - polars steps (#171): `from agentl.polars import dataframe` wraps `fn(df) -> DataFrame` like
   `agentl.pandas.dataframe`, with records or, next to Arrow readers and writers, a pyarrow Table
-  wrapped without copying. New extra `agentl-etl[polars]`. On the CSV → Parquet comparison it runs
-  in 0.57 s against 0.83 s for the pandas step; plain polars takes 0.07 s.
+  wrapped without copying. When every consumer of `csv.read` is a polars step polars reads the
+  file, and `parquet.write` after a polars step writes with polars (strings read back as
+  `large_string`). New extra `agentl-etl[polars]`. CSV → Parquet comparison: 0.21 s, against
+  0.72 s for the pandas step and 0.07 s for plain polars.
 
 - A performance regression gate in CI (#157). Pull requests that touch `agentl/` or `benchmarks/`
   run `python -m benchmarks --compare --against <base checkout>`, which measures the gated jobs
@@ -36,6 +38,9 @@ They are always listed under **Changed** or **Removed**.
   reads it the same way now (its numbers moved by about 5 MB).
 
 ### Changed
+
+- Faster start (#157): the HTTPS opener and its CA store load on the first HTTP call instead of on
+  import. A 10-row job's fixed cost went from about 0.14 s to 0.08 s.
 
 - Faster record work (#157): `csv.read` builds records from `csv.reader` instead of `DictReader`,
   `filter` and `select` resolve their fields once per batch instead of once per record, and

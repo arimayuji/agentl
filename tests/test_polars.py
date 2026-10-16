@@ -54,7 +54,9 @@ def test_arrow_path_matches_the_record_path(tmp_path):
     assert a.to_pylist() == b.to_pylist()
     assert fast.outputs["clean"] == slow.outputs["clean"]
     assert fast.outputs["clean"][0] == {"id": "0", "kind": "a", "amount": 0.0, "note": "", "missing": None}
-    assert str(a.schema.field("note").type) == "string"  # not large_string / string_view
+    # polars writes its own string type; the record path writes string. Values are the same.
+    assert str(a.schema.field("note").type) == "large_string"
+    assert str(b.schema.field("note").type) == "string"
 
 
 def test_lazyframe_is_collected(tmp_path):
@@ -87,3 +89,29 @@ def test_none_and_empty_input():
     assert dataframe(lambda df: df)(None) == []
     with pytest.raises(TypeError, match="polars DataFrame"):
         dataframe(lambda df: [1])([{"a": 1}])
+
+
+def test_tagged_tables_round_trip():
+    import pyarrow as pa
+
+    from agentl.polars import from_polars, tag, untag
+
+    t = tag(pl.DataFrame({"a": ["x", None], "n": [1, 2]}).to_arrow())
+    assert from_polars(t) and not from_polars(pa.table({"a": ["x"]}))
+    plain = untag(t)
+    assert not from_polars(plain) and plain.schema.field("a").type == pa.string()
+    assert plain.to_pylist() == [{"a": "x", "n": 1}, {"a": None, "n": 2}]
+
+
+def test_a_polars_step_can_feed_a_pandas_step(tmp_path):
+    pytest.importorskip("pandas")
+    src = make_csv(tmp_path / "in.csv", n=10)
+    steps_ = [
+        {"id": "read", "use": "csv.read", "with": {"path": src}},
+        {"id": "p", "fn": "tests.arrow_steps.polars_steps:clean", "input": "read"},
+        {"id": "q", "fn": "tests.arrow_steps.steps:clean", "input": "p"},
+    ]
+    slow, _ = run(tmp_path, steps_, False)
+    fast, runner = run(tmp_path, steps_, True)
+    assert {"read", "p"} <= runner._arrow_out
+    assert fast.outputs["q"] == slow.outputs["q"]

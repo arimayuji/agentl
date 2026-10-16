@@ -49,6 +49,34 @@ def to_table(df: Any) -> Any:
     return table.cast(pa.schema(fields))
 
 
+ENGINE_KEY = b"agentl.engine"
+
+
+def tag(table: Any) -> Any:
+    """Mark an Arrow table as a polars step's output, in polars' types (see `from_polars`)."""
+    return table.replace_schema_metadata({ENGINE_KEY: b"polars"})
+
+
+def untag(table: Any) -> Any:
+    """A tagged table as `to_table` would give it: string columns as `string`, no tag."""
+    return to_table(require("polars", "polars").from_arrow(table.replace_schema_metadata(None)))
+
+
+def from_polars(table: Any) -> bool:
+    """Whether an Arrow table came out of a polars step."""
+    schema = getattr(table, "schema", None)
+    meta = getattr(schema, "metadata", None) or {}
+    return bool(meta.get(ENGINE_KEY) == b"polars")
+
+
+def write_parquet(table: Any, path: str, compression: str) -> None:
+    """Write a polars step's table with polars' own Parquet writer: several times faster than
+    pyarrow's on a fresh process, whose allocator warm-up dominates a sub-second job. Strings come
+    back as polars writes them (large_string when read with pyarrow); values are the same."""
+    pl = require("polars", "polars")
+    pl.from_arrow(table.replace_schema_metadata(None)).write_parquet(path, compression=compression)
+
+
 def _collect(df: Any) -> Any:
     pl = require("polars", "polars")
     if isinstance(df, pl.LazyFrame):
@@ -84,7 +112,12 @@ def dataframe(fn: Callable[..., Any]) -> Callable[..., list[dict]]:
         out = fn(arg, **params)
         if out is None:
             out = to_df([])
-        return to_table(out) if _arrow else to_records(out)
+        if _arrow:
+            # Tagged and in polars' own types: the Arrow writers turn it back to polars (Parquet)
+            # or normalise it (Postgres), so no cast here, and no pyarrow.compute import.
+            return tag(_collect(out).to_arrow())
+        return to_records(out)
 
     step.agentl_dataframe = True  # type: ignore[attr-defined]
+    step.agentl_engine = "polars"  # type: ignore[attr-defined]
     return step

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import threading
@@ -166,6 +167,7 @@ class Runner:
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
+        self._polars_fed: set[str] = set()
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
@@ -684,13 +686,21 @@ class Runner:
         for s in self.spec.steps:
             for ref in s.inputs:
                 consumers[ref].append(s)
+
+        def polars_frame(step: StepSpec) -> bool:
+            fn = registry.resolve_fn(step.fn, self.spec.base_dir) if step.fn else None
+            return getattr(fn, "agentl_engine", None) == "polars"
+
         out = set()
+        self._polars_fed = set()
         for step in self.spec.steps:
             if step.cached or step.id in chunked or not consumers[step.id]:
                 continue
             makes = (step.use and registry.arrow(step.use)[0] is not None) or is_frame(step)
             if makes and all(takes(c, step.id) for c in consumers[step.id]):
                 out.add(step.id)
+                if step.use and all(polars_frame(c) for c in consumers[step.id]):
+                    self._polars_fed.add(step.id)  # its reader may let polars read the file
         return out
 
     def _run_arrow(self, step: StepSpec, data: Any) -> Any:
@@ -700,6 +710,8 @@ class Runner:
         if step.use:
             reader, writer = registry.arrow(step.use)
             if produce and reader is not None and not _is_table(data):
+                if step.id in self._polars_fed and "_engine" in inspect.signature(reader).parameters:
+                    return reader(data, _engine="polars", **step.with_)
                 return reader(data, **step.with_)
             if _is_table(data) and writer is not None:
                 return list(writer[0](data, **step.with_) or [])
