@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..registry import connector, rowwise
@@ -206,3 +207,150 @@ def cast(
         else:
             good.append(out)
     return Rejects(good, bad)
+
+
+@connector("compute")
+def compute(input: Any, fields: dict[str, str], on_error: str = "reject") -> list[dict]:
+    """New or replaced fields from safe expressions (#120): `fields: {total: "price * qty",
+    nome: "upper(trim(nome))", faixa: "if(total > 1000, 'alta', 'baixa')"}`. Fields are computed
+    in order, so a later one can use an earlier one. Arithmetic, comparisons, and/or/not and the
+    functions in agentl.expr (upper, lower, trim, replace, regex, coalesce, if, round, date_diff,
+    ...); nothing else runs. `on_error`: reject (the record goes to the rejected records with the
+    reason), fail, or null (the field is set to null)."""
+    from .. import expr
+    from ..registry import Rejects
+
+    if on_error not in ("reject", "fail", "null"):
+        raise ValueError("compute: on_error is reject, fail or null")
+    for text in fields.values():
+        expr.compile_expr(str(text))  # a bad expression fails before any record
+    good: list[dict] = []
+    bad: list[dict] = []
+    for r in single(input):
+        out = dict(r)
+        error = None
+        for name, text in fields.items():
+            try:
+                out[name] = expr.evaluate(str(text), out)
+            except expr.ExprError as e:
+                if on_error == "fail":
+                    raise ValueError(f"compute: field {name!r}: {e}") from None
+                if on_error == "null":
+                    out[name] = None
+                    continue
+                error = f"{name}: {e}"
+                break
+        if error:
+            bad.append({**r, "_error": error})
+        else:
+            good.append(out)
+    return Rejects(good, bad)
+
+
+_AGG = re.compile(r"^\s*(sum|count|avg|mean|min|max|count_distinct|first|last|list)\s*\(\s*([^)]*?)\s*\)\s*$")
+
+
+def _agg_value(fn: str, values: list) -> Any:
+    present = [v for v in values if v is not None and v != ""]
+    if fn == "count":
+        return len(present)
+    if fn == "count_distinct":
+        return len({repr(v) for v in present})
+    if fn == "first":
+        return present[0] if present else None
+    if fn == "last":
+        return present[-1] if present else None
+    if fn == "list":
+        return present
+    if not present:
+        return None
+    if fn in ("min", "max"):
+        return (min if fn == "min" else max)(present)
+    nums = []
+    for v in present:
+        try:
+            nums.append(float(v) if isinstance(v, str) else v)
+        except ValueError:
+            raise ValueError(f"aggregate: {fn}() needs numbers, got {v!r}") from None
+    total = sum(nums)
+    if fn == "sum":
+        return total
+    return total / len(nums)
+
+
+@connector("aggregate")
+def aggregate(input: Any, metrics: dict[str, str], group_by: str | list[str] | None = None) -> list[dict]:
+    """Group records and summarise each group (#120): `group_by: [region]`, `metrics: {total:
+    "sum(amount)", orders: "count()", customers: "count_distinct(customer)", avg_ticket:
+    "avg(amount)"}`. Functions: sum, count, avg, min, max, count_distinct, first, last, list. Empty
+    values are skipped. Groups come out in the order they first appear; no group_by = one record."""
+    keys = _names(group_by)
+    parsed = {}
+    for name, spec in metrics.items():
+        m = _AGG.match(str(spec))
+        if not m:
+            raise ValueError(f"aggregate: cannot read {spec!r}; use e.g. sum(amount) or count()")
+        fn, field = m.group(1).replace("mean", "avg"), m.group(2)
+        if not field and fn != "count":
+            raise ValueError(f"aggregate: {fn}() needs a field")
+        parsed[name] = (fn, field)
+    groups: dict[tuple, list[dict]] = {}
+    for r in single(input):
+        groups.setdefault(tuple(r.get(k) for k in keys), []).append(r)
+    out = []
+    for key, rows in groups.items():
+        row = dict(zip(keys, key, strict=True))
+        for name, (fn, field) in parsed.items():
+            row[name] = (
+                len(rows) if fn == "count" and not field else _agg_value(fn, [r.get(field) for r in rows])
+            )
+        out.append(row)
+    return out
+
+
+def _sort_keys(by: str | list[Any] | dict[str, str]) -> list[tuple[str, bool]]:
+    if isinstance(by, dict):
+        return [(f, str(d).lower() in ("desc", "descending")) for f, d in by.items()]
+    items = [by] if isinstance(by, str) else by
+    out = []
+    for item in items:
+        if isinstance(item, dict):
+            out += _sort_keys(item)
+        else:
+            s = str(item)
+            out.append((s[1:], True) if s.startswith("-") else (s, False))
+    return out
+
+
+@connector("sort")
+def sort(input: Any, by: str | list[Any] | dict[str, str]) -> list[dict]:
+    """Order records (#120): `by: [region, -total]` (a leading - is descending) or `by: {total:
+    desc}`. Empty values go last either way; numbers and text never compare to each other."""
+    rows = list(single(input))
+    for field, desc in reversed(_sort_keys(by)):
+        present = [r for r in rows if r.get(field) not in (None, "")]
+        empty = [r for r in rows if r.get(field) in (None, "")]
+
+        def key(r: dict, f: str = field) -> tuple:
+            v = r.get(f)
+            return (0, v) if isinstance(v, (int, float)) and not isinstance(v, bool) else (1, str(v))
+
+        rows = sorted(present, key=key, reverse=desc) + empty
+    return rows
+
+
+@connector("limit")
+def limit(input: Any, n: int, offset: int = 0) -> list[dict]:
+    """The first `n` records (after skipping `offset`)."""
+    return single(input)[offset : offset + n]
+
+
+def _blank(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip())
+
+
+@connector("fill")
+def fill(input: Any, values: dict[str, Any]) -> list[dict]:
+    """Defaults for empty fields (#120): `values: {country: BR, discount: 0}`. A field that is
+    missing, null or blank text gets the default; anything else is kept."""
+    return [{**r, **{k: v for k, v in values.items() if _blank(r.get(k))}} for r in single(input)]
