@@ -462,6 +462,34 @@ Credentials: an app registration with the Graph application permission `Sites.Re
 `Sites.Selected` granted on the site), through `MS_TENANT_ID`, `MS_CLIENT_ID` and
 `MS_CLIENT_SECRET`; or a ready token in `MS_ACCESS_TOKEN`. Standard library only.
 
+## Discord
+
+`discord.send` posts records to a channel through an
+[incoming webhook](https://support.discord.com/hc/en-us/articles/228383668) (channel settings,
+Integrations, Webhooks). Put the webhook URL in an environment variable: it is a secret.
+
+```yaml
+- id: post
+  use: discord.send
+  input: new_orders
+  with:
+    webhook: ${DISCORD_WEBHOOK}
+    content: "New order {id} from {customer}: R$ {total}"
+```
+
+- `content` fills `{field}` placeholders from each record (fields only: no format specs). Without
+  `content` or `embed`, each record is shown as `key: value` lines.
+- `mode: each` (default) posts one message per record; `mode: batch` packs the records into as
+  few messages as fit Discord's 2000 characters.
+- `embed: { title, description, url, color, footer }` (templates too, `color` as `"#0070c9"`) posts
+  a card per record. `username` and `avatar_url` change how the webhook shows up.
+- `max_messages` (default 50) stops the step before posting when the input would flood the
+  channel. Rate limits (429) are waited out and 5xx answers retried (`retries`, default 3).
+- Mentions are off: a record containing `@everyone` is posted as text and pings nobody.
+- Each output record has the message number, Discord's message `id` and `channel_id`.
+
+For alerts when a run fails, use the `discord` channel of [`notify:`](notifications.md) instead.
+
 ## Queues and streams
 
 Kafka, Amazon SQS, RabbitMQ and Google Pub/Sub, as micro-batches:

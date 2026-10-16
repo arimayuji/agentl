@@ -31,8 +31,9 @@ _DELIVERING = {
     "pubsub.publish",
     "rabbitmq.publish",
     "sqs.send",
+    "discord.send",
 }
-_SECRET_KEY = re.compile(r"(pass(word)?|secret|token|api[_-]?key|private[_-]?key|credential)", re.I)
+_SECRET_KEY = re.compile(r"(pass(word)?|secret|token|api[_-]?key|private[_-]?key|credential|webhook)", re.I)
 _SECRET_VALUE = re.compile(
     r"^(sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}"
     r"|xox[abpr]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,})$"

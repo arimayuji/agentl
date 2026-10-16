@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `discord.send`: post records to a Discord channel through a webhook, one message per record or
+  packed into few, with `{field}` templates, embeds, mentions off, rate limits honoured and a
+  `max_messages` cap (#145). `lint` counts it as a delivering step and flags a webhook URL written
+  in the pipeline.
+
 ## [0.9.0] - 2026-10-15
 
 ### Added
