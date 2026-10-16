@@ -128,3 +128,101 @@ def test_mcp_registry_metadata_matches_the_package():
     assert f"<!-- mcp-name: {server['name']} -->" in (root / "README.md").read_text()
     scripts = tomllib.loads((root / "pyproject.toml").read_text())["project"]["scripts"]
     assert scripts["agentl-etl"] == scripts["agentl"] == "agentl.cli:main"  # `uvx agentl-etl mcp`
+
+
+def call_args(server, tool, args):
+    """Like call, for tools that take an argument called `name`."""
+    res = server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}
+    )
+    return res["result"]["isError"], res["result"]["content"][0]["text"]
+
+
+def test_mcp_templates_connectors_and_output(tmp_path, monkeypatch):
+    """#164: start from a template without an LLM, read one connector, see what a run produced."""
+    monkeypatch.chdir(tmp_path)
+    s = setup(tmp_path)
+    tools = {
+        t["name"]: t for t in s.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
+    }
+    assert not tools["new_from_template"]["annotations"]["readOnlyHint"]
+    assert tools["describe_connector"]["annotations"]["readOnlyHint"]
+    assert "describe_connector" in tools["list_connectors"]["description"]
+    assert "new_from_template" in tools["new_pipeline"]["description"]
+
+    err, text = call(s, "list_templates")
+    listed = json.loads(text)
+    assert not err and listed and all(t["name"] and t["does"] for t in listed)
+
+    name = listed[0]["name"]
+    err, text = call_args(s, "new_from_template", {"name": name, "path": "sub/pipe.yaml"})
+    assert not err and (tmp_path / "sub" / "pipe.yaml").is_file()
+    assert lint.check_file(str(tmp_path / "sub" / "pipe.yaml"), warnings=False).errors == []
+    err, text = call_args(s, "new_from_template", {"name": name, "path": "sub/pipe.yaml"})
+    assert err and "overwrite" in text
+    err, text = call_args(s, "new_from_template", {"name": name, "path": str(tmp_path.parent / "x.yaml")})
+    assert err and "only writes files under" in text
+    err, text = call_args(s, "new_from_template", {"name": "nope", "path": "n.yaml"})
+    assert err and "no template" in text
+
+    err, text = call_args(s, "describe_connector", {"name": "csv.read"})
+    assert not err and text.startswith("csv.read") and "path" in text
+    err, text = call_args(s, "describe_connector", {"name": "csv.reed"})
+    assert err and "csv.read" in text
+
+    err, text = call(s, "show_output", step="some")
+    assert err and "no runs yet" in text
+    err, text = call(s, "run_pipeline", pipeline=str(tmp_path / "p.yaml"))
+    assert not err and json.loads(text)["status"] == "succeeded"
+    err, text = call(s, "show_output", step="some", limit=1)
+    shown = json.loads(text)
+    assert not err and shown["total"] == 2 and shown["records"] == [{"id": "1"}]
+    err, text = call(s, "show_output", step="nope")
+    assert err and "no output kept" in text
+
+
+def test_samples_are_clipped_and_can_be_turned_off(tmp_path, monkeypatch):
+    from agentl import parse
+    from agentl.runner import Runner
+    from agentl.store import Store
+
+    (tmp_path / "in.csv").write_text("id,text\n1," + "x" * 500 + "\n")
+    spec = parse(
+        {"name": "c", "steps": [{"id": "r", "use": "csv.read", "with": {"path": str(tmp_path / "in.csv")}}]}
+    )
+    with Store(tmp_path / "s.db") as store:
+        r = Runner(spec, store=store).run()
+        text = store.sample(r.run_id, "r")["records"][0]["text"]
+        assert len(text) == 201 and text.endswith("…")
+        monkeypatch.setenv("AGENTL_SAMPLES", "0")
+        r = Runner(spec, store=store, use_cache=False).run()
+        assert store.sample(r.run_id, "r") is None
+
+
+def test_samples_mask_secret_values(tmp_path, monkeypatch):
+    from agentl import parse, secrets
+    from agentl.runner import Runner
+    from agentl.store import Store
+
+    token = 'tok"en\\with-quotes-' + "z" * 300  # quotes and backslash: masked before JSON and clipping
+    monkeypatch.setenv("API_TOKEN", token)
+    monkeypatch.setattr(secrets, "_ENV_SECRETS", set())
+    (tmp_path / "in.json").write_text(json.dumps([{"echo": "Bearer " + token, "nested": {"t": token}}]))
+    spec = parse(
+        {
+            "name": "m",
+            "steps": [
+                {"id": "r", "use": "json.read", "with": {"path": str(tmp_path / "in.json")}},
+                {
+                    "id": "s",
+                    "use": "select",
+                    "input": "r",
+                    "with": {"fields": ["echo", "nested"], "note": "${API_TOKEN}"},
+                },
+            ],
+        }
+    )
+    with Store(tmp_path / "s.db") as store:
+        Runner(spec, store=store).run()
+    stored = b"".join(p.read_bytes() for p in tmp_path.glob("s.db*"))
+    assert b"zzzzzzzzzz" not in stored and b"***" in stored

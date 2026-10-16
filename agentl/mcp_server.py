@@ -119,9 +119,30 @@ class Server:
             required=["pipeline", "step"],
         )
         add(
+            "list_templates",
+            "Tested pipeline templates (name and what each does). Start from one with "
+            "new_from_template: no LLM call, and it is known to validate and run.",
+            {},
+            self.list_templates,
+        )
+        add(
+            "new_from_template",
+            "Write a template to a file under the server's root (fails if the file exists unless "
+            "overwrite is true). Then edit its paths and settings, and lint it.",
+            {
+                "name": {"type": "string", "description": "template name, from list_templates"},
+                "path": {"type": "string", "description": "where to write the YAML, e.g. pipeline.yaml"},
+                "overwrite": {"type": "boolean"},
+            },
+            self.new_from_template,
+            read_only=False,
+            required=["name", "path"],
+        )
+        add(
             "new_pipeline",
-            "Write a validated pipeline YAML from a description (calls the LLM set by AGENTL_PROVIDER / "
-            "AGENTL_MODEL, which costs a little). Returns the YAML; nothing is saved.",
+            "Paid option: write a pipeline YAML from a description with the LLM set by AGENTL_PROVIDER "
+            "/ AGENTL_MODEL. Prefer list_templates + new_from_template, which cost nothing. Returns "
+            "the YAML; nothing is saved.",
             {"description": {"type": "string", "description": "what the pipeline should do"}},
             self.new_pipeline,
         )
@@ -166,7 +187,32 @@ class Server:
             required=[],
         )
         add("doctor", "Explain why a run failed.", {"run_id": {"type": "string"}}, self.doctor)
-        add("list_connectors", "Installed connectors and their parameters.", {}, self.connectors)
+        add(
+            "list_connectors",
+            "Installed connectors, one line each. For one connector's with: parameters, types and "
+            "defaults use describe_connector.",
+            {},
+            self.connectors,
+        )
+        add(
+            "describe_connector",
+            "One connector's with: parameters (types, defaults, which are required) and notes.",
+            {"name": {"type": "string", "description": "e.g. csv.read, http.get, postgres.write"}},
+            self.describe_connector,
+        )
+        add(
+            "show_output",
+            "The first records a step produced in a run (values cut at 200 characters), and how many "
+            "it produced in all. Use it to check a result without opening files. run_id defaults to "
+            "the latest run.",
+            {
+                "step": {"type": "string"},
+                "run_id": {"type": "string"},
+                "limit": {"type": "integer", "description": "default 5, at most 5"},
+            },
+            self.show_output,
+            required=["step"],
+        )
 
     def _add(
         self,
@@ -319,6 +365,58 @@ class Server:
 
     def connectors(self, args: dict) -> str:
         return assist.catalog()
+
+    def describe_connector(self, args: dict) -> str:
+        name = args["name"]
+        if name not in registry.names():
+            import difflib
+
+            close = difflib.get_close_matches(name, registry.names(), n=3)
+            raise KeyError(
+                f"no connector '{name}'" + (f"; did you mean {', '.join(close)}?" if close else "")
+            )
+        return registry.describe(name)
+
+    def list_templates(self, args: dict) -> list:
+        from . import templates
+
+        return [{"name": n, "does": templates.summary(n)} for n in templates.names()]
+
+    def new_from_template(self, args: dict) -> dict:
+        from . import templates
+
+        text = templates.text(args["name"])
+        path = Path(args["path"])
+        path = path if path.is_absolute() else self.root / path
+        if not path.resolve().is_relative_to(self.root):
+            raise ValueError(f"new_from_template only writes files under {self.root}")
+        if path.exists() and not args.get("overwrite"):
+            raise FileExistsError(f"{path} exists; pass overwrite: true to replace it")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {"path": str(path), "template": args["name"], "next": "edit paths and settings, then lint"}
+
+    def show_output(self, args: dict) -> dict:
+        with open_store(self.db) as store:
+            run_id = args.get("run_id")
+            if not run_id:
+                runs = store.runs(1)
+                if not runs:
+                    raise KeyError("no runs yet")
+                run_id = runs[0]["id"]
+            sample = store.sample(run_id, args["step"])
+            if sample is None:
+                raise KeyError(
+                    f"no output kept for step '{args['step']}' in run {run_id} (the step did not "
+                    "finish, or AGENTL_SAMPLES=0)"
+                )
+        limit = max(1, min(int(args.get("limit") or 5), 5))
+        return {
+            "run_id": run_id,
+            "step": args["step"],
+            "total": sample["total"],
+            "records": sample["records"][:limit],
+        }
 
     # ------------------------------------------------------------ protocol
     def handle(self, msg: dict) -> dict | None:

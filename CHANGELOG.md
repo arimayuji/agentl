@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- MCP tools for agents (#164): `list_templates` and `new_from_template` (a tested template written
+  under the server's root, no LLM call), `describe_connector` (one connector's parameters), and
+  `show_output` (the first records a step produced in a run). The runner keeps those first 5
+  records per step in the run store, values cut at 200 characters and secret values masked;
+  `AGENTL_SAMPLES=0` turns it off. `new_pipeline` is now described as the paid option.
+
 - `agentl mcp install --client claude-desktop|claude-code|cursor|vscode|windsurf [--project]`,
   `agentl mcp uninstall` and `agentl mcp status` (#162): set up the MCP server without editing
   JSON. Other entries are kept, a backup is written first, a second run changes nothing, and a
