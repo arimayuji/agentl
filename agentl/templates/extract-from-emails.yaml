@@ -1,0 +1,21 @@
+# Extract structured fields from free text (emails, chat messages, notes).
+name: extract-from-emails
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: emails
+    use: txt.read
+    with: { path: "emails/*.txt" }
+  - id: extract
+    input: emails
+    agent: Extract the customer name, the order number, the phone and what the customer wants (replacement, refund or other).
+    output:
+      customer: str
+      order: str?
+      phone: str?
+      wants: str
+  - id: save
+    use: json.write
+    input: extract
+    with: { path: out/requests.json }

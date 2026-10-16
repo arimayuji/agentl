@@ -1,0 +1,19 @@
+# Many short records: send 20 per call to cut cost and time.
+name: sentiment-in-batches
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: reviews
+    use: csv.read
+    with: { path: reviews.csv }
+  - id: sentiment
+    input: reviews
+    agent: "Sentiment of the review: positive, negative or neutral."
+    records_per_call: 20
+    output:
+      sentiment: str
+  - id: save
+    use: csv.write
+    input: sentiment
+    with: { path: out/reviews.csv }

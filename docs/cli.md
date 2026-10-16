@@ -11,6 +11,7 @@ agentl schema
 agentl diagram PIPELINE
 agentl runs
 agentl connectors [NAME]
+agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]

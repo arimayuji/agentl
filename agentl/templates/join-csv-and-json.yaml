@@ -1,0 +1,17 @@
+# Join records from two sources on a key and save the result.
+name: join-csv-and-json
+steps:
+  - id: orders
+    use: csv.read
+    with: { path: orders.csv }
+  - id: customers
+    use: json.read
+    with: { path: customers.json }
+  - id: joined
+    use: join
+    input: [orders, customers]
+    with: { left: orders, right: customers, on: customer_id, how: left }
+  - id: save
+    use: csv.write
+    input: joined
+    with: { path: out/orders-with-customers.csv }

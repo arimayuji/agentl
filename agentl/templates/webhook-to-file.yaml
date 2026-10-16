@@ -1,0 +1,13 @@
+# Run on every POST: `agentl serve pipeline.yaml`, then
+#   curl -X POST localhost:7071/hooks/leads -H "Authorization: Bearer $LEADS_HOOK_SECRET" -d '{"name": "Ana"}'
+name: webhook-to-file
+trigger:
+  - webhook: /hooks/leads
+    secret: "${LEADS_HOOK_SECRET:-change-me}"
+steps:
+  - id: received
+    use: trigger
+  - id: save
+    use: json.write
+    input: received
+    with: { path: out/leads.json }

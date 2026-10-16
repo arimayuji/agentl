@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `agentl new --list` and `agentl new --template NAME [-o FILE]` (#148): the 20 tested recipes ship
+  in the package as templates and are written with no LLM call; the skill starts from them. The
+  templates are copies of `examples/recipes` (`tools/sync_templates.py`), checked in CI.
+
 ### Changed
 
 - `agentl run` and the MCP `run_pipeline` tool check the pipeline first (#147): on an error the
