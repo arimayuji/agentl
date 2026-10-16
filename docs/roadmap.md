@@ -6,6 +6,11 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.10.0**: messaging everywhere, with a `.send` step and a `notify:` channel for WhatsApp, SMS,
+  Slack, Teams, Telegram, Discord, Google Chat, Mattermost, ntfy, Pushover, Matrix and email. Also
+  `agentl new --template` (the tested recipes, no LLM call), `agentl run` checking the pipeline
+  first, `agentl connectors <name>` and `sqlite.write` upsert. The agent benchmark gains jobs that
+  run twice.
 - **0.9.0**: for people and AI agents alike: `agentl validate` and `agentl lint` with every error,
   its line and its fix; `validate --connect` and `agentl plan` (calls and cost before a run);
   `agentl preview`; a short Python API for one-off jobs (`agentl.read`, `write`,
