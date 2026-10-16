@@ -166,6 +166,67 @@ Other databases will ship as plugins.
 | `dedupe` | `on` (name or list) | Keep the first record per key, in input order |
 | `join` | `left`, `right`, `on`, `how` (`inner`, `left`) | Join two inputs |
 | `concat` | | Append several inputs |
+| `cast` | `fields` (field: type), `locale`, `on_bad`, `strict` | Clean, typed values; bad rows rejected with the reason (below) |
+
+### Clean types: `cast`
+
+Most transform work is dirty data in known formats. `cast` turns it into clean values and moves
+the rows it cannot read to the step's rejected records, with the reason and the original value,
+instead of letting them crash a later step or reach the database.
+
+```yaml
+- id: clean
+  use: cast
+  input: sheet
+  with:
+    locale: pt-BR                       # numbers 1.234,56; dates day first when nothing tells
+    on_bad: reject                      # or fail (stop the run), keep (leave the original value)
+    fields:
+      nome: name                        # " joão DA silva " -> "João da Silva"
+      valor: { money: BRL }             # "R$ 1.234,56" -> 1234.56
+      data: date                        # "15/10/26", "3 out 2026", 46310 (Excel) -> "2026-10-15"
+      criado_em: { datetime: America/Sao_Paulo }
+      cpf: cpf                          # digits only; check digits verified
+      cep: cep                          # "01310100" -> "01310-100"
+      telefone: phone                   # "(11) 98765-4321" -> "+5511987654321"
+      ativo: bool                       # sim, s, x, true, 1 / não, n, false, 0
+      status: { enum: [pago, pendente], synonyms: { pago: [paid, quitado] } }
+```
+
+| Type | Reads | Gives |
+|---|---|---|
+| `int`, `decimal` | `1.234,56` (pt-BR), `1,234.56` (en-US), `(10,00)` negative | number |
+| `money` | `R$ 1.234,56`, `US$ 10`, `2.300 BRL` (`{money: BRL}`) | number, 2 decimals |
+| `percent` | `12,5%`, `0.3`, `30` | fraction (0.125) |
+| `date` | ISO, `15/10/2026`, `15/10/26`, `15.10.2026`, `3 out 2026`, `3 de outubro de 2026`, `Oct 15, 2026`, `15th October 2026`, Excel serials | `2026-10-15` |
+| `datetime` | the above with a time, ISO with zone, epoch seconds or ms (`{datetime: <IANA zone>}` for naive values) | ISO with offset |
+| `bool` | `sim`/`não`, `s`/`n`, `x`, `true`/`false`, `1`/`0` | true / false |
+| `enum` | the values and their synonyms, without case or accents | the value |
+| `text`, `name` | anything: trimmed, spaces collapsed, NFC; `name` also title case (da, de, do in lower case) | text |
+| `email` | addresses, lower-cased | text |
+| `cpf`, `cnpj` | with or without punctuation; check digits verified | digits |
+| `cep`, `uf` | `01310100`, `sp` | `01310-100`, `SP` |
+| `phone` | Brazilian numbers with area code; US and Canada with `{phone: US}`; or `+` international | E.164 |
+| `state`, `zip` | `ca`, `California`; `94103`, `941031234` | `CA`; `94103`, `94103-1234` |
+| `ein`, `ssn` | `12-3456789`; `123 45 6789` (format only, see below) | `12-3456789`; `123-45-6789` |
+
+Rules, so nothing is guessed silently:
+
+- **Empty is null**, not an error (a blank CPF is null, not a rejection).
+- **Dates are read in one order per column.** A value like `25/02` means the column is day first,
+  `02/25` month first; a column with both fails. When nothing tells (`01/02`), the locale decides
+  (pt-BR day first, en-US month first), or `strict: true` stops instead.
+- **Impossible values are rejected, never fixed**: `31/02/2026`, a CPF with wrong check digits.
+- **Numbers in pt-BR**: a dot followed by exactly three digits is a thousands separator
+  (`1.050` is 1050); any other single dot is a decimal point (`99.9`).
+- Dates and times come out as ISO text, so every writer stores the same thing.
+- **US data**: set `locale: en-US` (`1,234.56`, month-first dates when nothing tells). `ssn` and
+  `ein` check the format only (an SSN with a never-issued range such as 000 or 666 is refused);
+  they do not say a number belongs to anyone, and a rejection reason never repeats an SSN. These
+  are personal data: the run store keeps the first records of each step for `show_output`, so set
+  `AGENTL_SAMPLES=0` for such pipelines.
+- Your own formats: `agentl.types.register_type("sku", parse)`, where `parse(value)` returns the
+  clean value or raises `ValueError` with the reason.
 
 ## AWS Lambda
 
