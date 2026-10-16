@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Quarantine for rejected records (#180): records rejected by agent steps, `cast`, `compute` and
+  other connectors are kept in the run store (`rejected` / `agentl_rejected`) with run id, step,
+  reason and the raw record, secrets masked. `agentl rejected list|show` lists them and
+  `agentl rejected retry PIPELINE --step S` runs only those records through the step and
+  downstream, using the agent cache. `AGENTL_QUARANTINE=0` turns storage off.
 - `flatten`, `explode`, `pivot` and `unpivot` steps; `join` on several keys (`on: [a, b]` or
   `left_on` / `right_on`), `how: right|outer` and `suffixes`, with an error naming a missing key;
   `dedupe keep: first|last|{latest: field}` (#120).

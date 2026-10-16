@@ -90,6 +90,43 @@ def _mcp_install(a: argparse.Namespace) -> int:
         return 1
 
 
+def _rejected(a: argparse.Namespace) -> int:
+    from .runner import retry_rejected
+
+    with open_store(a.db) as store:
+        if a.action == "list":
+            rows = store.rejected_list(a.pipeline, a.step, pending=not a.all)[-a.n :]
+            for row in rows:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                done = f"  retried by {row['retried_by']}" if row["retried_by"] else ""
+                print(f"{row['id']}  {row['pipeline']}  {row['step']}  {when}  {row['error'] or ''}{done}")
+            if not rows:
+                print("no rejected records stored")
+            return 0
+        if a.action == "show":
+            if not a.target or not a.target.isdigit():
+                print(
+                    "agentl rejected show needs a rejected record id (see agentl rejected list)",
+                    file=sys.stderr,
+                )
+                return 2
+            found = store.rejected_get(int(a.target))
+            if found is None:
+                print(f"no rejected record {a.target}", file=sys.stderr)
+                return 1
+            print(json.dumps(found, ensure_ascii=False, indent=2, default=str))
+            return 0
+        if not a.target:
+            print("agentl rejected retry needs the pipeline file", file=sys.stderr)
+            return 2
+        spec = load(a.target)
+        result = retry_rejected(spec, store, a.step, listeners=_listeners(a))
+    if result is None:
+        print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
+        return 0
+    return 0 if result.status == "succeeded" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -187,6 +224,19 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("action", choices=["show", "reset"])
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
+
+    rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
+    rj.add_argument("action", choices=["list", "show", "retry"])
+    rj.add_argument("target", nargs="?", help="show: the rejected record id; retry: the pipeline file")
+    rj.add_argument("--pipeline", help="list: only this pipeline (by name)")
+    rj.add_argument("--step", help="list / retry: only this step")
+    rj.add_argument("--all", action="store_true", help="list: also records already retried")
+    rj.add_argument("-n", type=int, default=50, help="list: at most this many (default 50)")
+    rj.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    rj.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    rj.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
 
     sv = cmd("serve", "run pipelines on their triggers: schedules, webhooks and new files")
     sv.add_argument("pipelines", nargs="+")
@@ -371,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "rejected":
+            return _rejected(a)
         if a.cmd == "serve":
             import logging
 

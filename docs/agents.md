@@ -28,6 +28,8 @@ A trailing `?` makes the field optional.
 
 The model's answer is validated against the schema. A record that fails validation is retried once,
 then rejected: the run continues and an `item.rejected` event reports how many records failed.
+Rejected records are kept in the run store to list and retry: see
+[Rejected records](cli.md#rejected-records).
 
 ## Providers
 

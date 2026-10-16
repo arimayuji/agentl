@@ -187,8 +187,11 @@ class Runner:
         use_cache: bool = True,
         listeners: list[Listener] | None = None,
         trigger: list[dict] | None = None,
+        replay: dict[str, Records] | None = None,
     ):
         self.spec = spec
+        # step id -> records that step runs on instead of its inputs (retry of rejected records)
+        self.replay = dict(replay or {})
         self.trigger = list(trigger or [])  # what started this run; a `use: trigger` step reads it
         self.store = store or open_store()
         self.use_cache = use_cache
@@ -542,6 +545,7 @@ class Runner:
                 bad.append(rejected)
         if bad:
             result.rejected.setdefault(step.id, []).extend(bad)  # chunked steps add per chunk
+            self._quarantine(run_id, step.id, bad)
             self._emit(
                 run_id,
                 "item.rejected",
@@ -559,7 +563,9 @@ class Runner:
         refs = step.inputs
         raw = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
         data: Any = None
-        if len(refs) == 1:
+        if step.id in self.replay:
+            data = self.replay[step.id]
+        elif len(refs) == 1:
             data = raw(refs[0])
         elif refs:
             data = {r: outputs[r] for r in refs}
@@ -595,6 +601,7 @@ class Runner:
         if isinstance(out, registry.Rejects) and out.rejected:
             bad = out.rejected
             result.rejected.setdefault(step.id, []).extend(bad)
+            self._quarantine(run_id, step.id, bad)
             total = len(out) + len(bad)
             self._emit(
                 run_id,
@@ -834,6 +841,20 @@ class Runner:
             rows = [_clip_record(_mask_values(r, hidden) if hidden else r) for r in head]
             self.store.sample_set(run_id, step_id, rows, len(out))
         except Exception:  # a sample is a convenience; it never fails a run
+            pass
+
+    def _quarantine(self, run_id: str, step_id: str, bad: Records) -> None:
+        """Keep rejected records in the store, whole and with their reason, to list and retry them
+        (#180). Secret values are masked as in samples; AGENTL_QUARANTINE=0 turns it off."""
+        if os.environ.get("AGENTL_QUARANTINE", "1").lower() in ("0", "false", "no"):
+            return
+        try:
+            from . import secrets
+
+            hidden = secrets.sensitive()
+            rows = [_mask_values(r, hidden) for r in bad] if hidden else list(bad)
+            self.store.rejected_add(run_id, self.spec.name, step_id, rows)
+        except Exception:  # like samples, the quarantine never fails a run
             pass
 
     # chunked execution ----------------------------------------------------
@@ -1122,6 +1143,61 @@ def _batch_instruction(instruction: str, n: int) -> str:
         '"index". Apply the instruction to each record on its own and answer with exactly one '
         f'item per record in "items", with the same index ({n} items).'
     )
+
+
+def _downstream(spec: PipelineSpec, step_id: str) -> list[StepSpec]:
+    """The steps a retry of `step_id` runs: the step, every step downstream of it, and whatever
+    those also read from outside that set (other branches of a join run again, from their cache)."""
+    below = {step_id}
+    changed = True
+    while changed:
+        changed = False
+        for s in spec.steps:
+            if s.id not in below and below & set(s.inputs):
+                below.add(s.id)
+                changed = True
+    keep = set(below)
+    todo = [ref for s in spec.steps if s.id in below and s.id != step_id for ref in s.inputs]
+    while todo:
+        ref = todo.pop()
+        if ref not in keep:
+            keep.add(ref)
+            todo.extend(spec.step(ref).inputs)
+    return [s for s in spec.steps if s.id in keep]
+
+
+def retry_rejected(
+    spec: PipelineSpec,
+    store: Store,
+    step: str | None = None,
+    ids: list[int] | None = None,
+    **kwargs: Any,
+) -> RunResult | None:
+    """Run the pending rejected records of one step again, through that step and the steps
+    downstream of it, in a new run. Records that passed are not run again, and agent steps keep
+    their per-record cache. Retried records are marked with the new run id when it succeeds;
+    records rejected again go back to the quarantine under the new run. None: nothing to retry."""
+    rows = store.rejected_list(spec.name, step, pending=True)
+    if ids is not None:
+        rows = [r for r in rows if r["id"] in set(ids)]
+    if not rows:
+        return None
+    steps = sorted({r["step"] for r in rows})
+    if len(steps) > 1:
+        raise ValueError(f"rejected records of several steps ({', '.join(steps)}): pick one with --step")
+    step_id = steps[0]
+    if step_id not in {s.id for s in spec.steps}:
+        raise ValueError(f"step '{step_id}' is not in pipeline '{spec.name}'")
+    hidden = {"_error", "_raw"}
+    records = [{k: v for k, v in r["record"].items() if k not in hidden} for r in rows]
+    picked = [
+        s.model_copy(update={"input": None}) if s.id == step_id else s for s in _downstream(spec, step_id)
+    ]
+    sub = spec.model_copy(update={"steps": picked, "chunk_size": None, "arrow": False, "trigger": []})
+    result = Runner(sub, store=store, replay={step_id: records}, **kwargs).run()
+    if result.status == "succeeded":
+        store.rejected_retried([r["id"] for r in rows], result.run_id)
+    return result
 
 
 class PipelineFailed(RuntimeError):

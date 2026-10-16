@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS state (
 CREATE TABLE IF NOT EXISTS samples (
   run_id TEXT, step TEXT, records TEXT, total INTEGER, PRIMARY KEY (run_id, step)
 );
+CREATE TABLE IF NOT EXISTS rejected (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, pipeline TEXT, step TEXT, ts REAL,
+  error TEXT, record TEXT, retried_by TEXT
+);
+CREATE INDEX IF NOT EXISTS rejected_pipeline ON rejected(pipeline, step);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -51,6 +56,10 @@ POSTGRES_SCHEMA = [
       PRIMARY KEY (pipeline, step))""",
     """CREATE TABLE IF NOT EXISTS agentl_samples (
       run_id TEXT, step TEXT, records JSONB, total INTEGER, PRIMARY KEY (run_id, step))""",
+    """CREATE TABLE IF NOT EXISTS agentl_rejected (
+      id BIGSERIAL PRIMARY KEY, run_id TEXT, pipeline TEXT, step TEXT, ts DOUBLE PRECISION,
+      error TEXT, record JSONB, retried_by TEXT)""",
+    "CREATE INDEX IF NOT EXISTS agentl_rejected_pipeline ON agentl_rejected(pipeline, step)",
 ]
 
 
@@ -63,9 +72,13 @@ class Store:
         "cache": "cache",
         "state": "state",
         "samples": "samples",
+        "rejected": "rejected",
     }
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts) VALUES (?, ?, ?)"
     UPSERT_STATE = "INSERT OR REPLACE INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?, ?, ?)"
+    INSERT_REJECTED = (
+        "INSERT INTO {rejected} (run_id, pipeline, step, ts, error, record) VALUES (?, ?, ?, ?, ?, ?)"
+    )
     UPSERT_SAMPLE = "INSERT OR REPLACE INTO {samples} (run_id, step, records, total) VALUES (?, ?, ?, ?)"
 
     def __init__(self, path: str | Path = DEFAULT_DB):
@@ -187,6 +200,51 @@ class Store:
             return None
         return {"records": self._load(rows[0]["records"]), "total": rows[0]["total"]}
 
+    # quarantine: rejected records, kept to list and retry (#180)
+    def rejected_add(self, run_id: str, pipeline: str, step: str, records: list[dict]) -> None:
+        now = time.time()
+        for r in records:
+            error = r.get("_error") if isinstance(r, dict) else None
+            row = (run_id, pipeline, step, now, None if error is None else str(error))
+            self._exec(self.INSERT_REJECTED, (*row, json.dumps(r, default=str)))
+
+    def rejected_list(
+        self,
+        pipeline: str | None = None,
+        step: str | None = None,
+        pending: bool = False,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Rejected records, oldest first. `pending`: only the ones no retry has taken yet."""
+        where: list[str] = []
+        params: list[Any] = []
+        if pipeline:
+            where.append("pipeline = ?")
+            params.append(pipeline)
+        if step:
+            where.append("step = ?")
+            params.append(step)
+        if pending:
+            where.append("retried_by IS NULL")
+        sql = "SELECT id, run_id, pipeline, step, ts, error, record, retried_by FROM {rejected}"
+        sql += (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._query(sql, tuple(params))
+        return [{**r, "record": self._load(r["record"])} for r in rows]
+
+    def rejected_get(self, rejected_id: int) -> dict | None:
+        rows = self._query(
+            "SELECT id, run_id, pipeline, step, ts, error, record, retried_by FROM {rejected} WHERE id = ?",
+            (rejected_id,),
+        )
+        return {**rows[0], "record": self._load(rows[0]["record"])} if rows else None
+
+    def rejected_retried(self, ids: list[int], run_id: str) -> None:
+        for i in ids:
+            self._exec("UPDATE {rejected} SET retried_by = ? WHERE id = ?", (run_id, i))
+
     def run(self, run_id: str) -> dict | None:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
         return rows[0] if rows else None
@@ -200,7 +258,8 @@ class Store:
 
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
-    Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state."""
+    Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state,
+    agentl_samples, agentl_rejected."""
 
     T: ClassVar[dict[str, str]] = {
         "runs": "agentl_runs",
@@ -208,6 +267,7 @@ class PostgresStore(Store):
         "cache": "agentl_cache",
         "state": "agentl_state",
         "samples": "agentl_samples",
+        "rejected": "agentl_rejected",
     }
     UPSERT_CACHE = (
         "INSERT INTO {cache} (key, value, ts) VALUES (?, ?::jsonb, ?) "
@@ -217,6 +277,9 @@ class PostgresStore(Store):
         "INSERT INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?::jsonb, ?, ?) "
         "ON CONFLICT (pipeline, step) DO UPDATE SET value = EXCLUDED.value, run_id = EXCLUDED.run_id, "
         "ts = EXCLUDED.ts"
+    )
+    INSERT_REJECTED = (
+        "INSERT INTO {rejected} (run_id, pipeline, step, ts, error, record) VALUES (?, ?, ?, ?, ?, ?::jsonb)"
     )
     UPSERT_SAMPLE = (
         "INSERT INTO {samples} (run_id, step, records, total) VALUES (?, ?, ?::jsonb, ?) "
