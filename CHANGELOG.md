@@ -9,43 +9,46 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-16
+
 ### Added
 
+- Messaging everywhere: a `.send` step and a `notify:` channel per service, from one sender each
+  (#145, #146).
+  - Steps: `discord.send`, `slack.send`, `mattermost.send`, `teams.send`, `googlechat.send`,
+    `telegram.send`, `whatsapp.send`, `sms.send`, `ntfy.send`, `pushover.send`, `matrix.send` and
+    `email.send`.
+  - `whatsapp.send` uses the WhatsApp Cloud API, with free text or approved templates. `sms.send`
+    uses Twilio, which also reaches WhatsApp.
+  - New `notify:` channels: `whatsapp`, `sms`, `googlechat`, `mattermost`, `ntfy`, `pushover`,
+    `matrix`.
+  - Every step has `{field}` templates, one message per record or packed into few, a
+    `max_messages` cap, and retries that honour rate limits. Mentions coming from data are defused.
+  - `lint` counts the steps as delivering steps and flags a webhook URL written in the pipeline.
 - `agentl new --list` and `agentl new --template NAME [-o FILE]` (#148): the 20 tested recipes ship
-  in the package as templates and are written with no LLM call; the skill starts from them. The
-  templates are copies of `examples/recipes` (`tools/sync_templates.py`), checked in CI.
-
-### Changed
-
-- `agentl run` and the MCP `run_pipeline` tool check the pipeline first (#147): on an error the
-  run does not start, and only the first error is shown with its line and fix (`--no-check`, or
-  `no_check` in MCP, skips it). The skill drops the separate lint step.
-
-### Added
-
-- `discord.send`: post records to a Discord channel through a webhook, one message per record or
-  packed into few, with `{field}` templates, embeds, mentions off, rate limits honoured and a
-  `max_messages` cap (#145). `lint` counts it as a delivering step and flags a webhook URL written
-  in the pipeline.
-- Messaging everywhere (#146): `slack.send`, `mattermost.send`, `teams.send`, `googlechat.send`,
-  `telegram.send`, `whatsapp.send` (WhatsApp Cloud API, free text or approved templates),
-  `sms.send` (Twilio, also WhatsApp through Twilio), `ntfy.send`, `pushover.send`, `matrix.send`
-  and `email.send`. They share templates, each/batch, the `max_messages` cap and retries, and the
-  new services are `notify:` channels too: `whatsapp`, `sms`, `googlechat`, `mattermost`, `ntfy`,
-  `pushover`, `matrix`.
+  in the package as templates and are written with no LLM call. The templates are copies of
+  `examples/recipes` (`tools/sync_templates.py`), checked in CI.
+- `agentl connectors <name>` prints a connector's `with:` parameters, types, defaults and notes,
+  so an agent writes the step without guessing (#143). `http.get` and `filter` document their
+  options.
 - `sqlite.write` takes `mode: upsert` with `key`: a record replaces the row with the same key, so
   incremental loads into SQLite need no SQLAlchemy (#143).
-- `agentl connectors <name>` prints a connector's `with:` parameters, types, defaults and notes,
-  so an agent writes the step without guessing; `http.get` and `filter` document their options.
-- Agent benchmark (#143): three tasks that run twice, where a pipeline should win (re-run with
-  new records, resume after an LLM outage, incremental API load), against a local fake LLM that
-  counts calls; arms `agentl` (the agent picks script or pipeline), `agentl-pipeline` and
-  `agentl-python`; the report shows what the second run paid for and tokens without cache reads.
+- Agent benchmark: three tasks that run twice, where a pipeline should win (#143). They re-run
+  with new records, resume after an LLM outage and load incrementally from an API.
+  - They run against a local fake LLM that counts calls.
+  - New arms: `agentl` (the agent picks a script or a pipeline), `agentl-pipeline` and
+    `agentl-python`.
+  - The report shows what the second run paid for and tokens without cache reads. An unknown
+    `--tasks` name stops the run.
+- Promo, terminal and notification videos in `media/launch-video`, with synthesized audio (#142).
 
 ### Changed
 
-- The agentl skill no longer points to web pages an agent may not reach: it shows a files-and-API
-  pipeline without an LLM next to the LLM one, and `agentl connectors <name>` for parameters.
+- `agentl run` and the MCP `run_pipeline` tool check the pipeline first (#147). On an error the
+  run does not start, and only the first error is shown with its line and fix. `--no-check`, or
+  `no_check` in MCP, skips the check.
+- The agentl skill starts from a template and drops the separate lint step. It no longer points to
+  web pages an agent may not reach.
 
 ## [0.9.0] - 2026-10-15
 
@@ -429,7 +432,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/arimayuji/agentl/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/arimayuji/agentl/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/arimayuji/agentl/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/arimayuji/agentl/compare/v0.7.0...v0.8.0
