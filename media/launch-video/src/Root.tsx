@@ -4,6 +4,7 @@ import { CLIP_FPS, CLIP_FRAMES, CLIP_H, CLIP_W, CLIPS } from "./Clips";
 import { Compress, COMPRESS_FRAMES } from "./Compress";
 import { Launch, LAUNCH_FRAMES } from "./Launch";
 import { Notify, NOTIFY_FPS, NOTIFY_FRAMES } from "./Notify";
+import { CLIP_X_FPS, CLIP_X_SIZE, MILLION_FRAMES, Million, PAY_TWICE_FRAMES, PayTwice } from "./XClips";
 import { Promo, PROMO_FPS, PROMO_FRAMES } from "./Promo";
 import { Terminal, TERMINAL_FPS, TERMINAL_FRAMES } from "./Terminal";
 import { FPS, H, W } from "./theme";
@@ -41,6 +42,8 @@ export const Root: React.FC = () => (
     <Composition id="TerminalVertical" component={Terminal} durationInFrames={TERMINAL_FRAMES} fps={TERMINAL_FPS} width={1080} height={1920} />
     <Composition id="Notify" component={Notify} durationInFrames={NOTIFY_FRAMES} fps={NOTIFY_FPS} width={1920} height={1080} />
     <Composition id="NotifyVertical" component={Notify} durationInFrames={NOTIFY_FRAMES} fps={NOTIFY_FPS} width={1080} height={1920} />
+    <Composition id="XPayTwice" component={PayTwice} durationInFrames={PAY_TWICE_FRAMES} fps={CLIP_X_FPS} width={CLIP_X_SIZE} height={CLIP_X_SIZE} />
+    <Composition id="XMillion" component={Million} durationInFrames={MILLION_FRAMES} fps={CLIP_X_FPS} width={CLIP_X_SIZE} height={CLIP_X_SIZE} />
     <Composition id="LaunchPreview" component={Launch} durationInFrames={LAUNCH_FRAMES} fps={FPS} width={W} height={H} />
   </>
 );

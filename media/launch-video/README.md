@@ -77,3 +77,17 @@ failure buzz come from `scripts/sfx.py`. Sample output, labelled.
 npm run render:notify            # out/agentl-notify.mp4
 npm run render:notify-vertical   # out/agentl-notify-vertical.mp4
 ```
+
+## Square clips for X
+
+`XPayTwice` and `XMillion` (`src/XClips.tsx`, 1080x1080, 11 and 12 s) autoplay muted in the feed, so
+the text on screen carries the story. Numbers are formatted for a Brazilian audience (US$ 0,12).
+
+- `XPayTwice`: a plain script pays again for the same 500 records; agentl answers from the cache.
+  Sample numbers, labelled on screen.
+- `XMillion`: the 1M-row CSV → filter → SQLite race from `python -m benchmarks --compare` (#157), with
+  peak memory. Post it once the release with those optimisations is out.
+
+```bash
+npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4
+```
