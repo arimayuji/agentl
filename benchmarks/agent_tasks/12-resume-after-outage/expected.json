@@ -1,0 +1,166 @@
+{
+ "output": "out/result.json",
+ "key": "id",
+ "records": [
+  {
+   "id": "R-001",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-002",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-003",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-004",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-005",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-006",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-007",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-008",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-009",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-010",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-011",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-012",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-013",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-014",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-015",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-016",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-017",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-018",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-019",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-020",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-021",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-022",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-023",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-024",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-025",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-026",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-027",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-028",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-029",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-030",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-031",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-032",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-033",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-034",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-035",
+   "sentiment": "positive"
+  },
+  {
+   "id": "R-036",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-037",
+   "sentiment": "neutral"
+  },
+  {
+   "id": "R-038",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-039",
+   "sentiment": "negative"
+  },
+  {
+   "id": "R-040",
+   "sentiment": "positive"
+  }
+ ]
+}

@@ -27,6 +27,26 @@ npm run render:compress   # out/agentl-compress.mp4 (1920x1080, 60 fps, 29 s)
 
 The terminal output in the "run" scene is illustrative and labelled as sample output.
 
+## 30-second promo
+
+`Promo` (1920x1080) and `PromoVertical` (1080x1920, for Reels and Shorts) share one component in
+`src/Promo.tsx`, in the Carioca palette of `media/brand`. Six scenes: scattered data, the YAML,
+a run, the re-run that the per-record cache answers for $0, the result, the install command.
+
+```bash
+npm run render:promo            # out/agentl-promo.mp4 (30 fps, 30 s)
+npm run render:promo-vertical   # out/agentl-promo-vertical.mp4
+```
+
+The run numbers are sample output and labelled as such on screen.
+
+`Terminal` and `TerminalVertical` (`src/Terminal.tsx`, 16 s): one fixed terminal where `lint`, `plan`,
+`run` and a cached re-run stream in line by line, with entry and exit effects
+(`npm run render:terminal`, `npm run render:terminal-vertical`). Sample output, labelled.
+Its typing sounds are synthesized by `python3 scripts/sfx.py` into `public/sfx` (no third-party audio).
+All videos play a quiet lo-fi loop (electric piano, bass, brushed drums, vinyl), `public/sfx/music.mp3`,
+synthesized by `python3 scripts/music.py`.
+
 ## Web version
 
 The site uses a smaller encode of the master render:
@@ -45,3 +65,15 @@ ffmpeg -i out/agentl-launch.mp4 -vf scale=1280:-2 -c:v libvpx-vp9 -b:v 0 -crf 38
 - Numbers shown in the run scene are illustrative.
 
 Remotion is free for individuals and small teams; check its license before using it in a larger company.
+
+## Notifications video
+
+`Notify` and `NotifyVertical` (`src/Notify.tsx`, 15 s): the `notify:` block, a run that fails, and
+the alert piling up in a notification feed from WhatsApp, Slack, Telegram, SMS, Discord, Teams,
+ntfy and email, each with a chime. Services are named color chips, not their logos (trademarks). Chimes and the
+failure buzz come from `scripts/sfx.py`. Sample output, labelled.
+
+```bash
+npm run render:notify            # out/agentl-notify.mp4
+npm run render:notify-vertical   # out/agentl-notify-vertical.mp4
+```

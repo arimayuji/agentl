@@ -36,12 +36,24 @@ def _quote(name: str) -> str:
 
 @stream_writer("sqlite.write")
 def sqlite_write_chunks(
-    chunks: Iterable[list[dict]], db: str = "", table: str = "", mode: str = "append"
+    chunks: Iterable[list[dict]],
+    db: str = "",
+    table: str = "",
+    mode: str = "append",
+    key: str | list[str] | None = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. Columns that first appear in a later chunk are added
-    to the table."""
+    to the table. `mode`: append, replace (drop the table first) or upsert (rows whose `key`
+    columns match an existing row replace it)."""
     if not table.replace("_", "").isalnum():
         raise ValueError(f"invalid table name '{table}'")
+    if mode not in ("append", "replace", "upsert"):
+        raise ValueError(f"sqlite.write mode must be append, replace or upsert, got {mode!r}")
+    keys = [key] if isinstance(key, str) else list(key or [])
+    if mode == "upsert" and not keys:
+        raise ValueError(
+            "sqlite.write mode: upsert needs `key` (the column, or columns, that identify a row)"
+        )
     written = 0
     cols: list[str] = []
     if db and db != ":memory:":
@@ -63,6 +75,12 @@ def sqlite_write_chunks(
                     if c not in have:
                         conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_quote(c)}')
                 cols.extend(new)
+            if rows and mode == "upsert":
+                rows = list({tuple(r.get(k) for k in keys): r for r in rows}.values())  # last one wins
+                where = " AND ".join(f"{_quote(k)} IS ?" for k in keys)
+                conn.executemany(
+                    f'DELETE FROM "{table}" WHERE {where}', [[r.get(k) for k in keys] for r in rows]
+                )
             if rows:
                 names = ", ".join(map(_quote, cols))
                 ph = ", ".join("?" for _ in cols)
@@ -74,5 +92,9 @@ def sqlite_write_chunks(
 
 
 @connector("sqlite.write")
-def sqlite_write(input: Any, db: str = "", table: str = "", mode: str = "append") -> list[dict]:
-    return sqlite_write_chunks([single(input)], db=db, table=table, mode=mode)
+def sqlite_write(
+    input: Any, db: str = "", table: str = "", mode: str = "append", key: str | list[str] | None = None
+) -> list[dict]:
+    """Write records to a SQLite table, created (and widened) as needed. `mode`: append (default),
+    replace, or upsert with `key: id` (a record replaces the row with the same key)."""
+    return sqlite_write_chunks([single(input)], db=db, table=table, mode=mode, key=key)

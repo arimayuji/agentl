@@ -1,0 +1,172 @@
+{
+ "output": "out/events.db",
+ "table": "events",
+ "key": "id",
+ "records": [
+  {
+   "id": "E-001",
+   "status": "paid",
+   "updated_at": "2026-10-01T08:10:00"
+  },
+  {
+   "id": "E-002",
+   "status": "paid",
+   "updated_at": "2026-10-01T08:20:00"
+  },
+  {
+   "id": "E-003",
+   "status": "paid",
+   "updated_at": "2026-10-01T08:30:00"
+  },
+  {
+   "id": "E-004",
+   "status": "refunded",
+   "updated_at": "2026-10-02T09:00:00"
+  },
+  {
+   "id": "E-005",
+   "status": "refunded",
+   "updated_at": "2026-10-02T09:00:00"
+  },
+  {
+   "id": "E-006",
+   "status": "open",
+   "updated_at": "2026-10-01T09:00:00"
+  },
+  {
+   "id": "E-007",
+   "status": "open",
+   "updated_at": "2026-10-01T09:10:00"
+  },
+  {
+   "id": "E-008",
+   "status": "open",
+   "updated_at": "2026-10-01T09:20:00"
+  },
+  {
+   "id": "E-009",
+   "status": "shipped",
+   "updated_at": "2026-10-01T09:30:00"
+  },
+  {
+   "id": "E-010",
+   "status": "paid",
+   "updated_at": "2026-10-01T09:40:00"
+  },
+  {
+   "id": "E-011",
+   "status": "shipped",
+   "updated_at": "2026-10-01T09:50:00"
+  },
+  {
+   "id": "E-012",
+   "status": "paid",
+   "updated_at": "2026-10-01T10:00:00"
+  },
+  {
+   "id": "E-013",
+   "status": "paid",
+   "updated_at": "2026-10-01T10:10:00"
+  },
+  {
+   "id": "E-014",
+   "status": "shipped",
+   "updated_at": "2026-10-01T10:20:00"
+  },
+  {
+   "id": "E-015",
+   "status": "open",
+   "updated_at": "2026-10-01T10:30:00"
+  },
+  {
+   "id": "E-016",
+   "status": "shipped",
+   "updated_at": "2026-10-01T10:40:00"
+  },
+  {
+   "id": "E-017",
+   "status": "open",
+   "updated_at": "2026-10-01T10:50:00"
+  },
+  {
+   "id": "E-018",
+   "status": "open",
+   "updated_at": "2026-10-01T11:00:00"
+  },
+  {
+   "id": "E-019",
+   "status": "shipped",
+   "updated_at": "2026-10-01T11:10:00"
+  },
+  {
+   "id": "E-020",
+   "status": "paid",
+   "updated_at": "2026-10-01T11:20:00"
+  },
+  {
+   "id": "E-021",
+   "status": "open",
+   "updated_at": "2026-10-01T11:30:00"
+  },
+  {
+   "id": "E-022",
+   "status": "shipped",
+   "updated_at": "2026-10-01T11:40:00"
+  },
+  {
+   "id": "E-023",
+   "status": "shipped",
+   "updated_at": "2026-10-01T11:50:00"
+  },
+  {
+   "id": "E-024",
+   "status": "open",
+   "updated_at": "2026-10-01T12:00:00"
+  },
+  {
+   "id": "E-025",
+   "status": "shipped",
+   "updated_at": "2026-10-01T12:10:00"
+  },
+  {
+   "id": "E-026",
+   "status": "paid",
+   "updated_at": "2026-10-01T12:20:00"
+  },
+  {
+   "id": "E-027",
+   "status": "shipped",
+   "updated_at": "2026-10-01T12:30:00"
+  },
+  {
+   "id": "E-028",
+   "status": "open",
+   "updated_at": "2026-10-01T12:40:00"
+  },
+  {
+   "id": "E-029",
+   "status": "shipped",
+   "updated_at": "2026-10-01T12:50:00"
+  },
+  {
+   "id": "E-030",
+   "status": "paid",
+   "updated_at": "2026-10-01T13:00:00"
+  },
+  {
+   "id": "E-031",
+   "status": "open",
+   "updated_at": "2026-10-02T09:31:00"
+  },
+  {
+   "id": "E-032",
+   "status": "open",
+   "updated_at": "2026-10-02T09:32:00"
+  },
+  {
+   "id": "E-033",
+   "status": "open",
+   "updated_at": "2026-10-02T09:33:00"
+  }
+ ]
+}

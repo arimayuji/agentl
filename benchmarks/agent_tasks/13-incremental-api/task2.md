@@ -1,0 +1,1 @@
+An hour later: the API at {api_url}/events has new events and some events changed. Run the events job in this folder again so out/events.db (table events) holds every event in its latest state, one row per id. The API bills per record it returns.

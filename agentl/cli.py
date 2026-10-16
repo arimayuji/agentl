@@ -99,7 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("pipeline")
 
     cmd("runs", "list recent runs")
-    cmd("connectors", "list installed connectors")
+    co = cmd("connectors", "list installed connectors, or show one connector's parameters")
+    co.add_argument("name", nargs="?", help="a connector, e.g. http.get: prints its `with:` parameters")
 
     n = cmd("new", "write a pipeline from a description (asks an LLM, then validates)")
     n.add_argument("description")
@@ -216,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
-            print("\n".join(registry.names()))
+            print(registry.describe(a.name) if a.name else "\n".join(registry.names()))
             return 0
         if a.cmd == "new":
             text, spec = assist.new_pipeline(

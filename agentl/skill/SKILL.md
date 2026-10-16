@@ -37,11 +37,8 @@ Python. URLs to private addresses are refused unless `AGENTL_ALLOW_HOSTS` allows
 
 ## Pipelines: write, check, run
 
-Start from the closest of 20 tested recipes (PDF invoices to Excel, paginated API to a database,
-incremental loads, emails to fields, webhooks, schedules): https://agentl.com.br/recipes/
-
-1. Write `pipeline.yaml` (shape below). List connectors and their parameters with
-   `agentl connectors`; never invent one.
+1. Write `pipeline.yaml` (shapes below). `agentl connectors` lists the connectors and
+   `agentl connectors http.get` shows one's `with:` parameters; never invent one.
 2. `agentl lint pipeline.yaml --format json` and fix every finding. Each has `line`, `code` and
    `fix`. Errors (`AE...`) block the run; warnings (`AL...`) are best practices.
 3. If the pipeline calls a paid LLM on many records: `agentl plan pipeline.yaml` shows the LLM
@@ -53,7 +50,29 @@ incremental loads, emails to fields, webhooks, schedules): https://agentl.com.br
 With the MCP server (`agentl mcp`) the same steps are tools: `lint`, `preview_step`, `plan`,
 `run_pipeline`, `doctor`, `list_failures`, `pipeline_stats`.
 
-## Pipeline shape
+## Pipeline shapes
+
+Files and APIs, no LLM:
+
+```yaml
+name: products
+steps:
+  - id: products
+    use: http.get
+    with:
+      url: https://api.example.com/products
+      items: data                                  # the list inside each response
+      paginate: { param: page, next: next_page }   # every page, until next_page is empty
+  - id: in_stock
+    fn: steps:in_stock          # steps.py next to the pipeline: def in_stock(input=None): return [...]
+    input: products
+  - id: save
+    use: json.write             # csv.write, excel.write, parquet.write, postgres.write, ...
+    input: in_stock
+    with: { path: out/products.json }
+```
+
+With an LLM step:
 
 ```yaml
 name: tickets

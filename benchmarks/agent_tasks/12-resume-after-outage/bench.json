@@ -1,0 +1,9 @@
+{
+ "llm": {
+  "fail_after": 25
+ },
+ "measure": {
+  "what": "llm_calls",
+  "ideal": 15
+ }
+}

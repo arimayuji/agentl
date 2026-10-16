@@ -1,0 +1,1 @@
+Yesterday the reviews job in this folder stopped partway: the LLM provider at {llm_url} went down. It is back now. Finish the job so out/result.json has the sentiment of every review in input/reviews.csv. Every LLM call is paid.

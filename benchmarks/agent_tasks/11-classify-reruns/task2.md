@@ -1,0 +1,1 @@
+The next day: input/tickets.csv now has new tickets as well (the tickets classified yesterday are unchanged). Run the support-tickets job in this folder again so out/result.json has every ticket. Every call to the LLM at {llm_url} is paid.

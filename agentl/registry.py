@@ -138,6 +138,34 @@ def get(name: str) -> Connector:
     return _CONNECTORS[name]
 
 
+def describe(name: str) -> str:
+    """A connector's `with:` parameters with types and defaults, and its docstring: what an agent
+    needs to write the step without guessing."""
+    import inspect
+
+    fn = get(name)
+    lines = [name]
+    doc = inspect.getdoc(fn)
+    if doc:
+        lines += ["", doc]
+    params = [
+        p
+        for p in inspect.signature(fn).parameters.values()
+        if p.name != "input" and p.kind != p.VAR_POSITIONAL
+    ]
+    if any(p.kind == p.VAR_KEYWORD for p in params):
+        lines += ["", "with: settings described above (any keys)"]
+        params = [p for p in params if p.kind != p.VAR_KEYWORD]
+    if params:
+        lines += ["", "with:"]
+        for p in params:
+            kind = "" if p.annotation is p.empty else f" ({p.annotation})"
+            default = "" if p.default is p.empty or p.default in ("", None) else f" = {p.default!r}"
+            required = "  required" if p.default is p.empty else ""
+            lines.append(f"  {p.name}{kind}{default}{required}")
+    return "\n".join(lines)
+
+
 def names() -> list[str]:
     _load()
     return sorted(_CONNECTORS)

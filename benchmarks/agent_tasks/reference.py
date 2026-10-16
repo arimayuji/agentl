@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -20,6 +21,9 @@ MARKERS = {
     "08": "orders.json has",
     "09": "sales/ has",
     "10": "emails/ has",
+    "11": "tickets.csv",
+    "12": "reviews",
+    "13": "/events",
 }
 
 
@@ -40,6 +44,19 @@ def write_csv(rows: list[dict], cols: list[str]) -> None:
 
 def write_json(rows: list[dict]) -> None:
     Path("out/result.json").write_text(json.dumps(rows))
+
+
+def ask_llm(text: str) -> dict:
+    """One chat completion against OPENAI_BASE_URL; the answer is JSON."""
+    import os
+
+    body = json.dumps({"model": "bench-small", "messages": [{"role": "user", "content": text}]}).encode()
+    req = urllib.request.Request(
+        os.environ["OPENAI_BASE_URL"] + "/chat/completions",
+        body,
+        {"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
+    )
+    return json.loads(json.load(urllib.request.urlopen(req))["choices"][0]["message"]["content"])
 
 
 def main() -> None:
@@ -117,6 +134,25 @@ def main() -> None:
             m = re.search(r"order #?(\d+)", p.read_text())
             out.append({"file": p.name, "order": m.group(1) if m else None})
         write_json(out)
+    elif task in ("11", "12"):  # the plain way: every record to the LLM, on every run
+        name, field = ("tickets", "category") if task == "11" else ("reviews", "sentiment")
+        out = []
+        try:
+            for r in read_csv(f"input/{name}.csv"):
+                out.append({"id": r["id"], field: ask_llm(f"{field} of: {r['text']}")[field]})
+        except urllib.error.HTTPError:
+            pass  # the provider went down: keep what we have
+        write_json(out)
+    elif task == "13":  # the plain way: every event on every run
+        url = re.search(r"(http://127\.0\.0\.1:\d+)", prompt).group(1)  # type: ignore[union-attr]
+        events = json.load(urllib.request.urlopen(f"{url}/events"))
+        con = sqlite3.connect("out/events.db")
+        con.execute("drop table if exists events")
+        con.execute("create table events (id, status, updated_at)")
+        con.executemany(
+            "insert into events values (?, ?, ?)", [(e["id"], e["status"], e["updated_at"]) for e in events]
+        )
+        con.commit()
     # what Claude Code prints with --output-format json, so the metrics path is exercised too
     print(
         json.dumps({"total_cost_usd": 0.0, "num_turns": 1, "usage": {"input_tokens": 10, "output_tokens": 5}})
