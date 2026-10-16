@@ -121,5 +121,8 @@ def test_against_loads_agentl_from_the_given_tree(tmp_path):
         text=True,
         cwd=ROOT,
     )
-    assert out.returncode == 0, out.stderr[-2000:]
-    assert "agentl (concurrency 8) @ base" in out.stdout and "passed" in out.stdout
+    # The verdict itself is noise here (one quick run of ~0.2 s each side): only check that both
+    # agentls ran and the gate reported. A wrong tree raises before any output, with exit 1 too.
+    assert out.returncode in (0, 1), out.stderr[-2000:]
+    assert "agentl (concurrency 8) @ base" in out.stdout, out.stderr[-2000:]
+    assert "LLM call per record: " in out.stdout.split("regression gate against")[1]
