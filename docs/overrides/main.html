@@ -12,8 +12,8 @@
 {% endblock %}
 
 {% block announce %}
-  <a href="{{ 'changelog/' | url }}"><strong>{{ config.extra.version_label }}</strong> is out: parallel steps,
-  chunked streaming, an Arrow fast path and cheaper agent steps.</a>
+  <a href="{{ 'changelog/' | url }}"><strong>{{ config.extra.version_label }}</strong> is out:
+  {{ config.extra.version_headline | lower }}.</a>
 {% endblock %}
 
 {% block content %}
