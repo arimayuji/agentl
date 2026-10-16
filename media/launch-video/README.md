@@ -27,6 +27,19 @@ npm run render:compress   # out/agentl-compress.mp4 (1920x1080, 60 fps, 29 s)
 
 The terminal output in the "run" scene is illustrative and labelled as sample output.
 
+## 30-second promo
+
+`Promo` (1920x1080) and `PromoVertical` (1080x1920, for Reels and Shorts) share one component in
+`src/Promo.tsx`, in the Carioca palette of `media/brand`. Six scenes: scattered data, the YAML,
+a run, the re-run that the per-record cache answers for $0, the result, the install command.
+
+```bash
+npm run render:promo            # out/agentl-promo.mp4 (30 fps, 30 s)
+npm run render:promo-vertical   # out/agentl-promo-vertical.mp4
+```
+
+The run numbers are sample output and labelled as such on screen.
+
 ## Web version
 
 The site uses a smaller encode of the master render:
