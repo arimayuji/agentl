@@ -108,3 +108,101 @@ def trigger(input: Any = None) -> list[dict]:
     """What started the run under `agentl serve`: the webhook body, the new files, or the
     schedule. The runner fills it; outside `agentl serve` it is empty."""
     return []
+
+
+def _cast_spec(spec: Any) -> tuple[str, dict]:
+    """`date` | `{money: BRL}` | `{enum: [a, b], synonyms: {...}}` | `{type: date, ...}` ->
+    (type name, options)."""
+    from .. import types
+
+    if isinstance(spec, str):
+        name, opts = spec, {}
+    elif isinstance(spec, dict) and "type" in spec:
+        name, opts = spec["type"], {k: v for k, v in spec.items() if k != "type"}
+    elif isinstance(spec, dict) and spec:
+        name, first = next(iter(spec.items()))
+        rest = {k: v for k, v in spec.items() if k != name}
+        main = {"money": "currency", "datetime": "tz", "phone": "country", "enum": "values"}.get(name)
+        opts = {**({main: first} if main else {}), **rest}
+    else:
+        raise ValueError(f"cast: cannot read the type {spec!r}")
+    optional = name.endswith("?")
+    name = name.rstrip("?")
+    if name not in types.TYPES:
+        import difflib
+
+        close = difflib.get_close_matches(name, list(types.TYPES), n=1)
+        hint = f"; did you mean {close[0]!r}?" if close else ""
+        raise ValueError(f"cast: unknown type {name!r}{hint} Types: {', '.join(sorted(types.TYPES))}")
+    return name, {**opts, "_optional": optional}
+
+
+@connector("cast")
+def cast(
+    input: Any,
+    fields: dict[str, Any],
+    locale: str = "pt-BR",
+    on_bad: str = "reject",
+    strict: bool = False,
+) -> list[dict]:
+    """Turn messy values into clean typed ones (#119). `fields` maps a field to a type: date,
+    datetime, int, decimal, money, percent, bool, enum, text, name, email, cpf, cnpj, cep, uf,
+    phone (`{money: BRL}`, `{datetime: America/Sao_Paulo}`, `{enum: [a, b], synonyms: {a: [x]}}`).
+    Numbers follow `locale` (pt-BR: 1.234,56). Dates are read in one order per column: day first
+    when a value says so (25/02), month first likewise; a column where nothing tells uses the
+    locale, or fails with `strict: true`. Empty values become null. `on_bad`: reject (the record
+    goes to the step's rejected records with `_error` and `_raw`), fail (stop the run), or keep
+    (leave the original value). Dates and times come out as ISO text."""
+    from .. import types
+    from ..registry import Rejects
+
+    if on_bad not in ("reject", "fail", "keep"):
+        raise ValueError("cast: on_bad is reject, fail or keep")
+    rows = single(input)
+    specs = {f: _cast_spec(s) for f, s in fields.items()}
+    us = locale.lower() in ("en-us", "en_us", "us")
+    orders: dict[str, str] = {}
+    for f, (name, _) in specs.items():
+        if name in ("date", "datetime"):
+            found = types.date_order(r.get(f) for r in rows)
+            if found is None and strict:
+                values = [v for r in rows if isinstance(v := r.get(f), str)]
+                if any(types.NUMERIC.match(v.strip()) for v in values):
+                    raise ValueError(
+                        f"cast: the dates in {f!r} could be day-first or month-first; "
+                        "no value tells (set strict: false to use the locale)"
+                    )
+            orders[f] = found or ("mdy" if us else "dmy")
+    good: list[dict] = []
+    bad: list[dict] = []
+    for r in rows:
+        out = dict(r)
+        errors = []
+        for f, (name, opts) in specs.items():
+            v = r.get(f)
+            kw = {k: val for k, val in opts.items() if k != "_optional"}
+            if name in ("int", "decimal", "float", "money", "percent"):
+                kw.setdefault("locale", locale)
+            if name in ("date", "datetime"):
+                kw.setdefault("order", orders[f])
+            try:
+                clean = types.TYPES[name](v, **kw)
+            except (ValueError, TypeError, ArithmeticError) as e:
+                if on_bad == "fail":
+                    raise ValueError(f"cast: field {f!r}: {e}") from None
+                errors.append((f, str(e)))
+                continue
+            if hasattr(clean, "isoformat"):
+                clean = clean.isoformat()
+            out[f] = clean
+        if errors and on_bad == "reject":
+            bad.append(
+                {
+                    **r,
+                    "_error": "; ".join(f"{f}: {e}" for f, e in errors),
+                    "_raw": {f: r.get(f) for f, _ in errors},
+                }
+            )
+        else:
+            good.append(out)
+    return Rejects(good, bad)

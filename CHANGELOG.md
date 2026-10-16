@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `cast` step and semantic types (#119): dates (one day/month order per column, Excel serials,
+  "3 out 2026"), datetimes with zones, locale numbers (pt-BR `1.234,56`), money, percent, bool
+  (`sim`/`não`), enum with synonyms, text, names, e-mail, CPF and CNPJ (check digits), CEP, UF and
+  Brazilian phones (E.164). Rows that do not parse go to the step's rejected records with the
+  reason and the raw value (`on_bad: reject | fail | keep`). `agentl.types.register_type` adds a
+  format. Connectors can now return rejected records the way agent steps do.
+
 - MCP tools for agents (#164): `list_templates` and `new_from_template` (a tested template written
   under the server's root, no LLM call), `describe_connector` (one connector's parameters), and
   `show_output` (the first records a step produced in a run). The runner keeps those first 5

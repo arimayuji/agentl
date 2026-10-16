@@ -8,7 +8,7 @@ import hashlib
 import importlib.util
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -28,6 +28,16 @@ StreamWriter = Callable[..., Records]
 _STREAM_READERS: dict[str, StreamReader] = {}
 _STREAM_WRITERS: dict[str, StreamWriter] = {}
 _ROWWISE: set[str] = set()
+
+
+class Rejects(list):
+    """A connector's output with the records it refused: `Rejects(good, rejected)`. The runner
+    keeps the rejected ones apart (RunResult.rejected, an `item.rejected` event), as it does for
+    agent steps. Each rejected record carries `_error` (the reason)."""
+
+    def __init__(self, good: Iterable[dict] = (), rejected: Iterable[dict] = ()):
+        super().__init__(good)
+        self.rejected = list(rejected)
 
 
 def connector(name: str) -> Callable[[Connector], Connector]:

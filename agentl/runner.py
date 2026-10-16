@@ -592,6 +592,19 @@ class Runner:
             out = fn(data, **step.with_)
         finally:
             registry._AFTER_RUN.reset(token)
+        if isinstance(out, registry.Rejects) and out.rejected:
+            bad = out.rejected
+            result.rejected.setdefault(step.id, []).extend(bad)
+            total = len(out) + len(bad)
+            self._emit(
+                run_id,
+                "item.rejected",
+                step.id,
+                count=len(bad),
+                total=total,
+                rate=round(len(bad) / max(1, total), 4),
+                error=bad[0].get("_error"),
+            )
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
