@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Easing, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Easing, Img, Sequence, interpolate, random, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { mono, sans } from "./theme";
 
 // One fixed terminal: commands are typed, output streams in line by line, old lines scroll
@@ -132,6 +132,34 @@ const TermLine: React.FC<{ line: Line; row: number; rows: number; lineH: number;
   );
 };
 
+// Sound: a keystroke per typed character (one of six variants, slightly random volume), Enter
+// when a command is sent, a soft tick per output line, a whoosh in and out. Made by scripts/sfx.py.
+type Sfx = { at: number; src: string; volume: number };
+const SFX: Sfx[] = [
+  { at: 0, src: "sfx/whoosh-in.wav", volume: 0.5 },
+  ...LINES.flatMap((l, n): Sfx[] => {
+    if (l.tone === "gap") return [];
+    if (l.tone !== "cmd") return [{ at: l.at, src: "sfx/tick.wav", volume: 0.18 }];
+    const keys = [...l.text].map((ch, i) => ({
+      at: l.at + Math.ceil(i * TYPE_SPEED),
+      src: `sfx/key${Math.floor(random(`k${n}-${i}`) * 6)}.wav`,
+      volume: (ch === " " ? 0.35 : 0.55) + random(`v${n}-${i}`) * 0.2,
+    }));
+    return [...keys, { at: l.at + Math.ceil(l.text.length * TYPE_SPEED) + 4, src: "sfx/enter.wav", volume: 0.7 }];
+  }),
+  { at: END - 4, src: "sfx/whoosh-out.wav", volume: 0.45 },
+];
+
+const Sound: React.FC = () => (
+  <>
+    {SFX.map((x, i) => (
+      <Sequence key={i} from={x.at} durationInFrames={20} layout="none">
+        <Audio src={staticFile(x.src)} volume={x.volume} />
+      </Sequence>
+    ))}
+  </>
+);
+
 export const Terminal: React.FC = () => {
   const f = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -157,6 +185,7 @@ export const Terminal: React.FC = () => {
   return (
     <AbsoluteFill style={{ fontFamily: sans }}>
       <Backdrop />
+      <Sound />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", perspective: 1600 }}>
         <div style={{
           width: winW, borderRadius: 26, background: k.white, border: `1px solid ${k.line}`,
