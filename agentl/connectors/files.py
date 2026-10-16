@@ -415,10 +415,12 @@ def csv_read_arrow(
     storage_options: dict | None = None,
     delimiter: str | None = None,
     encoding: str = "utf-8",
+    _engine: str | None = None,
 ) -> Any:
     """pyarrow's CSV reader with every column as text, like `csv.read`. Falls back to the normal
     reader (and returns records) for anything it would read differently: several files, another
-    encoding, a BOM, duplicate or ragged columns, invalid UTF-8."""
+    encoding, a BOM, duplicate or ragged columns, invalid UTF-8. With `_engine="polars"` (the runner
+    sets it when every consumer is a polars step) polars reads the file, falling back to pyarrow."""
     files = paths(input, path, "path", url, headers, storage_options)
     if len(files) != 1 or encoding.lower().replace("-", "") != "utf8":
         return csv_read(input, path, url, headers, storage_options, delimiter, encoding)
@@ -428,6 +430,10 @@ def csv_read_arrow(
     sep, header, bom = _sniff(p, delimiter, encoding)
     if bom or not header or len(set(header)) != len(header) or "\n" in "".join(header):
         return [r for r in iter_csv(p, delimiter, encoding)]
+    if _engine == "polars":
+        table = _csv_read_polars(p, sep, header)
+        if table is not None:
+            return table
     try:
         table = pacsv.read_csv(
             str(p),
@@ -445,6 +451,20 @@ def csv_read_arrow(
     if table.column_names != header or any(t != pa.string() for t in table.schema.types):
         return [r for r in iter_csv(p, delimiter, encoding)]
     return table
+
+
+def _csv_read_polars(p: Path, sep: str, header: list[str]) -> Any:
+    """polars' CSV reader with every column as text and empty fields as "" (as `csv.read`), or
+    None when polars reads the file differently or fails, so the caller falls back."""
+    try:
+        pl = require("polars", "polars")
+        df = pl.read_csv(str(p), separator=sep, infer_schema=False, truncate_ragged_lines=False)
+    except Exception:
+        return None
+    if df.columns != header:
+        return None
+    # Only polars steps read this table, so polars' own string type stays (no cast both ways).
+    return df.with_columns(pl.all().fill_null("")).to_arrow()
 
 
 @connector("json.read")
@@ -795,11 +815,17 @@ def parquet_write_arrow(
     latest: str | None = None,
     keep: int | None = None,
 ) -> Records:
-    pq = require("pyarrow.parquet", "arrow")
+    from ..polars import from_polars, write_parquet
+
+    if from_polars(data):
+        write = lambda p: write_parquet(data, str(p), compression)  # noqa: E731
+    else:
+        pq = require("pyarrow.parquet", "arrow")
+        write = lambda p: pq.write_table(data, str(p), compression=compression)  # noqa: E731
     return _write_file(
         path,
         storage_options,
-        lambda p: pq.write_table(data, str(p), compression=compression),
+        write,
         latest,
         keep,
         data.num_rows,

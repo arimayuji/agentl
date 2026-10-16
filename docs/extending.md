@@ -145,3 +145,25 @@ def revenue(dfs):
   fn: steps:revenue
   input: [orders, users]
 ```
+
+### polars
+
+The same with polars (`pip install 'agentl-etl[polars]'`):
+
+```python
+import polars as pl
+from agentl.polars import dataframe
+
+
+@dataframe
+def clean(df, min_total=0):
+    return df.with_columns(pl.col("total").cast(pl.Float64)).filter(pl.col("total") >= min_total)
+```
+
+The step receives a polars DataFrame (a dict of them with several inputs) and may return a
+DataFrame, a Series or a LazyFrame, which is collected. Next to an Arrow-capable reader or writer
+the Table is wrapped without copying, both ways. When every consumer of a
+`csv.read` is a polars step, polars reads the file; `parquet.write` after a polars step writes with
+polars. Strings in that Parquet file read back as `large_string` with pyarrow (values are the
+same). On the CSV → Parquet job in [Performance](performance.md) this takes 0.21 s, against
+0.72 s for the same step in pandas.

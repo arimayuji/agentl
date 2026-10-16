@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- polars steps (#171): `from agentl.polars import dataframe` wraps `fn(df) -> DataFrame` like
+  `agentl.pandas.dataframe`, with records or, next to Arrow readers and writers, a pyarrow Table
+  wrapped without copying. When every consumer of `csv.read` is a polars step polars reads the
+  file, and `parquet.write` after a polars step writes with polars (strings read back as
+  `large_string`). New extra `agentl-etl[polars]`. CSV → Parquet comparison: 0.21 s, against
+  0.72 s for the pandas step and 0.07 s for plain polars.
+
 - A performance regression gate in CI (#157). Pull requests that touch `agentl/` or `benchmarks/`
   run `python -m benchmarks --compare --against <base checkout>`, which measures the gated jobs
   with the pull request's agentl and the base branch's on the same runner, alternating, and fails
@@ -20,7 +27,8 @@ They are always listed under **Changed** or **Removed**.
   and httpx, and an HTML table to CSV against BeautifulSoup and pandas `read_html`. The fan-out and
   HTML cases join the regression gate. `--only` now also filters the `--compare` cases.
 - polars in the CSV → Parquet comparison (#157), eager and lazy. It is 10x to 18x faster than
-  agentl's `@dataframe` path on that job, and the docs say so.
+  agentl's `@dataframe` path on that job, and the docs say so. The agentl variants now import
+  their libraries before the clock, as the pandas and polars variants already did.
 
 ### Fixed
 
@@ -30,6 +38,9 @@ They are always listed under **Changed** or **Removed**.
   reads it the same way now (its numbers moved by about 5 MB).
 
 ### Changed
+
+- Faster start (#157): the HTTPS opener and its CA store load on the first HTTP call instead of on
+  import. A 10-row job's fixed cost went from about 0.14 s to 0.08 s.
 
 - Faster record work (#157): `csv.read` builds records from `csv.reader` instead of `DictReader`,
   `filter` and `select` resolve their fields once per batch instead of once per record, and

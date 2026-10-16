@@ -160,14 +160,18 @@ class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_opener = urllib.request.build_opener(_HTTPHandler, _HTTPSHandler, _GuardedRedirects)
+@cache
+def _opener() -> Any:
+    # Built on first use: an HTTPS handler loads the system CA store (20-40 ms), which a run that
+    # makes no HTTP call should not pay at import.
+    return urllib.request.build_opener(_HTTPHandler, _HTTPSHandler, _GuardedRedirects)
 
 
 def urlopen(req: urllib.request.Request, timeout: float, check: Any = None) -> Any:
     """urllib.request.urlopen with the guard applied to the URL, every redirect and the address
     actually connected to. `check(url)` runs on the URL and on every redirect target too."""
     check_url(req.full_url)
-    opener = _opener
+    opener = _opener()
     if check is not None:
         check(req.full_url)
         redirects = type("_Redirects", (_GuardedRedirects,), {"extra": staticmethod(check)})
