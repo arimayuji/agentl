@@ -63,8 +63,17 @@ def sqlite_write_chunks(
             conn.execute(f'DROP TABLE IF EXISTS "{table}"')
         for rows in chunks:
             new: list[str] = []
+            known = set(cols)
+            last: Any = None
             for r in rows:
-                new.extend(k for k in r if k not in cols and k not in new)
+                fields = r.keys()
+                if fields == last:  # records of one source share their keys: one C-level compare
+                    continue
+                last = fields
+                for k in fields:
+                    if k not in known:
+                        known.add(k)
+                        new.append(k)
             if new:
                 if not cols:
                     conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({", ".join(map(_quote, new))})')
@@ -85,7 +94,7 @@ def sqlite_write_chunks(
                 names = ", ".join(map(_quote, cols))
                 ph = ", ".join("?" for _ in cols)
                 conn.executemany(
-                    f'INSERT INTO "{table}" ({names}) VALUES ({ph})', [[r.get(c) for c in cols] for r in rows]
+                    f'INSERT INTO "{table}" ({names}) VALUES ({ph})', [tuple(map(r.get, cols)) for r in rows]
                 )
             written += len(rows)
     return [{"table": table, "written": written}]

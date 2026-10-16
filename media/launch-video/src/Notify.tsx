@@ -239,7 +239,7 @@ const Outro: React.FC = () => {
 const Sound: React.FC = () => (
   <>
     <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) =>
-      0.22 * interpolate(f, [0, 20, NOTIFY_FRAMES - 40, NOTIFY_FRAMES], [0, 1, 1, 0], clamp)} />
+      0.12 * interpolate(f, [0, 20, NOTIFY_FRAMES - 40, NOTIFY_FRAMES], [0, 1, 1, 0], clamp)} />
     <Sequence from={T.yaml} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/whoosh-in.wav")} volume={0.4} /></Sequence>
     <Sequence from={T.run} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/enter.wav")} volume={0.6} /></Sequence>
     <Sequence from={T.fail} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/alert.wav")} volume={0.6} /></Sequence>

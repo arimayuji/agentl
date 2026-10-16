@@ -40,8 +40,24 @@ def iter_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_
                 delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
             except csv.Error:
                 delimiter = "\t" if p.suffix.lower() == ".tsv" else ","
-        for row in csv.DictReader(f, delimiter=delimiter):
-            yield dict(row)
+        # csv.reader and zip: the same records as csv.DictReader (short rows padded with None,
+        # extra cells under the key None), about twice as fast.
+        reader = csv.reader(f, delimiter=delimiter)
+        header = next(reader, None)
+        if header is None:
+            return
+        width = len(header)
+        for cells in reader:
+            if len(cells) == width:
+                yield dict(zip(header, cells, strict=True))
+            elif not cells:
+                continue  # DictReader skips blank lines too
+            elif len(cells) < width:
+                yield dict(zip(header, cells + [None] * (width - len(cells)), strict=True))
+            else:
+                row: dict[Any, Any] = dict(zip(header, cells[:width], strict=True))
+                row[None] = cells[width:]
+                yield row
 
 
 def read_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:

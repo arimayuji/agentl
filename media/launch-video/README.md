@@ -44,7 +44,8 @@ The run numbers are sample output and labelled as such on screen.
 `run` and a cached re-run stream in line by line, with entry and exit effects
 (`npm run render:terminal`, `npm run render:terminal-vertical`). Sample output, labelled.
 Its typing sounds are synthesized by `python3 scripts/sfx.py` into `public/sfx` (no third-party audio).
-All videos play a quiet lo-fi loop (electric piano, bass, brushed drums, vinyl), `public/sfx/music.mp3`,
+All videos play a quiet lo-fi loop (electric piano, a soft muted horn melody, bass, light brushed drums,
+vinyl), `public/sfx/music.mp3`,
 synthesized by `python3 scripts/music.py`.
 
 ## Web version
@@ -76,4 +77,22 @@ failure buzz come from `scripts/sfx.py`. Sample output, labelled.
 ```bash
 npm run render:notify            # out/agentl-notify.mp4
 npm run render:notify-vertical   # out/agentl-notify-vertical.mp4
+```
+
+## Square clips for X
+
+`XPayTwice` and `XMillion` (`src/XClips.tsx`, 1080x1080, 11 and 12 s) autoplay muted in the feed, so
+the text on screen carries the story. Numbers are formatted for a Brazilian audience (US$ 0,12).
+
+- `XPayTwice`: a plain script pays again for the same 500 records; agentl answers from the cache.
+  Sample numbers, labelled on screen.
+- `XMillion`: the 1M-row CSV → filter → SQLite race from `python -m benchmarks --compare` (#157), with
+  peak memory. Post it once the release with those optimisations is out.
+- `XNfe`: a folder of NF-e XML files becoming a spreadsheet of items, marked "em breve" because
+  `nfe.read` (#161) is not built yet. Fictitious data, labelled.
+- `XReceipt`: a receipt photo scanned, its fields boxed, and a row per receipt in a spreadsheet,
+  marked "em breve" because image reading (#160) is not built yet. Fictitious data, labelled.
+
+```bash
+npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4, out/x-nfe.mp4, out/x-receipt.mp4
 ```

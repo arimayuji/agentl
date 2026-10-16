@@ -14,6 +14,7 @@
     "render:terminal-vertical": "remotion render src/index.ts TerminalVertical out/agentl-terminal-vertical.mp4 --codec=h264 --crf=18",
     "render:notify": "remotion render src/index.ts Notify out/agentl-notify.mp4 --codec=h264 --crf=18",
     "render:notify-vertical": "remotion render src/index.ts NotifyVertical out/agentl-notify-vertical.mp4 --codec=h264 --crf=18",
+    "render:x": "remotion render src/index.ts XPayTwice out/x-pay-twice.mp4 --codec=h264 --crf=18 && remotion render src/index.ts XMillion out/x-million.mp4 --codec=h264 --crf=18 && remotion render src/index.ts XNfe out/x-nfe.mp4 --codec=h264 --crf=18 && remotion render src/index.ts XReceipt out/x-receipt.mp4 --codec=h264 --crf=18",
     "poster": "remotion still src/index.ts Launch out/poster.jpg --frame=600"
   },
   "dependencies": {
