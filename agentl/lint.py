@@ -32,6 +32,8 @@ _DELIVERING = {
     "rabbitmq.publish",
     "sqs.send",
     "discord.send",
+    *(f"{s}.send" for s in ("slack", "mattermost", "teams", "telegram", "googlechat", "whatsapp")),
+    *(f"{s}.send" for s in ("sms", "ntfy", "pushover", "matrix", "email")),
 }
 _SECRET_KEY = re.compile(r"(pass(word)?|secret|token|api[_-]?key|private[_-]?key|credential|webhook)", re.I)
 _SECRET_VALUE = re.compile(

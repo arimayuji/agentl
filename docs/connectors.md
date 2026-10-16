@@ -462,6 +462,58 @@ Credentials: an app registration with the Graph application permission `Sites.Re
 `Sites.Selected` granted on the site), through `MS_TENANT_ID`, `MS_CLIENT_ID` and
 `MS_CLIENT_SECRET`; or a ready token in `MS_ACCESS_TOKEN`. Standard library only.
 
+## Messaging
+
+Every messaging service is a load step `<service>.send` and a [`notify:`](notifications.md)
+channel of the same name, from one implementation. The steps share these settings:
+
+- `content`: template with `{field}` placeholders (fields only, no format specs). Without it, each
+  record is sent as `key: value` lines.
+- `title`: template too, for services with a title (email subject, ntfy, Pushover, Teams).
+- `mode: each` (default) sends one message per record; `mode: batch` packs records into as few
+  messages as the service allows.
+- `max_messages` (default 50) stops the step before sending anything when the input would flood
+  the destination. Rate limits (429) are waited out and 5xx answers retried (`retries`, default 3).
+
+| Step | Settings | Get them from |
+|---|---|---|
+| `slack.send` | `webhook`, `username`, `icon_emoji`, `channel` | Slack app, Incoming Webhooks |
+| `mattermost.send` | `webhook` | Integrations, Incoming Webhooks (Rocket.Chat works too) |
+| `teams.send` | `webhook` | Teams Workflows, "When a Teams webhook request is received" |
+| `discord.send` | `webhook`, `embed`, `username` | Channel settings, Integrations, Webhooks ([details](#discord)) |
+| `googlechat.send` | `webhook` | Space, Apps and integrations, Webhooks |
+| `telegram.send` | `token`, `chat_id` | @BotFather; the chat id from `getUpdates` |
+| `whatsapp.send` | `token`, `phone_number_id`, `to`, `template` | Meta for Developers, WhatsApp, API Setup |
+| `sms.send` | `account_sid`, `auth_token`, `from`, `to` | Twilio console |
+| `ntfy.send` | `topic`, `token`, `priority`, `tags` | ntfy.sh (or your own server); install the ntfy app |
+| `pushover.send` | `token`, `user`, `priority` | pushover.net |
+| `matrix.send` | `homeserver`, `access_token`, `room_id` | Element, Settings, Help and About |
+| `email.send` | `host`, `port`, `user`, `password`, `from`, `to` | your SMTP provider |
+
+```yaml
+- id: alert_sales
+  use: whatsapp.send
+  input: big_orders
+  with:
+    token: ${WHATSAPP_TOKEN}
+    phone_number_id: ${WHATSAPP_PHONE_ID}
+    to: "5511999990000"
+    content: "Order {id}: R$ {total} from {customer}"
+- id: push
+  use: ntfy.send
+  input: big_orders
+  with: { topic: "https://ntfy.sh/${NTFY_TOPIC}", title: "Order {id}", mode: batch }
+```
+
+**WhatsApp** has rules of its own. The Cloud API delivers free text only within 24 hours of the
+person's last message to your business number. Outside that window, send an approved template:
+`template: { name: order_update, language: pt_BR }`, and `content` fills its first body
+parameter. Meta charges per conversation. Without a Meta business account, Twilio reaches WhatsApp
+too: `sms.send` with `from: "whatsapp:+1..."` and `to: "whatsapp:+55..."`.
+
+Records are untrusted data: Slack `<!channel>`, Google Chat `<users/all>` and Discord `@everyone`
+in a record are sent as text and ping nobody; Telegram gets plain text (no Markdown or HTML).
+
 ## Discord
 
 `discord.send` posts records to a channel through an

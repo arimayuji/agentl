@@ -33,6 +33,13 @@ notify:
 | `email` | `host`, `port` (587), `user`, `password`, `from`, `to` (address or list), `starttls` (true), `ssl` (false, port 465) |
 | `pagerduty` | `routing_key` (Events API v2), `severity` (default: error for failures, warning otherwise) |
 | `opsgenie` | `api_key`, `region` (`eu` for the EU instance), `priority` (default P2 for failures, P4 otherwise) |
+| `whatsapp` | `token`, `phone_number_id`, `to` (WhatsApp Cloud API; see [Messaging](connectors.md#messaging) for the 24-hour rule and `template`) |
+| `sms` | `account_sid`, `auth_token`, `from`, `to` (Twilio; `to: "whatsapp:+55..."` for WhatsApp through Twilio) |
+| `googlechat` | `webhook` |
+| `mattermost` | `webhook` (Rocket.Chat too) |
+| `ntfy` | `topic` (URL), `token`, `priority`, `tags` (push to your phone) |
+| `pushover` | `token`, `user`, `priority` |
+| `matrix` | `homeserver`, `access_token`, `room_id` |
 | `webhook` | `url`, `headers` (receives `{"text": ..., "event": ...}`) |
 | `console` | none |
 
@@ -59,6 +66,9 @@ notify:
 
 PagerDuty and Opsgenie alerts are deduplicated per pipeline and step, so a pipeline that keeps
 failing updates one incident instead of opening many. Credentials belong in environment variables.
+
+Every messaging channel also exists as a pipeline step (`slack.send`, `whatsapp.send`, ...) to send
+records instead of run events: see [Messaging](connectors.md#messaging).
 
 ### Custom channels
 

@@ -15,6 +15,12 @@ They are always listed under **Changed** or **Removed**.
   packed into few, with `{field}` templates, embeds, mentions off, rate limits honoured and a
   `max_messages` cap (#145). `lint` counts it as a delivering step and flags a webhook URL written
   in the pipeline.
+- Messaging everywhere (#146): `slack.send`, `mattermost.send`, `teams.send`, `googlechat.send`,
+  `telegram.send`, `whatsapp.send` (WhatsApp Cloud API, free text or approved templates),
+  `sms.send` (Twilio, also WhatsApp through Twilio), `ntfy.send`, `pushover.send`, `matrix.send`
+  and `email.send`. They share templates, each/batch, the `max_messages` cap and retries, and the
+  new services are `notify:` channels too: `whatsapp`, `sms`, `googlechat`, `mattermost`, `ntfy`,
+  `pushover`, `matrix`.
 
 ## [0.9.0] - 2026-10-15
 

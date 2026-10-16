@@ -185,6 +185,22 @@ def _email(cfg: dict, text: str, event: dict) -> None:
 
 ChannelSender = Callable[[dict, str, dict], None]
 
+
+def _via_chat(service: str) -> ChannelSender:
+    """A channel backed by the sender of the `<service>.send` step (agentl.connectors.chat)."""
+
+    def send(cfg: dict, text: str, event: dict) -> None:
+        from .connectors.chat import SERVICES
+
+        sender, limit = SERVICES[service]
+        sender(cfg, text[:limit], _title(event))
+
+    return send
+
+
+# Channels whose sender lives with the `<name>.send` step (#146).
+_CHAT_CHANNELS = ("whatsapp", "sms", "googlechat", "mattermost", "ntfy", "pushover", "matrix")
+
 CHANNELS: dict[str, ChannelSender] = {
     "console": _console,
     "slack": _slack,
@@ -195,6 +211,7 @@ CHANNELS: dict[str, ChannelSender] = {
     "pagerduty": _pagerduty,
     "opsgenie": _opsgenie,
     "email": _email,
+    **{k: _via_chat(k) for k in _CHAT_CHANNELS},
 }
 
 
