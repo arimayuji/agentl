@@ -369,7 +369,7 @@ const Cta: React.FC = () => {
 export const Promo: React.FC = () => (
   <AbsoluteFill>
     <Backdrop />
-    <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.14 * interpolate(f, [0, 20, PROMO_FRAMES - 40, PROMO_FRAMES], [0, 1, 1, 0], clamp)} />
+    <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.22 * interpolate(f, [0, 20, PROMO_FRAMES - 40, PROMO_FRAMES], [0, 1, 1, 0], clamp)} />
     <Sequence from={SCENES.problem.from} durationInFrames={SCENES.problem.dur}><Problem /></Sequence>
     <Sequence from={SCENES.yaml.from} durationInFrames={SCENES.yaml.dur}><Yaml /></Sequence>
     <Sequence from={SCENES.run.from} durationInFrames={SCENES.run.dur}><Run cached={false} dur={SCENES.run.dur} /></Sequence>

@@ -44,7 +44,8 @@ The run numbers are sample output and labelled as such on screen.
 `run` and a cached re-run stream in line by line, with entry and exit effects
 (`npm run render:terminal`, `npm run render:terminal-vertical`). Sample output, labelled.
 Its typing sounds are synthesized by `python3 scripts/sfx.py` into `public/sfx` (no third-party audio).
-Both promo and terminal play a quiet lo-fi loop, `public/sfx/music.mp3`, synthesized by `python3 scripts/music.py`.
+All videos play a quiet lo-fi loop (electric piano, bass, brushed drums, vinyl), `public/sfx/music.mp3`,
+synthesized by `python3 scripts/music.py`.
 
 ## Web version
 
@@ -68,8 +69,8 @@ Remotion is free for individuals and small teams; check its license before using
 ## Notifications video
 
 `Notify` and `NotifyVertical` (`src/Notify.tsx`, 15 s): the `notify:` block, a run that fails, and
-the alert landing on a phone from WhatsApp, Slack, Telegram, SMS, Discord, Teams, ntfy and email,
-each with a chime. Services are named color chips, not their logos (trademarks). Chimes and the
+the alert piling up in a notification feed from WhatsApp, Slack, Telegram, SMS, Discord, Teams,
+ntfy and email, each with a chime. Services are named color chips, not their logos (trademarks). Chimes and the
 failure buzz come from `scripts/sfx.py`. Sample output, labelled.
 
 ```bash

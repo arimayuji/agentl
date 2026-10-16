@@ -13,7 +13,7 @@ import {
 } from "remotion";
 import { mono, sans } from "./theme";
 
-// Notifications: the notify block, a run that fails, and the alert fanning out to a phone where
+// Notifications: the notify block, a run that fails, and the alert fanning out to a feed where
 // every service's message lands with a chime. Services are shown as named color chips, not their
 // logos (trademarks). Carioca palette (media/brand). The run output is sample output.
 export const NOTIFY_FPS = 30;
@@ -46,16 +46,16 @@ const lerp = (f: number, a: number, b: number, from: number, to: number) =>
 
 // Each service: chip color and the message as it shows on the phone.
 const SERVICES = [
-  { name: "WhatsApp", color: "#1f9d55", text: "invoices failed at classify: HTTP 503" },
-  { name: "Slack", color: "#4a154b", text: "[agentl] invoices: run.failed step classify" },
-  { name: "Telegram", color: "#229ed9", text: "invoices failed, 12 records rejected" },
-  { name: "SMS", color: k.ink, text: "agentl: invoices failed (classify)" },
-  { name: "Discord", color: "#5865f2", text: "run.failed in invoices / classify" },
-  { name: "Teams", color: "#5b5fc7", text: "agentl invoices: run.failed (classify)" },
-  { name: "ntfy", color: "#338574", text: "invoices: run.failed" },
-  { name: "Email", color: k.sunset, text: "Subject: agentl invoices: run.failed" },
+  { name: "WhatsApp", where: "Ana, on call", color: "#1f9d55", text: "invoices failed at classify: HTTP 503" },
+  { name: "Slack", where: "#data-team", color: "#4a154b", text: "[agentl] invoices: run.failed step classify" },
+  { name: "Telegram", where: "Ops group", color: "#229ed9", text: "invoices failed, 12 records rejected" },
+  { name: "SMS", where: "+55 11 9****-0000", color: k.ink, text: "agentl: invoices failed (classify)" },
+  { name: "Discord", where: "#alerts", color: "#5865f2", text: "run.failed in invoices / classify" },
+  { name: "Teams", where: "Finance", color: "#5b5fc7", text: "agentl invoices: run.failed (classify)" },
+  { name: "ntfy", where: "push", color: "#338574", text: "invoices: run.failed" },
+  { name: "Email", where: "data@company.com", color: k.sunset, text: "Subject: agentl invoices: run.failed" },
 ];
-const ARRIVE = (i: number) => T.fan + 14 + i * 20;
+const ARRIVE = (i: number) => Math.round(T.fan + 14 + i * 20 - i * i * 0.8); // speeding up, like a pile-up
 
 const Backdrop: React.FC = () => {
   const f = useCurrentFrame();
@@ -147,53 +147,60 @@ const Left: React.FC<{ width: number; size: number }> = ({ width, size }) => {
   );
 };
 
-const Phone: React.FC<{ scale: number }> = ({ scale }) => {
+/** The notification feed: every service's message slides in on top and pushes the others down,
+ * the way alerts pile up across a team's tools, not just one phone. */
+const Feed: React.FC<{ width: number; rows: number }> = ({ width, rows }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const inS = spring({ frame: f - (T.fan - 10), fps, config: { damping: 14, stiffness: 110 } });
+  const head = spring({ frame: f - (T.fan - 10), fps, config: { damping: 14, stiffness: 120 } });
   const arrived = SERVICES.filter((_, i) => f >= ARRIVE(i)).length;
-  const buzz = SERVICES.some((_, i) => f >= ARRIVE(i) && f < ARRIVE(i) + 6) ? Math.sin(f * 3) * 3 : 0;
-  const W = 470;
-  const H = 940;
+  const ROW = 118;
   return (
-    <div style={{ transform: `scale(${scale * (0.85 + inS * 0.15)}) translateY(${(1 - inS) * 200}px) rotate(${buzz * 0.3}deg)`,
-      opacity: Math.min(1, inS * 1.5), transformOrigin: "center" }}>
-      <div style={{ width: W, height: H, borderRadius: 64, background: k.ink, padding: 16,
-        boxShadow: "0 50px 120px rgba(11,27,43,.28)" }}>
-        <div style={{ position: "relative", width: "100%", height: "100%", borderRadius: 50, overflow: "hidden",
-          background: "linear-gradient(160deg, #9fd0f5, #fff1a8 55%, #ffc2a8)" }}>
-          <div style={{ position: "absolute", top: 14, left: "50%", width: 120, height: 32, marginLeft: -60, borderRadius: 16, background: k.ink }} />
-          <div style={{ position: "absolute", top: 70, width: "100%", textAlign: "center", fontFamily: sans,
-            fontSize: 86, fontWeight: 300, color: k.ink }}>09:41</div>
-          <div style={{ position: "absolute", top: 176, width: "100%", textAlign: "center", fontFamily: sans,
-            fontSize: 24, color: k.muted }}>{arrived > 0 ? `${arrived} new` : "Thursday"}</div>
-          {SERVICES.map((svc, i) => {
-            const local = f - ARRIVE(i);
-            if (local < 0) return null;
-            const s = spring({ frame: local, fps, config: { damping: 13, stiffness: 170 } });
-            // Newest on top: each later arrival pushes this one down one slot.
-            const slot = SERVICES.filter((_, j) => j > i && f >= ARRIVE(j)).length;
-            const y = 230 + slot * 112 + (1 - s) * -80;
-            const fade = interpolate(slot, [4, 6], [1, 0], clamp);
-            return (
-              <div key={svc.name} style={{ position: "absolute", left: 18, right: 18, top: y, height: 98, borderRadius: 24,
-                background: "rgba(255,255,255,.92)", boxShadow: "0 8px 24px rgba(11,27,43,.12)", padding: "14px 18px",
-                display: "flex", gap: 14, alignItems: "center", opacity: Math.min(1, s * 1.5) * fade,
-                transform: `scale(${0.9 + s * 0.1})`, fontFamily: sans }}>
-                <div style={{ width: 56, height: 56, borderRadius: 16, background: svc.color, flexShrink: 0, color: k.white,
-                  display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 26 }}>
-                  {svc.name[0]}
+    <div style={{ width, opacity: Math.min(1, head * 1.5), transform: `translateY(${(1 - head) * 40}px)`, fontFamily: sans }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 18 }}>
+        <div style={{ fontSize: 34, fontWeight: 800, color: k.ink }}>Notifications</div>
+        <div style={{ fontSize: 24, color: arrived ? k.red : k.muted, fontWeight: 600 }}>
+          {arrived ? `${arrived} new` : "all quiet"}
+        </div>
+      </div>
+      <div style={{ position: "relative", height: rows * ROW }}>
+        {SERVICES.map((svc, i) => {
+          const local = f - ARRIVE(i);
+          if (local < 0) return null;
+          const s = spring({ frame: local, fps, config: { damping: 14, stiffness: 180 } });
+          // Newest on top: each later arrival pushes this card down one row.
+          const slot = SERVICES.filter((_, j) => j > i && f >= ARRIVE(j)).length;
+          const y = slot * ROW;
+          const fade = interpolate(slot, [rows - 1.5, rows - 0.5], [1, 0], clamp);
+          const glow = interpolate(local, [0, 4, 26], [0, 1, 0], clamp);
+          return (
+            <div key={svc.name} style={{
+              position: "absolute", left: 0, right: 0, top: y, height: ROW - 16, borderRadius: 20,
+              background: k.white, border: `1px solid ${k.line}`, display: "flex", alignItems: "center", gap: 18,
+              padding: "0 22px", opacity: Math.min(1, s * 1.5) * fade,
+              transform: `translateX(${(1 - s) * 120}px)`, filter: s < 0.97 ? `blur(${(1 - s) * 8}px)` : undefined,
+              boxShadow: `0 0 0 ${glow * 6}px ${svc.color}33, 0 12px 30px rgba(11,27,43,.10)`,
+              transition: "none",
+            }}>
+              <div style={{ width: 6, alignSelf: "stretch", margin: "16px 0", borderRadius: 3, background: k.red }} />
+              <div style={{ width: 58, height: 58, borderRadius: 16, background: svc.color, flexShrink: 0, color: k.white,
+                display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 26 }}>
+                {svc.name[0]}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: k.ink }}>{svc.name}</div>
+                  <div style={{ fontSize: 20, color: k.muted }}>{svc.where}</div>
+                  <div style={{ marginLeft: "auto", fontSize: 18, color: k.muted }}>now</div>
                 </div>
-                <div style={{ overflow: "hidden" }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: k.ink }}>{svc.name}</div>
-                  <div style={{ fontSize: 19, color: k.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {svc.text}
-                  </div>
+                <div style={{ fontFamily: mono, fontSize: 20, color: k.ink, whiteSpace: "nowrap", overflow: "hidden",
+                  textOverflow: "ellipsis", marginTop: 4 }}>
+                  {svc.text}
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -232,7 +239,7 @@ const Outro: React.FC = () => {
 const Sound: React.FC = () => (
   <>
     <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) =>
-      0.12 * interpolate(f, [0, 20, NOTIFY_FRAMES - 40, NOTIFY_FRAMES], [0, 1, 1, 0], clamp)} />
+      0.22 * interpolate(f, [0, 20, NOTIFY_FRAMES - 40, NOTIFY_FRAMES], [0, 1, 1, 0], clamp)} />
     <Sequence from={T.yaml} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/whoosh-in.wav")} volume={0.4} /></Sequence>
     <Sequence from={T.run} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/enter.wav")} volume={0.6} /></Sequence>
     <Sequence from={T.fail} durationInFrames={20} layout="none"><Audio src={staticFile("sfx/alert.wav")} volume={0.6} /></Sequence>
@@ -258,7 +265,7 @@ export const Notify: React.FC = () => {
       <AbsoluteFill style={{ opacity: sceneOut, transform: `scale(${zoom})`, filter: sceneOut < 0.98 ? `blur(${(1 - sceneOut) * 14}px)` : undefined,
         alignItems: "center", justifyContent: "center", flexDirection: portrait ? "column" : "row", gap: portrait ? 30 : 90 }}>
         <Left width={portrait ? 940 : 920} size={portrait ? 24 : 25} />
-        <Phone scale={portrait ? 0.82 : 0.95} />
+        <Feed width={portrait ? 940 : 760} rows={portrait ? 8 : 6} />
       </AbsoluteFill>
       {f >= T.outro && <Outro />}
       <div style={{ position: "absolute", bottom: 24, width: "100%", textAlign: "center", fontFamily: sans, fontSize: 18,

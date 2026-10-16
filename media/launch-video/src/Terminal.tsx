@@ -185,7 +185,7 @@ export const Terminal: React.FC = () => {
   return (
     <AbsoluteFill style={{ fontFamily: sans }}>
       <Backdrop />
-      <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.14 * interpolate(f, [0, 20, TERMINAL_FRAMES - 40, TERMINAL_FRAMES], [0, 1, 1, 0], clamp)} />
+      <Audio src={staticFile("sfx/music.mp3")} volume={(f: number) => 0.22 * interpolate(f, [0, 20, TERMINAL_FRAMES - 40, TERMINAL_FRAMES], [0, 1, 1, 0], clamp)} />
       <Sound />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", perspective: 1600 }}>
         <div style={{
