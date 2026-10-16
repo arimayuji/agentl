@@ -485,9 +485,12 @@ def main(argv: list[str] | None = None) -> int:
         rows = [json.loads(line) for line in Path(a.results).read_text().splitlines() if line.strip()]
         print(report(rows))
         return 0
-    tasks = sorted(
-        t for t in TASKS.iterdir() if (t / "task.md").is_file() and (not a.tasks or t.name in a.tasks)
-    )
+    known = sorted(t for t in TASKS.iterdir() if (t / "task.md").is_file())
+    unknown = sorted(set(a.tasks or []) - {t.name for t in known})
+    if unknown:  # an old checkout without the task must not run fewer tasks without a word
+        print(f"unknown task(s): {', '.join(unknown)}. Tasks here: {', '.join(t.name for t in known)}")
+        return 2
+    tasks = [t for t in known if not a.tasks or t.name in a.tasks]
     arms = {"both": ["agentl", "plain"], "all": list(ARMS)}.get(a.arm, [a.arm])
 
     def keep(n: int, task: Path, arm: str) -> Path | None:

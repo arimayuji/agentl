@@ -124,3 +124,10 @@ def test_fake_llm_answers_in_the_requested_schema():
         assert llm.calls == 2
     finally:
         llm.close()
+
+
+def test_an_unknown_task_stops_the_run(tmp_path, capsys):
+    out = tmp_path / "r.jsonl"
+    args = ["run", "--tasks", "01-filter-paid-orders", "99-nope", "--agent", "true", "--out", str(out)]
+    assert agent_bench.main(args) == 2
+    assert "unknown task(s): 99-nope" in capsys.readouterr().out and not out.exists()
