@@ -208,3 +208,101 @@ export const Million: React.FC = () => {
     </AbsoluteFill>
   );
 };
+
+// ---------------------------------------------------------------- 3. NF-e (coming soon, #161)
+export const NFE_FRAMES = 390;
+const NFE_FILES = Array.from({ length: 14 }, (_, i) => `35261012345678000190550010000${String(4310 + i * 37).padStart(5, "0")}.xml`);
+const NFE_ROWS = [
+  ["Distribuidora Sol", "8471.30.12", "5102", "Notebook 14\"", "3.899,00"],
+  ["Distribuidora Sol", "8528.52.20", "5102", "Monitor 24\"", "1.249,90"],
+  ["Papelaria Rio", "4802.56.10", "5405", "Papel A4 (cx)", "289,50"],
+  ["Café Palmeira", "0901.21.00", "5102", "Café 1 kg", "64,90"],
+  ["Café Palmeira", "1701.99.00", "5102", "Açúcar 5 kg", "27,80"],
+  ["TecnoSul", "8517.62.59", "6102", "Roteador Wi-Fi", "459,00"],
+];
+
+export const Nfe: React.FC = () => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const flyStart = 40;
+  const tableAt = 175;
+  const yamlAt = 120;
+  return (
+    <AbsoluteFill style={{ fontFamily: sans }}>
+      <Backdrop />
+      <Music frames={NFE_FRAMES} />
+      <Sfx at={flyStart} src="sfx/whoosh-in.wav" volume={0.35} />
+      {NFE_ROWS.map((_, i) => (
+        <Sfx key={i} at={tableAt + 10 + i * 12} src="sfx/tick.wav" volume={0.25} />
+      ))}
+      <Sfx at={tableAt + 95} src="sfx/ding2.wav" volume={0.4} />
+      <AbsoluteFill style={{ padding: "96px 56px 64px" }}>
+        <Pop at={0} style={{ fontSize: 70, fontWeight: 800, letterSpacing: -2, color: k.ink, lineHeight: 1.05 }}>
+          Uma pasta de XML de NF-e.<br /><span style={{ color: k.palm }}>Uma planilha de itens.</span>
+        </Pop>
+      </AbsoluteFill>
+      {/* XML files fly into the YAML card */}
+      {NFE_FILES.map((name, i) => {
+        const at = flyStart + i * 5;
+        const p = interpolate(f, [at, at + 40], [0, 1], { ...clamp, easing: Easing.in(Easing.cubic) });
+        if (f < at || p >= 1) return null;
+        const x0 = 80 + (i % 4) * 230;
+        const y0 = 380 + Math.floor(i / 4) * 80;
+        return (
+          <div key={name} style={{ position: "absolute", left: x0 + (430 - x0) * p, top: y0 + (560 - y0) * p,
+            transform: `scale(${1 - p * 0.7}) rotate(${(i % 2 ? 6 : -6) * (1 - p)}deg)`, opacity: 1 - p * 0.6,
+            padding: "10px 14px", borderRadius: 12, background: k.white, border: `2px solid ${k.palm}`,
+            fontFamily: mono, fontSize: 16, color: k.ink, boxShadow: "0 8px 20px rgba(11,27,43,.12)", whiteSpace: "nowrap" }}>
+            &lt;NFe&gt; {name.slice(0, 18)}…
+          </div>
+        );
+      })}
+      {/* the pipeline */}
+      <div style={{ position: "absolute", left: 56, right: 56, top: 360,
+        opacity: lerp(f, yamlAt, yamlAt + 12, 0, 1) * (f < tableAt ? 1 : lerp(f, tableAt, tableAt + 12, 1, 0)),
+        transform: `translateY(${lerp(f, yamlAt, yamlAt + 14, 30, 0)}px)` }}>
+        <div style={{ background: k.white, border: `2px solid ${k.line}`, borderRadius: 24, padding: "26px 30px",
+          fontFamily: mono, fontSize: 30, lineHeight: 1.6, whiteSpace: "pre", boxShadow: "0 20px 50px rgba(11,27,43,.10)" }}>
+          <div><span style={{ color: k.blue }}>- use:</span> nfe.read</div>
+          <div>{"  "}<span style={{ color: k.blue }}>with:</span> {"{ path: \"xml/*.xml\", level: item }"}</div>
+          <div><span style={{ color: k.blue }}>- use:</span> excel.write</div>
+        </div>
+      </div>
+      {/* the spreadsheet */}
+      <div style={{ position: "absolute", left: 40, right: 40, top: 330, opacity: lerp(f, tableAt, tableAt + 10, 0, 1) }}>
+        <div style={{ background: k.white, border: `2px solid ${k.line}`, borderRadius: 22, overflow: "hidden",
+          boxShadow: "0 20px 50px rgba(11,27,43,.12)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1.1fr 0.6fr 1.4fr 0.9fr", gap: 0,
+            background: "#e8f5ec", padding: "14px 18px", fontSize: 22, fontWeight: 700, color: k.palm }}>
+            {["emitente", "NCM", "CFOP", "item", "valor (R$)"].map((h) => <div key={h}>{h}</div>)}
+          </div>
+          {NFE_ROWS.map((row, i) => {
+            const s = spring({ frame: f - (tableAt + 10 + i * 12), fps, config: { damping: 14, stiffness: 170 } });
+            return (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1.5fr 1.1fr 0.6fr 1.4fr 0.9fr",
+                padding: "14px 18px", fontSize: 22, color: k.ink, borderTop: `1px solid ${k.line}`,
+                opacity: Math.min(1, s * 1.5), transform: `translateX(${(1 - s) * 40}px)` }}>
+                {row.map((cell, j) => (
+                  <div key={j} style={{ fontFamily: j === 1 || j === 2 || j === 4 ? mono : sans,
+                    textAlign: j === 4 ? "right" : "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{cell}</div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+        <Pop at={tableAt + 95} style={{ marginTop: 22, display: "flex", gap: 14, flexWrap: "wrap" }}>
+          {["chave validada", "impostos por item", "nota cancelada marcada", "sem SEFAZ, sem LLM"].map((t) => (
+            <div key={t} style={{ padding: "10px 18px", borderRadius: 999, background: k.white, border: `1px solid ${k.line}`,
+              fontSize: 22, color: k.ink }}>✓ {t}</div>
+          ))}
+        </Pop>
+      </div>
+      <Pop at={6} style={{ position: "absolute", top: 34, left: 56, padding: "10px 20px", borderRadius: 999,
+        background: k.sun, color: k.ink, fontWeight: 800, fontSize: 24 }}>EM BREVE</Pop>
+      <Sign at={330} />
+      <div style={{ position: "absolute", bottom: 20, left: 0, right: 0, textAlign: "center", fontSize: 16, color: k.muted }}>
+        dados fictícios
+      </div>
+    </AbsoluteFill>
+  );
+};

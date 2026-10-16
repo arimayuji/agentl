@@ -87,7 +87,9 @@ the text on screen carries the story. Numbers are formatted for a Brazilian audi
   Sample numbers, labelled on screen.
 - `XMillion`: the 1M-row CSV → filter → SQLite race from `python -m benchmarks --compare` (#157), with
   peak memory. Post it once the release with those optimisations is out.
+- `XNfe`: a folder of NF-e XML files becoming a spreadsheet of items, marked "em breve" because
+  `nfe.read` (#161) is not built yet. Fictitious data, labelled.
 
 ```bash
-npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4
+npm run render:x   # out/x-pay-twice.mp4, out/x-million.mp4, out/x-nfe.mp4
 ```
