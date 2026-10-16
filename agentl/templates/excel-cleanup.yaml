@@ -1,0 +1,21 @@
+# Clean a spreadsheet export: keep and rename columns, drop duplicates, write a new spreadsheet.
+# Needs: pip install "agentl-etl[excel]"
+name: excel-cleanup
+steps:
+  - id: raw
+    use: excel.read
+    with: { path: customers.xlsx, sheet: export }
+  - id: columns
+    use: select
+    input: raw
+    with:
+      fields: [Cod Cliente, Nome, E-mail]
+      rename: { Cod Cliente: id, Nome: name, E-mail: email }
+  - id: unique
+    use: dedupe
+    input: columns
+    with: { on: id }
+  - id: save
+    use: excel.write
+    input: unique
+    with: { path: out/customers-clean.xlsx, sheet: customers }

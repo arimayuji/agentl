@@ -1,0 +1,20 @@
+# Tell someone when a run fails. Swap `console` for slack, teams, email, discord, telegram...
+name: alert-on-failure
+notify:
+  channels:
+    console: {}
+  rules:
+    - on: run.failed
+      to: [console]
+steps:
+  - id: orders
+    use: csv.read
+    with: { path: orders.csv }
+  - id: verify
+    check: orders
+    expect:
+      not_null: [id]
+  - id: save
+    use: json.write
+    input: verify
+    with: { path: out/orders.json }

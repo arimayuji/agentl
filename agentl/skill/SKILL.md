@@ -37,8 +37,10 @@ Python. URLs to private addresses are refused unless `AGENTL_ALLOW_HOSTS` allows
 
 ## Pipelines: write, check, run
 
-1. Write `pipeline.yaml` (shapes below). `agentl connectors` lists the connectors and
-   `agentl connectors http.get` shows one's `with:` parameters; never invent one.
+1. Write `pipeline.yaml` (shapes below), or start from a tested template: `agentl new --list`,
+   then `agentl new -t incremental-api-load -o pipeline.yaml` (no LLM call). `agentl connectors`
+   lists the connectors and `agentl connectors http.get` shows one's `with:` parameters; never
+   invent one.
 2. `agentl run` checks the pipeline first: on an error it stops before running and prints the
    line, the code and the `fix`. `agentl lint pipeline.yaml --format json` lists every finding,
    warnings (`AL...`, best practices) included.

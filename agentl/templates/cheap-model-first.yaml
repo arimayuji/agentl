@@ -1,0 +1,24 @@
+# A cheap model answers first; records it is unsure about go to a stronger one.
+name: cheap-model-first
+llm:
+  cheap: { provider: openrouter, model: openai/gpt-4o-mini }
+  strong: { provider: openrouter, model: anthropic/claude-sonnet-4.5 }
+budget: { max_usd: 2 }
+steps:
+  - id: tickets
+    use: csv.read
+    with: { path: tickets.csv }
+  - id: classify
+    input: tickets
+    agent: >
+      Classify the support ticket as bug, billing or account.
+      confidence: how sure you are, from 0 to 1.
+    llm: [cheap, strong]
+    escalate_below: 0.8
+    output:
+      category: str
+      confidence: float
+  - id: save
+    use: csv.write
+    input: classify
+    with: { path: out/tickets.csv }

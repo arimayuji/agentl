@@ -121,8 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     co = cmd("connectors", "list installed connectors, or show one connector's parameters")
     co.add_argument("name", nargs="?", help="a connector, e.g. http.get: prints its `with:` parameters")
 
-    n = cmd("new", "write a pipeline from a description (asks an LLM, then validates)")
-    n.add_argument("description")
+    n = cmd("new", "write a pipeline: from a tested template (no LLM), or from a description (asks an LLM)")
+    n.add_argument("description", nargs="?", help="what the pipeline should do (asks an LLM)")
+    n.add_argument("--template", "-t", metavar="NAME", help="start from a tested template, no LLM call")
+    n.add_argument("--list", action="store_true", help="list the templates")
     n.add_argument("-o", "--output", help="write the YAML here instead of printing it")
     n.add_argument("--provider", help="LLM provider (default: $AGENTL_PROVIDER or anthropic)")
     n.add_argument("--model", help="model (default: $AGENTL_MODEL)")
@@ -240,6 +242,29 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "connectors":
             print(registry.describe(a.name) if a.name else "\n".join(registry.names()))
             return 0
+        if a.cmd == "new" and (a.list or a.template):
+            from . import templates
+
+            if a.list:
+                width = max(map(len, templates.names()))
+                for name in templates.names():
+                    print(f"{name:<{width}}  {templates.summary(name)}")
+                return 0
+            text = templates.text(a.template)
+            if a.output:
+                with open(a.output, "x", encoding="utf-8") as f:
+                    f.write(text)
+                print(
+                    f"wrote {a.output} from template {a.template}: "
+                    f"edit paths and fields, then agentl run {a.output}",
+                    file=sys.stderr,
+                )
+            else:
+                print(text, end="")
+            return 0
+        if a.cmd == "new" and not a.description:
+            print("agentl new: give a description, --template NAME or --list", file=sys.stderr)
+            return 2
         if a.cmd == "new":
             text, spec = assist.new_pipeline(
                 a.description,

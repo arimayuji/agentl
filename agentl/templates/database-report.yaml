@@ -1,0 +1,13 @@
+# Query a database and publish the result as JSON. Same shape for Postgres (postgres.read) or any
+# SQLAlchemy URL (sql.read).
+name: database-report
+steps:
+  - id: totals
+    use: sqlite.read
+    with:
+      db: shop.db
+      query: select region, count(*) as orders, round(sum(total), 2) as total from orders group by region order by region
+  - id: save
+    use: json.write
+    input: totals
+    with: { path: out/totals.json }

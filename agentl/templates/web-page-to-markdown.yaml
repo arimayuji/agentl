@@ -1,0 +1,19 @@
+# Turn a web page into clean Markdown (navigation and footer removed) and summarize it.
+# Needs: pip install "agentl-etl[web]"
+name: web-page-to-markdown
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: page
+    use: html.read
+    with: { url: "${SITE_URL:-https://example.com}/release-notes.html", format: markdown }
+  - id: summarize
+    input: page
+    agent: List the changes in this release as short bullet points.
+    output:
+      changes: list[str]
+  - id: save
+    use: json.write
+    input: summarize
+    with: { path: out/release-notes.json }

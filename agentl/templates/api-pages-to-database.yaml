@@ -1,0 +1,16 @@
+# Read every page of a JSON API and load it into a database.
+# DATABASE_URL: any SQLAlchemy URL (postgresql://..., mysql://...); a local SQLite file by default.
+# Needs: pip install "agentl-etl[sql]"
+name: api-pages-to-database
+steps:
+  - id: orders
+    use: http.get
+    with:
+      url: "${API_URL:-https://api.example.com}/orders"
+      params: { per_page: 2 }
+      paginate: { param: page, next: next_page }
+      items: items
+  - id: load
+    use: sql.write
+    input: orders
+    with: { url: "${DATABASE_URL:-sqlite:///out/orders.db}", table: orders, mode: replace }
