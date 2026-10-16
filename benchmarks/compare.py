@@ -327,6 +327,63 @@ CASES: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------- regression gate
+# What the gate compares: agentl against a reference variant measured in the same run, on the same
+# machine. A slower CI runner slows both, so the ratio stays put; only agentl getting slower moves it.
+# (case, agentl variant, reference variant, time tolerance). The Parquet job takes half a second, so
+# its ratio swings by tens of percent between runs on a shared machine: it gets a wider tolerance.
+GATES: list[tuple[str, str, str, float]] = [
+    ("csv -> clean -> sqlite", "agentl (chunk_size 50k)", "plain Python (csv + sqlite3, batches)", 0.2),
+    ("LLM call per record", "agentl (concurrency 8)", "plain Python (8 threads)", 0.2),
+    ("csv -> pandas -> parquet", "agentl (@dataframe, Arrow)", "pandas only", 0.75),
+]
+
+
+def ratios(results: list[dict]) -> dict[str, dict]:
+    """Per gate: agentl seconds over the reference's, and agentl's peak MB."""
+    by_case = {
+        c["case"]: {v["variant"]: v for v in c.get("variants", []) if "skipped" not in v} for c in results
+    }
+    out: dict[str, dict] = {}
+    for case, mine, ref, tolerance in GATES:
+        v = by_case.get(case, {})
+        if mine in v and ref in v and v[ref]["seconds"] > 0:
+            out[case] = {
+                "agentl": mine,
+                "reference": ref,
+                "time_ratio": round(v[mine]["seconds"] / v[ref]["seconds"], 3),
+                "peak_mb": round(v[mine]["peak_mb"], 1),
+                "time_tolerance": tolerance,
+            }
+    return out
+
+
+def check(results: list[dict], baseline: dict, mb_tolerance: float = 0.25) -> list[str]:
+    """Regressions against `baseline` (a file written by --write-baseline): a time ratio more than
+    its gate's tolerance above the baseline's, or a peak memory more than `mb_tolerance` above it
+    (plus 10 MB of slack for small numbers). An empty list means the gate passes."""
+    now = ratios(results)
+    problems = []
+    for case, base in baseline.get("ratios", {}).items():
+        cur = now.get(case)
+        if cur is None:
+            problems.append(f"{case}: not measured (a variant was skipped or renamed)")
+            continue
+        limit = base["time_ratio"] * (1 + cur["time_tolerance"])
+        if cur["time_ratio"] > limit:
+            problems.append(
+                f"{case}: agentl takes {cur['time_ratio']:.2f}x the reference, baseline "
+                f"{base['time_ratio']:.2f}x (limit {limit:.2f}x)"
+            )
+        mb_limit = base["peak_mb"] * (1 + mb_tolerance) + 10
+        if cur["peak_mb"] > mb_limit:
+            problems.append(
+                f"{case}: peak {cur['peak_mb']:.0f} MB, "
+                f"baseline {base['peak_mb']:.0f} MB (limit {mb_limit:.0f})"
+            )
+    return problems
+
+
 # ---------------------------------------------------------------- measurement (child process)
 def _io() -> tuple[int, int]:
     try:

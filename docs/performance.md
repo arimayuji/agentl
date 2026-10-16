@@ -87,6 +87,31 @@ What this says:
   reads more bytes because of the run state.
 - Peak MB of 0 means the job did not grow the process past what imports and setup had used.
 
+## Regression gate
+
+Every pull request that touches `agentl/` or `benchmarks/` runs the comparison above at full size
+and fails when agentl got slower or heavier than `benchmarks/baseline.json`:
+
+```bash
+python -m benchmarks --compare --check benchmarks/baseline.json
+```
+
+The gate compares ratios, not seconds: agentl's time over a reference variant measured in the same
+run (plain Python for the CSV and LLM jobs, pandas for the Parquet job). A slower CI machine slows
+both and leaves the ratio where it was; only agentl getting slower moves it. A ratio more than 20%
+above the baseline fails (75% for the half-second Parquet job, whose ratio swings between runs on a
+shared machine), and so does peak memory more than 25% (plus 10 MB) above it.
+
+`--quick` is not used for the gate: on 10% of the data agentl's start-up cost swamps the job, and the
+Parquet ratio moved from 3.6x to 5.5x between two identical runs.
+
+When a change is meant to cost time (a new safety check, say), update the baseline in the same pull
+request, where the reviewer sees the new numbers:
+
+```bash
+python -m benchmarks --compare --write-baseline benchmarks/baseline.json
+```
+
 ## Call shapes
 
 `agent call shapes` runs the same 500 records four ways (concurrency 8, price 3 / 15 / 0.30 per
