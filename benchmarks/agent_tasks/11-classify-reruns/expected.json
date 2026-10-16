@@ -1,0 +1,246 @@
+{
+ "output": "out/result.json",
+ "key": "id",
+ "records": [
+  {
+   "id": "T-001",
+   "category": "billing"
+  },
+  {
+   "id": "T-002",
+   "category": "billing"
+  },
+  {
+   "id": "T-003",
+   "category": "bug"
+  },
+  {
+   "id": "T-004",
+   "category": "billing"
+  },
+  {
+   "id": "T-005",
+   "category": "cancel"
+  },
+  {
+   "id": "T-006",
+   "category": "bug"
+  },
+  {
+   "id": "T-007",
+   "category": "billing"
+  },
+  {
+   "id": "T-008",
+   "category": "bug"
+  },
+  {
+   "id": "T-009",
+   "category": "bug"
+  },
+  {
+   "id": "T-010",
+   "category": "bug"
+  },
+  {
+   "id": "T-011",
+   "category": "bug"
+  },
+  {
+   "id": "T-012",
+   "category": "cancel"
+  },
+  {
+   "id": "T-013",
+   "category": "bug"
+  },
+  {
+   "id": "T-014",
+   "category": "bug"
+  },
+  {
+   "id": "T-015",
+   "category": "billing"
+  },
+  {
+   "id": "T-016",
+   "category": "bug"
+  },
+  {
+   "id": "T-017",
+   "category": "cancel"
+  },
+  {
+   "id": "T-018",
+   "category": "cancel"
+  },
+  {
+   "id": "T-019",
+   "category": "bug"
+  },
+  {
+   "id": "T-020",
+   "category": "billing"
+  },
+  {
+   "id": "T-021",
+   "category": "cancel"
+  },
+  {
+   "id": "T-022",
+   "category": "cancel"
+  },
+  {
+   "id": "T-023",
+   "category": "cancel"
+  },
+  {
+   "id": "T-024",
+   "category": "billing"
+  },
+  {
+   "id": "T-025",
+   "category": "billing"
+  },
+  {
+   "id": "T-026",
+   "category": "cancel"
+  },
+  {
+   "id": "T-027",
+   "category": "billing"
+  },
+  {
+   "id": "T-028",
+   "category": "bug"
+  },
+  {
+   "id": "T-029",
+   "category": "cancel"
+  },
+  {
+   "id": "T-030",
+   "category": "bug"
+  },
+  {
+   "id": "T-031",
+   "category": "cancel"
+  },
+  {
+   "id": "T-032",
+   "category": "billing"
+  },
+  {
+   "id": "T-033",
+   "category": "billing"
+  },
+  {
+   "id": "T-034",
+   "category": "bug"
+  },
+  {
+   "id": "T-035",
+   "category": "bug"
+  },
+  {
+   "id": "T-036",
+   "category": "bug"
+  },
+  {
+   "id": "T-037",
+   "category": "billing"
+  },
+  {
+   "id": "T-038",
+   "category": "cancel"
+  },
+  {
+   "id": "T-039",
+   "category": "cancel"
+  },
+  {
+   "id": "T-040",
+   "category": "billing"
+  },
+  {
+   "id": "T-041",
+   "category": "cancel"
+  },
+  {
+   "id": "T-042",
+   "category": "cancel"
+  },
+  {
+   "id": "T-043",
+   "category": "bug"
+  },
+  {
+   "id": "T-044",
+   "category": "billing"
+  },
+  {
+   "id": "T-045",
+   "category": "cancel"
+  },
+  {
+   "id": "T-046",
+   "category": "bug"
+  },
+  {
+   "id": "T-047",
+   "category": "cancel"
+  },
+  {
+   "id": "T-048",
+   "category": "billing"
+  },
+  {
+   "id": "T-049",
+   "category": "cancel"
+  },
+  {
+   "id": "T-050",
+   "category": "bug"
+  },
+  {
+   "id": "T-051",
+   "category": "billing"
+  },
+  {
+   "id": "T-052",
+   "category": "cancel"
+  },
+  {
+   "id": "T-053",
+   "category": "billing"
+  },
+  {
+   "id": "T-054",
+   "category": "bug"
+  },
+  {
+   "id": "T-055",
+   "category": "bug"
+  },
+  {
+   "id": "T-056",
+   "category": "billing"
+  },
+  {
+   "id": "T-057",
+   "category": "billing"
+  },
+  {
+   "id": "T-058",
+   "category": "bug"
+  },
+  {
+   "id": "T-059",
+   "category": "billing"
+  },
+  {
+   "id": "T-060",
+   "category": "bug"
+  }
+ ]
+}

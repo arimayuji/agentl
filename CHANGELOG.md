@@ -21,6 +21,19 @@ They are always listed under **Changed** or **Removed**.
   and `email.send`. They share templates, each/batch, the `max_messages` cap and retries, and the
   new services are `notify:` channels too: `whatsapp`, `sms`, `googlechat`, `mattermost`, `ntfy`,
   `pushover`, `matrix`.
+- `sqlite.write` takes `mode: upsert` with `key`: a record replaces the row with the same key, so
+  incremental loads into SQLite need no SQLAlchemy (#143).
+- `agentl connectors <name>` prints a connector's `with:` parameters, types, defaults and notes,
+  so an agent writes the step without guessing; `http.get` and `filter` document their options.
+- Agent benchmark (#143): three tasks that run twice, where a pipeline should win (re-run with
+  new records, resume after an LLM outage, incremental API load), against a local fake LLM that
+  counts calls; arms `agentl` (the agent picks script or pipeline), `agentl-pipeline` and
+  `agentl-python`; the report shows what the second run paid for and tokens without cache reads.
+
+### Changed
+
+- The agentl skill no longer points to web pages an agent may not reach: it shows a files-and-API
+  pipeline without an LLM next to the LLM one, and `agentl connectors <name>` for parameters.
 
 ## [0.9.0] - 2026-10-15
 

@@ -8,7 +8,10 @@ Each task in `benchmarks/agent_tasks/<task>/` has `task.md` (the request), `inpu
 gives the agent the request, then compares the output it wrote with the expected records. An HTTP
 server on 127.0.0.1 serves `input/api/` for tasks that call an API.
 
-- arm `agentl`: the agentl skill is installed in the folder and the request says to use agentl.
+- arm `agentl`: the agentl skill is installed in the folder and the request says to use agentl;
+  the agent picks a script or a pipeline.
+- arm `agentl-pipeline`: the same, but the request asks for a pipeline.
+- arm `agentl-python`: the request asks for a script with agentl's Python API.
 - arm `plain`: the request says to use Python without agentl.
 
 The agent is any command that reads the request on stdin and works in the current folder; the
@@ -22,6 +25,7 @@ import csv
 import http.server
 import json
 import os
+import re
 import shlex
 import shutil
 import statistics
@@ -36,9 +40,12 @@ from urllib.parse import parse_qs, urlparse
 TASKS = Path(__file__).parent / "agent_tasks"
 DEFAULT_AGENT = "claude -p --output-format json --allowedTools Bash,Read,Write,Edit,Glob,Grep"
 ARMS = {
-    "agentl": (
-        "Use agentl for this (it is installed: `agentl --help`, docs at https://agentl.com.br/llms.txt). "
-        "Write the pipeline as pipeline.yaml in this folder and run it.\n\n"
+    # The agent picks the size (script or pipeline) as the skill says, like a real user's agent.
+    "agentl": "Use agentl for this (it is installed; the agentl skill explains how).\n\n",
+    # Forced pipeline: what a pipeline costs on one-off tasks, and what it saves on repeated ones.
+    "agentl-pipeline": (
+        "Use agentl for this (it is installed; the agentl skill explains how). "
+        "Write it as a pipeline, pipeline.yaml in this folder, and run it with `agentl run`.\n\n"
     ),
     "agentl-python": (
         "Use agentl as a Python library for this (it is installed): a short script with "
@@ -64,7 +71,16 @@ def _key(record: dict, key: str) -> tuple:
     return tuple(_norm(record.get(k)) for k in key.split("+"))
 
 
-def read_output(path: Path) -> list[dict]:
+def read_output(path: Path, table: str | None = None) -> list[dict]:
+    if path.suffix == ".db":
+        import sqlite3
+
+        con = sqlite3.connect(path)
+        con.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in con.execute(f'select * from "{table}"')]  # table from expected.json
+        finally:
+            con.close()
     if path.suffix == ".json":
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else [data]
@@ -80,7 +96,7 @@ def score(task: Path, workspace: Path) -> dict:
     if not out.is_file():
         return {"ok": False, "detail": f"no {spec['output']}", "right": 0, "expected": len(spec["records"])}
     try:
-        got = read_output(out)
+        got = read_output(out, spec.get("table"))
     except Exception as e:
         return {
             "ok": False,
@@ -108,18 +124,33 @@ def score(task: Path, workspace: Path) -> dict:
 
 # ---------------------------------------------------------------- one run
 class _Api:
+    """Serves `input/api/<name>.json` (or `<name>.page<N>.json` for `?page=N`). A list served with
+    `?since=X` keeps the items whose `updated_at` is after X. Counts the items served."""
+
     def __init__(self, root: Path):
+        api = self
+        self.served = 0
+
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a: Any) -> None:
                 pass
 
             def do_GET(self) -> None:
                 url = urlparse(self.path)
-                page = parse_qs(url.query).get("page", ["1"])[0]
+                query = parse_qs(url.query)
+                page = query.get("page", ["1"])[0]
                 name = url.path.strip("/")
                 path = root / f"{name}.page{page}.json"
                 path = path if path.is_file() else root / f"{name}.json"
                 body = path.read_bytes() if path.is_file() else b""
+                if body:
+                    data = json.loads(body)
+                    if isinstance(data, list) and query.get("since"):
+                        since = query["since"][0]
+                        data = [d for d in data if str(d.get("updated_at", "")) > since]
+                        body = json.dumps(data).encode()
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    api.served += len(items) if isinstance(items, list) else 0
                 self.send_response(200 if body else 404)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -128,6 +159,98 @@ class _Api:
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+    def close(self) -> None:
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+_ID = re.compile(r"\b[A-Z]{1,3}-\d{2,}\b")
+
+
+class _Llm:
+    """An OpenAI-compatible chat API on 127.0.0.1 that knows the answers: it finds the record id
+    (like `T-001`) in the message and answers that record's fields from `answers`, as JSON in the
+    shape the request's json_schema asks for (or plain JSON). `fail_after` calls, it answers 503
+    (a provider outage). Counts calls, so a run that pays twice for the same record shows."""
+
+    def __init__(self, answers: dict[str, dict], fail_after: int | None = None):
+        llm = self
+        self.calls = 0
+        self.fail_after = fail_after
+        self.lock = threading.Lock()
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a: Any) -> None:
+                pass
+
+            def do_GET(self) -> None:  # /models, for clients that list them first
+                self._send(200, {"data": [{"id": "bench-small", "object": "model"}]})
+
+            def do_POST(self) -> None:
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                with llm.lock:
+                    llm.calls += 1
+                    down = llm.fail_after is not None and llm.calls > llm.fail_after
+                if down:
+                    self._send(503, {"error": {"message": "the provider is overloaded, try later"}})
+                    return
+                text = " ".join(
+                    m["content"] if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
+                    for m in req.get("messages", [])
+                    if m.get("role") == "user"
+                )
+                found = [i for i in dict.fromkeys(_ID.findall(text)) if i in answers]
+                answer = dict(answers[found[0]]) if found else {}
+                fmt = ((req.get("response_format") or {}).get("json_schema") or {}).get("schema") or {}
+                props = fmt.get("properties") or {}
+                if props:  # fill the schema: known fields from the answer, typed blanks for the rest
+                    blank = {
+                        "string": "",
+                        "boolean": False,
+                        "number": 0,
+                        "integer": 0,
+                        "array": [],
+                        "object": {},
+                    }
+                    out = {}
+                    for name, p in props.items():
+                        kind = p.get("type")
+                        kind = (
+                            next((t for t in kind if t != "null"), "string")
+                            if isinstance(kind, list)
+                            else kind
+                        )
+                        out[name] = answer.get(name, blank.get(kind or "string", ""))
+                    answer = out
+                self._send(
+                    200,
+                    {
+                        "id": f"bench-{llm.calls}",
+                        "object": "chat.completion",
+                        "model": req.get("model", "bench-small"),
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": json.dumps(answer)},
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+                    },
+                )
+
+            def _send(self, code: int, data: dict) -> None:
+                body = json.dumps(data).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
 
     def close(self) -> None:
         self.srv.shutdown()
@@ -147,10 +270,16 @@ def _metrics(stdout: str) -> dict:
         int(usage.get(k) or 0)
         for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
     )
+    # Without cache reads: every turn re-reads the conversation from the cache, which inflates
+    # `tokens` with turns; cost already weighs cache reads at their (lower) price.
+    fresh = sum(
+        int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens")
+    )
     return {
         "cost_usd": data.get("total_cost_usd"),
         "turns": data.get("num_turns"),
         "tokens": tokens or None,
+        "fresh_tokens": fresh or None,
         "agent_error": bool(data.get("is_error")) or data.get("subtype") not in (None, "success"),
         "agent_says": str(data.get("result") or "")[:300],
         "models": sorted(data.get("modelUsage") or {}),  # which model(s) did the work
@@ -164,48 +293,114 @@ def _argv(command: str) -> list[str]:
     return [a[1:-1] if len(a) > 1 and a[0] == a[-1] == '"' else a for a in shlex.split(command, posix=False)]
 
 
+def _invoke(
+    agent: str, prompt: str, ws: Path, timeout: float, env: dict
+) -> tuple[str, str, int | None, bool]:
+    try:
+        proc = subprocess.run(
+            _argv(agent), input=prompt, cwd=ws, capture_output=True, text=True, timeout=timeout, env=env
+        )
+        return proc.stdout, proc.stderr, proc.returncode, False
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return out, "", None, True
+    except FileNotFoundError as e:
+        return "", f"agent command not found: {e}", 127, False
+
+
+def _add(total: dict, part: dict) -> dict:
+    """Metrics of two phases added up (cost, turns, tokens); the rest from the last phase."""
+    out = {**total, **part}
+    for k in ("cost_usd", "turns", "tokens", "fresh_tokens"):
+        if total.get(k) is not None or part.get(k) is not None:
+            out[k] = (total.get(k) or 0) + (part.get(k) or 0)
+    return out
+
+
 def run_one(task: Path, arm: str, agent: str, timeout: float, keep: Path | None = None) -> dict:
+    """One task, one arm. A task with `task2.md` runs twice in the same folder, like the next day:
+    `input2/` is copied over `input/` first. `bench.json` may add a fake LLM (`llm`) and says what
+    the second phase should cost (`measure`: LLM calls or API records, with its `ideal`)."""
+    cfg = (
+        json.loads((task / "bench.json").read_text(encoding="utf-8"))
+        if (task / "bench.json").is_file()
+        else {}
+    )
     with tempfile.TemporaryDirectory(prefix=f"agentl-bench-{task.name}-") as tmp:
         ws = Path(tmp)
         shutil.copytree(task / "input", ws / "input")
         api = _Api(ws / "input" / "api") if (ws / "input" / "api").is_dir() else None
+        llm = None
+        if "llm" in cfg:
+            spec = json.loads((task / "expected.json").read_text(encoding="utf-8"))
+            key = spec["key"]
+            answers = {str(r[key]): {k: v for k, v in r.items() if k != key} for r in spec["records"]}
+            llm = _Llm(answers, cfg["llm"].get("fail_after"))
         if arm.startswith("agentl"):
             skill = Path(__file__).parent.parent / "agentl" / "skill" / "SKILL.md"
             (ws / ".claude" / "skills" / "agentl").mkdir(parents=True)
             shutil.copy(skill, ws / ".claude" / "skills" / "agentl" / "SKILL.md")
-        prompt = ARMS[arm] + (task / "task.md").read_text(encoding="utf-8")
-        if api:
-            prompt = prompt.replace("{api_url}", api.url)
+
+        def prompt_for(name: str) -> str:
+            text = ARMS[arm] + (task / name).read_text(encoding="utf-8")
+            if api:
+                text = text.replace("{api_url}", api.url)
+            if llm:
+                text = text.replace("{llm_url}", llm.url)
+            return text
+
         # The local API stands in for a public one: let agentl's SSRF guard reach it, as it would
         # reach the real API, so no arm spends turns on the guard.
         env = {**os.environ, "AGENTL_ALLOW_HOSTS": "127.0.0.1"}
+        if llm:
+            env.update(OPENAI_API_KEY="bench", OPENAI_BASE_URL=llm.url)
+        phases = ["task.md"] + (["task2.md"] if (task / "task2.md").is_file() else [])
         t0 = time.time()
-        try:
-            proc = subprocess.run(
-                _argv(agent), input=prompt, cwd=ws, capture_output=True, text=True, timeout=timeout, env=env
-            )
-            stdout, stderr, code, timed_out = proc.stdout, proc.stderr, proc.returncode, False
-        except subprocess.TimeoutExpired as e:
-            stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-            stderr, code, timed_out = "", None, True
-        except FileNotFoundError as e:
-            stdout, stderr, code, timed_out = "", f"agent command not found: {e}", 127, False
+        metrics: dict = {}
+        stdout = stderr = ""
+        code: int | None = 0
+        timed_out = False
+        second: dict[str, int] = {}
+        for n, name in enumerate(phases):
+            if n == 1:
+                if (task / "input2").is_dir():
+                    shutil.copytree(task / "input2", ws / "input", dirs_exist_ok=True)
+                if llm:
+                    llm.fail_after = None  # the provider is back
+                calls0, served0 = (llm.calls if llm else 0), (api.served if api else 0)
+            stdout, stderr, code, timed_out = _invoke(agent, prompt_for(name), ws, timeout, env)
+            metrics = _add(metrics, _metrics(stdout))
+            if keep is not None:  # what the agent wrote and said, to see where its turns went
+                keep.mkdir(parents=True, exist_ok=True)
+                (keep / f"agent-stdout{'' if n == 0 else n + 1}.txt").write_text(stdout, encoding="utf-8")
+            if n == 1:
+                second = {
+                    "phase2_llm_calls": (llm.calls - calls0) if llm else 0,
+                    "phase2_api_records": (api.served - served0) if api else 0,
+                }
+            if timed_out or code == 127:  # a failed phase 1 (an outage) still gets its next day
+                break
         seconds = round(time.time() - t0, 1)
-        if keep is not None:  # what the agent wrote and said, to see where its turns went
-            keep.mkdir(parents=True, exist_ok=True)
+        if keep is not None:
             shutil.copytree(ws, keep / "workspace", ignore=shutil.ignore_patterns("input", ".claude"))
-            (keep / "agent-stdout.txt").write_text(stdout, encoding="utf-8")
-        if api:
-            api.close()
+        for server in (api, llm):
+            if server:
+                server.close()
         result = score(task, ws)
+        measure = cfg.get("measure")
+        if measure and second:
+            got = second[f"phase2_{measure['what']}"]
+            result["phase2"] = got
+            result["phase2_ideal"] = measure["ideal"]
         return {
             "task": task.name,
             "arm": arm,
             **result,
+            **second,
             "seconds": seconds,
             "timed_out": timed_out,
             "agent_exit": code,
-            **_metrics(stdout),
+            **metrics,
             # what the agent said when it ended, to tell "agent failed to start" from "wrong answer"
             "agent_tail": (stderr.strip() or stdout.strip())[-300:] if not result["ok"] else "",
         }
@@ -222,13 +417,13 @@ def _spread(values: list[Any]) -> str:
 
 def report(rows: list[dict]) -> str:
     lines = [
-        "| arm | runs | success | cost USD median (min-max) | tokens | turns | seconds |",
+        "| arm | runs | success | cost USD median (min-max) | turns | seconds | tokens without cache reads |",
         "|---|---|---|---|---|---|---|",
     ]
     for arm in sorted({r["arm"] for r in rows}):
         mine = [r for r in rows if r["arm"] == arm]
         ok = sum(r["ok"] for r in mine)
-        cols = [_spread([r.get(k) for r in mine]) for k in ("cost_usd", "tokens", "turns", "seconds")]
+        cols = [_spread([r.get(k) for r in mine]) for k in ("cost_usd", "turns", "seconds", "fresh_tokens")]
         lines.append(
             f"| {arm} | {len(mine)} | {ok}/{len(mine)} ({ok / len(mine):.0%}) | " + " | ".join(cols) + " |"
         )
@@ -243,6 +438,20 @@ def report(rows: list[dict]) -> str:
             mine = [r for r in rows if r["task"] == task and r["arm"] == arm]
             cells.append(f"{sum(r['ok'] for r in mine)}/{len(mine)}")
         lines.append(f"| {task} | " + " | ".join(cells) + " |")
+    repeated = sorted({r["task"] for r in rows if r.get("phase2_ideal") is not None})
+    if repeated:  # jobs that run twice: what the second run paid for, against the ideal
+        arms = sorted({r["arm"] for r in rows})
+        lines += [
+            "",
+            "Second run (LLM calls or API records paid; ideal = only what is new):",
+            "",
+            "| task | ideal | " + " | ".join(arms) + " |",
+            "|---|---|" + "---|" * len(arms),
+        ]
+        for task in repeated:
+            mine = [r for r in rows if r["task"] == task]
+            cells = [_spread([r.get("phase2") for r in mine if r["arm"] == arm]) for arm in arms]
+            lines.append(f"| {task} | {mine[0]['phase2_ideal']} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
 
@@ -276,7 +485,9 @@ def main(argv: list[str] | None = None) -> int:
         rows = [json.loads(line) for line in Path(a.results).read_text().splitlines() if line.strip()]
         print(report(rows))
         return 0
-    tasks = sorted(t for t in TASKS.iterdir() if t.is_dir() and (not a.tasks or t.name in a.tasks))
+    tasks = sorted(
+        t for t in TASKS.iterdir() if (t / "task.md").is_file() and (not a.tasks or t.name in a.tasks)
+    )
     arms = {"both": ["agentl", "plain"], "all": list(ARMS)}.get(a.arm, [a.arm])
 
     def keep(n: int, task: Path, arm: str) -> Path | None:

@@ -18,6 +18,9 @@ MARKERS = {
     "08": "orders.json has",
     "09": "sales/ has",
     "10": "emails/ has",
+    "11": "tickets.csv",
+    "12": "reviews",
+    "13": "/events",
 }
 
 
@@ -91,6 +94,21 @@ def main() -> None:
                 {"file": r["path"].replace("\\", "/").rsplit("/", 1)[-1], "order": m.group(1) if m else None}
             )
         al.write(rows, "out/result.json")
+    elif task in ("11", "12"):  # a script has no cache: every record to the LLM on every run
+        from reference import ask_llm
+
+        name, field = ("tickets", "category") if task == "11" else ("reviews", "sentiment")
+        rows = []
+        try:
+            for r in al.read(f"input/{name}.csv"):
+                rows.append({"id": r["id"], field: ask_llm(f"{field} of: {r['text']}")[field]})
+        except Exception:
+            pass  # the provider went down: keep what we have
+        al.write(rows, "out/result.json")
+    elif task == "13":
+        url = re.search(r"(http://127\.0\.0\.1:\d+)", prompt).group(1)  # type: ignore[union-attr]
+        events = al.read(f"{url}/events")
+        al.write(events, "sqlite:///out/events.db", table="events", mode="replace")
     print('{"total_cost_usd": 0.0, "num_turns": 1, "usage": {"input_tokens": 10, "output_tokens": 5}}')
 
 

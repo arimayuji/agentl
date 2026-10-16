@@ -31,6 +31,8 @@ def select(
 def filter_(
     input: Any, where: dict[str, Any] | None = None, not_empty: str | list[str] | None = None
 ) -> list[dict]:
+    """Keep records whose `where` fields equal the given values (`where: { status: paid }`) and
+    whose `not_empty` fields have a value. Comparisons such as `total > 100` need a `fn:` step."""
     rows = single(input)
     where = where or {}
     return [

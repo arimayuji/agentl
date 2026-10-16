@@ -151,7 +151,7 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append` or `replace`) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
 | `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `batch_size`, `create` (extra `postgres`) |
 

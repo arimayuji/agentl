@@ -151,6 +151,11 @@ def http_get(
     params: dict | None = None,
     paginate: dict | None = None,
 ) -> list[dict]:
+    """GET a JSON API. `items: data` picks the list inside each response. Every page:
+    `paginate: { param: page, next: next_page }` (the page number goes in `param`, starting at
+    `start`, 1 by default; it stops when the response's `next` key is empty, or without `next`
+    when a page comes back empty). With an input step, one request per record: `{field}` in `url`
+    or `params` is filled from the record."""
     return _http("GET", input, url, headers, None, items, concurrency, timeout, retries, params, paginate)
 
 

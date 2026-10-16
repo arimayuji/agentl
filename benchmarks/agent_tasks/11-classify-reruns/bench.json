@@ -1,0 +1,7 @@
+{
+ "llm": {},
+ "measure": {
+  "what": "llm_calls",
+  "ideal": 10
+ }
+}
