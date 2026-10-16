@@ -19,12 +19,15 @@ They are always listed under **Changed** or **Removed**.
 - New comparison cases (#157): a paginated API and one request per record against urllib, requests
   and httpx, and an HTML table to CSV against BeautifulSoup and pandas `read_html`. The fan-out and
   HTML cases join the regression gate. `--only` now also filters the `--compare` cases.
+- polars in the CSV → Parquet comparison (#157), eager and lazy. It is 10x to 18x faster than
+  agentl's `@dataframe` path on that job, and the docs say so.
 
 ### Fixed
 
 - `--compare` peak memory (#157): it read `ru_maxrss`, which Linux carries over from the parent
   process, so a job's growth often read 0. It now reads `VmHWM`, which starts fresh in each process;
-  the published numbers changed (pandas on the CSV job: 574 MB, not 156).
+  the published numbers changed (pandas on the CSV job: 574 MB, not 156). The `chunked` scenario
+  reads it the same way now (its numbers moved by about 5 MB).
 
 ### Changed
 
