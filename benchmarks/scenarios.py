@@ -439,10 +439,25 @@ def parallel_steps(scale: float) -> dict:
 _CHUNK_CHILD = """
 import resource, sys, time
 from agentl import parse
+
+
+def hwm():
+    # Peak RSS in MB. Linux: VmHWM, fresh at exec (ru_maxrss carries over from the parent).
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss / 2**20 if sys.platform == "darwin" else rss / 1024
+
+
 from agentl.runner import Runner
 from agentl.store import Store
 src, db, chunk = sys.argv[1], sys.argv[2], sys.argv[3]
-base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+base = hwm()
 spec = parse({
     "name": "chunk", "chunk_size": int(chunk) or None,
     "steps": [
@@ -456,9 +471,7 @@ t0 = time.perf_counter()
 with Store(db + ".state") as store:
     r = Runner(spec, store=store, use_cache=False).run()
 assert r.status == "succeeded", r.error
-peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-scale = 1 if sys.platform == "darwin" else 1024  # macOS reports bytes, Linux KiB
-print((peak - base) * scale / 2**20, time.perf_counter() - t0)
+print(hwm() - base, time.perf_counter() - t0)
 """
 
 

@@ -75,6 +75,8 @@ keeps in SQLite.
 | --- | --- | --- | --- | --- | --- |
 | agentl, `@dataframe` with the Arrow path | 0.74 | 1.10 | 268 | 32.1 | 2.9 |
 | pandas only | 0.94 | 0.94 | 128 | 20.1 | 2.5 |
+| polars, `read_csv` | 0.09 | 0.21 | 103 | 0.0 | 0.6 |
+| polars, lazy (`scan_csv` + `sink_parquet`) | 0.06 | 0.18 | 81 | 0.0 | 0.6 |
 
 What this says:
 
@@ -87,6 +89,10 @@ What this says:
 - With pandas, the Arrow path reads CSV with pyarrow and was faster than `pd.read_csv` here, but
   peaks at about twice pandas' memory (Arrow table plus DataFrame). Its time swings between runs
   (0.6 to 1.0 s seen), as pyarrow uses several threads on a shared machine.
+- polars does this job 10x to 18x faster than agentl and with less memory. agentl has no polars
+  path: for a pure dataframe transform, write it in polars (a `fn:` step can call polars directly)
+  and use agentl for what is around it. polars reads the file through a memory map, which
+  `/proc/self/io` does not count, hence 0 read MB.
 - Earlier versions of this page showed 0 MB for several jobs. That was the measurement: Linux
   carries `ru_maxrss` over from the parent process, so a child's growth read 0 whenever the
   parent had been bigger. The numbers above use `VmHWM`, which starts fresh in each process.

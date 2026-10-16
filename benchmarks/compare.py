@@ -283,6 +283,31 @@ def parquet_pandas(d: Path) -> Callable[[], None]:
     return run
 
 
+def parquet_polars(d: Path) -> Callable[[], None]:
+    import polars as pl
+
+    def run() -> None:
+        df = pl.read_csv(d / "in.csv", infer_schema=False)
+        df = df.filter(pl.col("kind") == "a").with_columns(pl.col("amount").cast(pl.Float64).round(1))
+        df.write_parquet(d / "out.parquet")
+
+    return run
+
+
+def parquet_polars_lazy(d: Path) -> Callable[[], None]:
+    import polars as pl
+
+    def run() -> None:
+        (
+            pl.scan_csv(d / "in.csv", infer_schema=False)
+            .filter(pl.col("kind") == "a")
+            .with_columns(pl.col("amount").cast(pl.Float64).round(1))
+            .sink_parquet(d / "out.parquet")
+        )
+
+    return run
+
+
 def parquet_result(d: Path) -> list:
     import pyarrow.parquet as pq
 
@@ -662,6 +687,8 @@ CASES: dict[str, dict] = {
         "variants": {
             "agentl (@dataframe, Arrow)": (parquet_agentl, ()),
             "pandas only": (parquet_pandas, ()),
+            "polars (read_csv)": (parquet_polars, ("polars",)),
+            "polars (lazy, scan_csv + sink_parquet)": (parquet_polars_lazy, ("polars",)),
         },
     },
 }
