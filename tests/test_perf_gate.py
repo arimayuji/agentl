@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from benchmarks import compare
 
 ROOT = Path(__file__).parent.parent
@@ -90,6 +92,7 @@ def test_against_the_base_skips_cases_left_out_and_notes_new_ones():
     assert "not measured" in compare.check_against(results)[1][0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="--compare needs the resource module (Linux or macOS)")
 def test_peak_memory_starts_fresh_in_the_child():
     # ru_maxrss carries over from the parent on Linux; VmHWM does not. A child that allocates
     # nothing must not report the parent's peak.
@@ -99,6 +102,7 @@ def test_peak_memory_starts_fresh_in_the_child():
     assert float(out.stdout) < 200
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="--compare needs the resource module (Linux or macOS)")
 def test_against_loads_agentl_from_the_given_tree(tmp_path):
     # The child checks agentl.__file__ against the tree and raises otherwise; this repo is a valid tree.
     out = subprocess.run(
