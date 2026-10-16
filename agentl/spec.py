@@ -370,6 +370,7 @@ def interpolate(value: Any, env: Mapping[str, str] | None = None) -> Any:
         def sub(m: re.Match) -> str:
             name, default = m.group(1), m.group(2)
             if name in env:
+                secrets.remember_env(name, env[name])
                 return env[name]
             if default is not None:
                 return default

@@ -23,6 +23,30 @@ SECRET = re.compile(r"\$\{(aws-sm|ssm|gcp-sm|azure-kv):([^}]+)\}")
 
 _CACHE: dict[tuple[str, str], str] = {}
 _LOCK = threading.Lock()
+# Values of environment variables a pipeline used whose names say they are secrets, so the run
+# store's samples can mask them too (see `sensitive`).
+_ENV_SECRETS: set[str] = set()
+SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSW|PASSPHRASE|DSN|AUTH|CREDENTIAL|COOKIE", re.I)
+
+
+def remember_env(name: str, value: str) -> None:
+    if len(value) >= 6 and SECRET_NAME.search(name):
+        with _LOCK:
+            _ENV_SECRETS.add(value)
+
+
+def sensitive() -> set[str]:
+    """Secret values this process has resolved: cloud secret references, and environment variables
+    with secret-looking names that a pipeline used."""
+    with _LOCK:
+        return {v for v in _CACHE.values() if len(v) >= 4} | set(_ENV_SECRETS)
+
+
+def mask(text: str, values: set[str]) -> str:
+    for v in sorted(values, key=len, reverse=True):
+        if v in text:
+            text = text.replace(v, "***")
+    return text
 
 
 def _json_key(value: str, key: str | None, ref: str) -> str:

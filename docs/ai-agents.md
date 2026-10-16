@@ -82,21 +82,30 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `lint` | Validate plus best-practice warnings, as JSON findings |
 | `preview_step` | The first records into and out of a step (readers and transforms only, nothing written) |
 | `plan` | Records per step, cache hits, LLM calls, token and cost ranges, what would be written |
-| `new_pipeline` | A validated pipeline YAML from a description (calls the LLM set by `AGENTL_PROVIDER`) |
+| `list_templates` | Tested pipeline templates, name and what each does |
+| `new_from_template` | Write a template to a file under the server's root (no LLM call) |
+| `new_pipeline` | Paid option: a validated pipeline YAML from a description (calls the LLM set by `AGENTL_PROVIDER`) |
 | `diagram` | The pipeline as Mermaid |
 | `run_pipeline` | Run a pipeline file; returns status, run id, records per step and cost |
+| `show_output` | The first records a step produced in a run (at most 5, values cut at 200 characters) |
 | `list_runs`, `get_run` | Recent runs; one run with its events |
 | `list_failures` | Recent failed runs with the failing step and error |
 | `doctor` | Why a run failed, as text |
 | `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline |
-| `list_connectors` | Installed connectors and their parameters |
+| `list_connectors` | Installed connectors, one line each |
+| `describe_connector` | One connector's `with:` parameters, types, defaults and notes |
 
-`run_pipeline` is the only tool marked as not read-only, so clients that ask before side effects
-ask before running a pipeline. It runs with your environment and permissions, so it is limited:
+`run_pipeline` and `new_from_template` are the tools marked as not read-only, so clients that ask
+before side effects ask before running a pipeline or writing a file. It runs with your environment and permissions, so it is limited:
 
 - it only runs pipeline files under the folder the server started in (`--root` to change it), never
   YAML text sent by the client (`plan` and `preview_step` follow the same rule, since they read
   the sources);
+- `show_output` reads a sample the runner keeps in the run store: the first 5 records of each
+  step, values cut at 200 characters. Secret values that end up in the data are replaced by `***`
+  first: cloud secret references, and environment variables the pipeline used whose names look
+  like secrets (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `DSN`, `AUTH`, `CREDENTIAL`...). Personal
+  data in the records is kept as it is, so set `AGENTL_SAMPLES=0` to keep none;
 - it refuses pipelines that run code on your machine (`fn:` steps, Python tools, local MCP server
   commands) unless you start the server with `agentl mcp --allow-code`;
 - `validate` and `diagram` see `${VAR}` and secret references as placeholders, so their answers

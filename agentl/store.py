@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS state (
   pipeline TEXT, step TEXT, value TEXT, run_id TEXT, ts REAL, PRIMARY KEY (pipeline, step)
 );
+CREATE TABLE IF NOT EXISTS samples (
+  run_id TEXT, step TEXT, records TEXT, total INTEGER, PRIMARY KEY (run_id, step)
+);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -46,15 +49,24 @@ POSTGRES_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS agentl_state (
       pipeline TEXT, step TEXT, value JSONB, run_id TEXT, ts DOUBLE PRECISION,
       PRIMARY KEY (pipeline, step))""",
+    """CREATE TABLE IF NOT EXISTS agentl_samples (
+      run_id TEXT, step TEXT, records JSONB, total INTEGER, PRIMARY KEY (run_id, step))""",
 ]
 
 
 class Store:
     """SQLite store. Thread-safe within one process."""
 
-    T: ClassVar[dict[str, str]] = {"runs": "runs", "events": "events", "cache": "cache", "state": "state"}
+    T: ClassVar[dict[str, str]] = {
+        "runs": "runs",
+        "events": "events",
+        "cache": "cache",
+        "state": "state",
+        "samples": "samples",
+    }
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts) VALUES (?, ?, ?)"
     UPSERT_STATE = "INSERT OR REPLACE INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?, ?, ?)"
+    UPSERT_SAMPLE = "INSERT OR REPLACE INTO {samples} (run_id, step, records, total) VALUES (?, ?, ?, ?)"
 
     def __init__(self, path: str | Path = DEFAULT_DB):
         self.path = Path(path)
@@ -163,6 +175,18 @@ class Store:
         )
         return [{**r, "data": self._load(r["data"])} for r in rows]
 
+    def sample_set(self, run_id: str, step: str, records: list[dict], total: int) -> None:
+        """The first records a step produced in a run, for `show_output` (#164)."""
+        self._exec(self.UPSERT_SAMPLE, (run_id, step, json.dumps(records, default=str), total))
+
+    def sample(self, run_id: str, step: str) -> dict | None:
+        rows = self._query(
+            "SELECT records, total FROM {samples} WHERE run_id = ? AND step = ?", (run_id, step)
+        )
+        if not rows:
+            return None
+        return {"records": self._load(rows[0]["records"]), "total": rows[0]["total"]}
+
     def run(self, run_id: str) -> dict | None:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
         return rows[0] if rows else None
@@ -183,6 +207,7 @@ class PostgresStore(Store):
         "events": "agentl_events",
         "cache": "agentl_cache",
         "state": "agentl_state",
+        "samples": "agentl_samples",
     }
     UPSERT_CACHE = (
         "INSERT INTO {cache} (key, value, ts) VALUES (?, ?::jsonb, ?) "
@@ -192,6 +217,10 @@ class PostgresStore(Store):
         "INSERT INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?::jsonb, ?, ?) "
         "ON CONFLICT (pipeline, step) DO UPDATE SET value = EXCLUDED.value, run_id = EXCLUDED.run_id, "
         "ts = EXCLUDED.ts"
+    )
+    UPSERT_SAMPLE = (
+        "INSERT INTO {samples} (run_id, step, records, total) VALUES (?, ?, ?::jsonb, ?) "
+        "ON CONFLICT (run_id, step) DO UPDATE SET records = EXCLUDED.records, total = EXCLUDED.total"
     )
 
     def __init__(self, dsn: str):

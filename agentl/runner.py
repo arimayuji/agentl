@@ -54,6 +54,38 @@ class RunResult:
         return json.loads(json.dumps(data, default=str))
 
 
+SAMPLE_ROWS = 5
+SAMPLE_CHARS = 200
+
+
+def _clip(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return f"<{len(value)} bytes>"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, default=str, ensure_ascii=False)
+        return value if len(text) <= SAMPLE_CHARS else text[:SAMPLE_CHARS] + "…"
+    if isinstance(value, str) and len(value) > SAMPLE_CHARS:
+        return value[:SAMPLE_CHARS] + "…"
+    return value
+
+
+def _mask_values(value: Any, hidden: set[str]) -> Any:
+    """Secret values replaced by *** anywhere in strings, keys included, before any clipping."""
+    from . import secrets
+
+    if isinstance(value, str):
+        return secrets.mask(value, hidden)
+    if isinstance(value, dict):
+        return {_mask_values(k, hidden): _mask_values(v, hidden) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mask_values(v, hidden) for v in value]
+    return value
+
+
+def _clip_record(record: Any) -> Any:
+    return {k: _clip(v) for k, v in record.items()} if isinstance(record, dict) else _clip(record)
+
+
 def _is_table(value: Any) -> bool:
     return hasattr(value, "num_rows") and hasattr(value, "to_pylist")
 
@@ -760,6 +792,7 @@ class Runner:
             )
             raise
         result.outputs[step_id] = out
+        self._sample(run_id, step_id, out)
         # writers return one summary record per file; say how many records they wrote
         written = sum(r.get("written", 0) for r in out) if isinstance(out, list) else 0
         self._emit(
@@ -773,6 +806,22 @@ class Runner:
         )
         if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
+
+    def _sample(self, run_id: str, step_id: str, out: Any) -> None:
+        """Keep the first records of each step in the store, so an agent can look at what a run
+        produced (`show_output`, #164) without opening files. Values are cut at 200 characters;
+        AGENTL_SAMPLES=0 turns it off."""
+        if os.environ.get("AGENTL_SAMPLES", "1").lower() in ("0", "false", "no"):
+            return
+        try:
+            from . import secrets
+
+            head = out.slice(0, SAMPLE_ROWS).to_pylist() if _is_table(out) else list(out[:SAMPLE_ROWS])
+            hidden = secrets.sensitive()  # a secret that ended up in the data never reaches the store
+            rows = [_clip_record(_mask_values(r, hidden) if hidden else r) for r in head]
+            self.store.sample_set(run_id, step_id, rows, len(out))
+        except Exception:  # a sample is a convenience; it never fails a run
+            pass
 
     # chunked execution ----------------------------------------------------
     def _chains(self) -> dict[str, list[StepSpec]]:
