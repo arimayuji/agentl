@@ -14,7 +14,8 @@ They are always listed under **Changed** or **Removed**.
 - `cast` step and semantic types (#119): dates (one day/month order per column, Excel serials,
   "3 out 2026"), datetimes with zones, locale numbers (pt-BR `1.234,56`), money, percent, bool
   (`sim`/`não`), enum with synonyms, text, names, e-mail, CPF and CNPJ (check digits), CEP, UF and
-  Brazilian phones (E.164). Rows that do not parse go to the step's rejected records with the
+  Brazilian phones (E.164), and for US data `locale: en-US`, `state`, `zip`, US/Canada phones,
+  `ein`, `ssn` (format only) and dates such as "Oct 15, 2026". Rows that do not parse go to the step's rejected records with the
   reason and the raw value (`on_bad: reject | fail | keep`). `agentl.types.register_type` adds a
   format. Connectors can now return rejected records the way agent steps do.
 

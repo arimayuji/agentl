@@ -236,3 +236,67 @@ def test_runner_keeps_cast_rejections(tmp_path):
         events = [e for e in store.events(res.run_id) if e["type"] == "item.rejected"]
     assert res.status == "succeeded" and res.outputs["c"] == [{"nome": "Ana", "cpf": "52998224725"}]
     assert len(res.rejected["c"]) == 1 and events[0]["data"]["count"] == 1
+
+
+def test_us_types():
+    assert T.to_state("ca") == "CA" and T.to_state("New York") == "NY"
+    assert T.to_state("district of columbia") == "DC"
+    with pytest.raises(T.BadValue):
+        T.to_state("XX")
+    assert (
+        T.to_zip("94103") == "94103" and T.to_zip("941031234") == "94103-1234" and T.to_zip(2134) == "02134"
+    )
+    with pytest.raises(T.BadValue):
+        T.to_zip("9410")
+    assert (
+        T.to_phone("(415) 555-0123", "US") == "+14155550123"
+        and T.to_phone("1-415-555-0123", "US") == "+14155550123"
+    )
+    for bad in ("(015) 555-0123", "(415) 155-0123", "555-0123"):
+        with pytest.raises(T.BadValue):
+            T.to_phone(bad, "US")
+    assert T.to_ein("123456789") == "12-3456789"
+    with pytest.raises(T.BadValue):
+        T.to_ein("00-1234567")
+
+
+def test_ssn_is_format_only_and_never_echoes_the_value():
+    assert T.to_ssn("123 45 6789") == "123-45-6789"
+    for bad in ("000-12-3456", "666-12-3456", "900-12-3456", "123-00-4567", "123-45-0000", "12345"):
+        with pytest.raises(T.BadValue) as e:
+            T.to_ssn(bad)
+        assert bad not in str(e.value)  # the rejection reason does not repeat the number
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["Oct 15, 2026", "October 15th, 2026", "Oct. 15 2026", "15th October 2026", "15 of October, 2026"],
+)
+def test_english_written_dates(raw):
+    assert T.to_date(raw) == dt.date(2026, 10, 15)
+
+
+def test_cast_en_us():
+    rows = [
+        {
+            "amount": "$1,234.56",
+            "when": "10/15/2026",
+            "zip": "94103",
+            "state": "California",
+            "phone": "415.555.0123",
+        }
+    ]
+    out = cast(
+        rows,
+        locale="en-US",
+        fields={
+            "amount": {"money": "USD"},
+            "when": "date",
+            "zip": "zip",
+            "state": "state",
+            "phone": {"phone": "US"},
+        },
+    )
+    assert list(out) == [
+        {"amount": 1234.56, "when": "2026-10-15", "zip": "94103", "state": "CA", "phone": "+14155550123"}
+    ]

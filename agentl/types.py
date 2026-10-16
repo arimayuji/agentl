@@ -233,9 +233,22 @@ def to_uf(v: Any) -> str | None:
     return t.upper()
 
 
+def _nanp(v: Any, d: str) -> str:
+    """North American numbers (US, Canada): 10 digits, or 11 starting with 1; area code and
+    exchange cannot start with 0 or 1."""
+    if len(d) == 11 and d[0] == "1":
+        d = d[1:]
+    if len(d) != 10:
+        raise BadValue(f"phone: {v!r} is not a 10-digit US number")
+    if d[0] in "01" or d[3] in "01":
+        raise BadValue(f"phone: {v!r}: area code and exchange cannot start with 0 or 1")
+    return "+1" + d
+
+
 def to_phone(v: Any, country: str = "BR") -> str | None:
-    """Brazilian phones to E.164: "(11) 98765-4321" -> "+5511987654321". Other countries need the
-    number already in +E.164 form."""
+    """Phones to E.164. Brazil: "(11) 98765-4321" -> "+5511987654321". US / Canada
+    (`{phone: US}`): "(415) 555-0123" -> "+14155550123". Others need the number already in +E.164
+    form."""
     if _blank(v):
         return None
     raw = str(v).strip()
@@ -244,6 +257,8 @@ def to_phone(v: Any, country: str = "BR") -> str | None:
         if not 8 <= len(d) <= 15:
             raise BadValue(f"phone: {v!r} is not a valid international number")
         return "+" + d
+    if country.upper() in ("US", "CA"):
+        return _nanp(v, d)
     if country.upper() != "BR":
         raise BadValue(f"phone: {v!r} needs a +country code")
     if d.startswith("55") and len(d) in (12, 13):
@@ -255,6 +270,111 @@ def to_phone(v: Any, country: str = "BR") -> str | None:
     if len(d) == 11 and d[2] != "9":
         raise BadValue(f"phone: {v!r}: an 11-digit mobile starts with 9 after the area code")
     return "+55" + d
+
+
+# ---------------------------------------------------------------- United States
+STATES = {
+    "AL": "alabama",
+    "AK": "alaska",
+    "AZ": "arizona",
+    "AR": "arkansas",
+    "CA": "california",
+    "CO": "colorado",
+    "CT": "connecticut",
+    "DE": "delaware",
+    "DC": "district of columbia",
+    "FL": "florida",
+    "GA": "georgia",
+    "HI": "hawaii",
+    "ID": "idaho",
+    "IL": "illinois",
+    "IN": "indiana",
+    "IA": "iowa",
+    "KS": "kansas",
+    "KY": "kentucky",
+    "LA": "louisiana",
+    "ME": "maine",
+    "MD": "maryland",
+    "MA": "massachusetts",
+    "MI": "michigan",
+    "MN": "minnesota",
+    "MS": "mississippi",
+    "MO": "missouri",
+    "MT": "montana",
+    "NE": "nebraska",
+    "NV": "nevada",
+    "NH": "new hampshire",
+    "NJ": "new jersey",
+    "NM": "new mexico",
+    "NY": "new york",
+    "NC": "north carolina",
+    "ND": "north dakota",
+    "OH": "ohio",
+    "OK": "oklahoma",
+    "OR": "oregon",
+    "PA": "pennsylvania",
+    "RI": "rhode island",
+    "SC": "south carolina",
+    "SD": "south dakota",
+    "TN": "tennessee",
+    "TX": "texas",
+    "UT": "utah",
+    "VT": "vermont",
+    "VA": "virginia",
+    "WA": "washington",
+    "WV": "west virginia",
+    "WI": "wisconsin",
+    "WY": "wyoming",
+}
+_STATE_NAMES = {name: code for code, name in STATES.items()}
+
+
+def to_state(v: Any) -> str | None:
+    """A US state (or DC) by code or name: "ca", "California" -> "CA"."""
+    t = to_text(v)
+    if t is None:
+        return None
+    code = t.upper().rstrip(".") if t.upper().rstrip(".") in STATES else _STATE_NAMES.get(t.lower())
+    if code is None:
+        raise BadValue(f"{v!r} is not a US state")
+    return code
+
+
+def to_zip(v: Any) -> str | None:
+    """US ZIP code: "94103" or ZIP+4 "94103-1234" (a 9-digit run gets its dash)."""
+    if _blank(v):
+        return None
+    d = _digits(v).zfill(5) if isinstance(v, int) else _digits(v)
+    if len(d) == 5:
+        return d
+    if len(d) == 9:
+        return f"{d[:5]}-{d[5:]}"
+    raise BadValue(f"zip: {v!r} is not a 5- or 9-digit ZIP code")
+
+
+def to_ein(v: Any) -> str | None:
+    """US Employer Identification Number, 9 digits -> "12-3456789". Format only (and never a 00
+    prefix): whether the number was issued is not checked."""
+    if _blank(v):
+        return None
+    d = _digits(v)
+    if len(d) != 9 or d[:2] == "00":
+        raise BadValue(f"ein: {v!r} is not a valid EIN")
+    return f"{d[:2]}-{d[2:]}"
+
+
+def to_ssn(v: Any) -> str | None:
+    """US Social Security Number, format only -> "123-45-6789": 9 digits, with the area, group
+    and serial ranges that are never issued (000, 666, 900-999; 00; 0000) refused. It does not say
+    the number belongs to anyone. Personal data: keep it out of samples with AGENTL_SAMPLES=0."""
+    if _blank(v):
+        return None
+    d = _digits(v)
+    if len(d) != 9:
+        raise BadValue("ssn: not 9 digits")
+    if d[:3] in ("000", "666") or d[0] == "9" or d[3:5] == "00" or d[5:] == "0000":
+        raise BadValue("ssn: not a valid SSN format")
+    return f"{d[:3]}-{d[3:5]}-{d[5:]}"
 
 
 # ---------------------------------------------------------------- dates
@@ -274,7 +394,10 @@ MONTHS = {
 }
 ISO = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ](.+))?$")
 NUMERIC = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:[ T](.+))?$")
-WORDS = re.compile(r"^(\d{1,2})(?:\s+de)?\s+([A-Za-zçÇ]+)\.?(?:\s+de)?\s+(\d{2}|\d{4})$")
+WORDS = re.compile(
+    r"^(\d{1,2})(?:st|nd|rd|th|º)?(?:\s+de|\s+of)?\s+([A-Za-zçÇ]+)\.?,?(?:\s+de)?\s+(\d{2}|\d{4})$", re.I
+)
+WORDS_US = re.compile(r"^([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$", re.I)  # Oct 15, 2026
 
 
 def _year(y: str) -> int:
@@ -327,6 +450,11 @@ def to_date(v: Any, order: str = "dmy") -> dt.date | None:
         if month is None:
             raise BadValue(f"{v!r}: unknown month {m.group(2)!r}")
         return _make(_year(m.group(3)), month, int(m.group(1)), v)
+    if m := WORDS_US.match(s):
+        month = MONTHS.get(_fold(m.group(1)).rstrip("."))
+        if month is None:
+            raise BadValue(f"{v!r}: unknown month {m.group(1)!r}")
+        return _make(int(m.group(3)), month, int(m.group(2)), v)
     raise BadValue(f"{v!r} is not a date")
 
 
@@ -386,6 +514,10 @@ TYPES: dict[str, Parser] = {
     "cep": to_cep,
     "uf": to_uf,
     "phone": to_phone,
+    "state": to_state,
+    "zip": to_zip,
+    "ein": to_ein,
+    "ssn": to_ssn,
     "date": to_date,
     "datetime": to_datetime,
 }
