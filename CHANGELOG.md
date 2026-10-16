@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl mcp install --client claude-desktop|claude-code|cursor|vscode|windsurf [--project]`,
+  `agentl mcp uninstall` and `agentl mcp status` (#162): set up the MCP server without editing
+  JSON. Other entries are kept, a backup is written first, a second run changes nothing, and a
+  file that is not plain JSON is left alone. `python -m agentl` now works too.
+
 - polars steps (#171): `from agentl.polars import dataframe` wraps `fn(df) -> DataFrame` like
   `agentl.pandas.dataframe`, with records or, next to Arrow readers and writers, a pyarrow Table
   wrapped without copying. When every consumer of `csv.read` is a polars step polars reads the
