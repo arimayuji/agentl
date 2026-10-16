@@ -75,3 +75,30 @@ def test_run_with_no_check_skips_the_lint(tmp_path, capsys, monkeypatch):
     assert main(["run", "p.yaml", "--db", str(tmp_path / "s.db")]) == 0
     assert (tmp_path / "out.json").is_file()
     assert main(["run", "p.yaml", "--no-check", "--db", str(tmp_path / "s.db")]) == 0
+
+
+def test_csv_reader_matches_dictreader_on_ragged_rows(tmp_path):
+    """#157: the faster csv.reader path gives what csv.DictReader gave, short, long and blank rows
+    included."""
+    import csv
+
+    from agentl.connectors.files import iter_csv
+
+    text = 'a,b,c\n1,2,3\n4,5\n\n6,7,8,9,10\n"x,y",,\n'
+    p = tmp_path / "r.csv"
+    p.write_text(text)
+    with p.open(newline="") as f:
+        want = [dict(r) for r in csv.DictReader(f)]
+    assert list(iter_csv(p, delimiter=",")) == want
+    (tmp_path / "e.csv").write_text("")
+    assert list(iter_csv(tmp_path / "e.csv", delimiter=",")) == []
+
+
+def test_filter_and_select_fast_paths_keep_behaviour():
+    rows = [{"id": 1, "n": "x", "s": "a"}, {"id": 2, "n": "", "s": "b"}, {"id": 3, "n": None, "s": "a"}]
+    assert [r["id"] for r in get("filter")(rows, not_empty="n")] == [1]
+    assert [r["id"] for r in get("filter")(rows, where={"s": "a"}, not_empty=["n"])] == [1]
+    assert [r["id"] for r in get("filter")(rows, where={"s": "a"})] == [1, 3]
+    assert get("select")(rows[:1], fields="id") == [{"id": 1}]
+    assert get("select")(rows[:1], fields=["id", "s"], rename={"s": "kind"}) == [{"id": 1, "kind": "a"}]
+    assert get("select")(rows[:1], rename={"n": "note"}) == [{"id": 1, "note": "x", "s": "a"}]
