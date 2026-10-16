@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..registry import connector, stream_reader, stream_writer
-from ._util import single
+from ._util import check_update_columns, single, upsert_options
 
 
 @connector("sqlite.read")
@@ -41,10 +41,13 @@ def sqlite_write_chunks(
     table: str = "",
     mode: str = "append",
     key: str | list[str] | None = None,
+    on_conflict: str | None = None,
+    update_columns: str | list[str] | None = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. Columns that first appear in a later chunk are added
     to the table. `mode`: append, replace (drop the table first) or upsert (rows whose `key`
-    columns match an existing row replace it)."""
+    columns match an existing row update it; see `sqlite_write` for on_conflict and update_columns).
+    Upsert reports inserted, updated and unchanged; it needs no unique index on `key`."""
     if not table.replace("_", "").isalnum():
         raise ValueError(f"invalid table name '{table}'")
     if mode not in ("append", "replace", "upsert"):
@@ -54,7 +57,8 @@ def sqlite_write_chunks(
         raise ValueError(
             "sqlite.write mode: upsert needs `key` (the column, or columns, that identify a row)"
         )
-    written = 0
+    conflict, upd = upsert_options("sqlite.write", mode, keys, on_conflict, update_columns)
+    written = inserted = updated = 0
     cols: list[str] = []
     if db and db != ":memory:":
         Path(db).parent.mkdir(parents=True, exist_ok=True)  # as file writers do
@@ -84,26 +88,68 @@ def sqlite_write_chunks(
                     if c not in have:
                         conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_quote(c)}')
                 cols.extend(new)
-            if rows and mode == "upsert":
+            if not rows:
+                continue
+            names = ", ".join(map(_quote, cols))
+            ph = ", ".join("?" for _ in cols)
+            insert = f'INSERT INTO "{table}" ({names}) VALUES ({ph})'
+            if mode != "upsert":
+                conn.executemany(insert, [tuple(map(r.get, cols)) for r in rows])
+                written += len(rows)
+                continue
+            missing = [k for k in keys if k not in cols]
+            if missing:
+                raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
+            check_update_columns("sqlite.write", upd, cols)
+            if conflict != "error":
                 rows = list({tuple(r.get(k) for k in keys): r for r in rows}.values())  # last one wins
-                where = " AND ".join(f"{_quote(k)} IS ?" for k in keys)
-                conn.executemany(
-                    f'DELETE FROM "{table}" WHERE {where}', [[r.get(k) for k in keys] for r in rows]
-                )
-            if rows:
-                names = ", ".join(map(_quote, cols))
-                ph = ", ".join("?" for _ in cols)
-                conn.executemany(
-                    f'INSERT INTO "{table}" ({names}) VALUES ({ph})', [tuple(map(r.get, cols)) for r in rows]
-                )
+            where = " AND ".join(f"{_quote(k)} IS ?" for k in keys)
+            rest = upd if upd is not None else [c for c in cols if c not in keys]
+            sets = ", ".join(f"{_quote(c)} = ?" for c in rest)
+            same = " AND ".join(f"{_quote(c)} IS ?" for c in rest)
+            change = f'UPDATE "{table}" SET {sets} WHERE {where} AND NOT ({same})'
+            exists = f'SELECT 1 FROM "{table}" WHERE {where} LIMIT 1'
+            for r in rows:
+                kv = [r.get(k) for k in keys]
+                if conflict == "update" and rest:
+                    new_vals = [r.get(c) for c in rest]
+                    if conn.execute(change, [*new_vals, *kv, *new_vals]).rowcount:
+                        updated += 1
+                        continue
+                if conn.execute(exists, kv).fetchone() is None:
+                    conn.execute(insert, tuple(map(r.get, cols)))
+                    inserted += 1
+                elif conflict == "error":
+                    found = dict(zip(keys, kv, strict=True))
+                    raise ValueError(f"sqlite.write: on_conflict: error and a row with key {found} exists")
             written += len(rows)
-    return [{"table": table, "written": written}]
+    out: dict[str, Any] = {"table": table, "written": written}
+    if mode == "upsert":
+        out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
+    return [out]
 
 
 @connector("sqlite.write")
 def sqlite_write(
-    input: Any, db: str = "", table: str = "", mode: str = "append", key: str | list[str] | None = None
+    input: Any,
+    db: str = "",
+    table: str = "",
+    mode: str = "append",
+    key: str | list[str] | None = None,
+    on_conflict: str | None = None,
+    update_columns: str | list[str] | None = None,
 ) -> list[dict]:
     """Write records to a SQLite table, created (and widened) as needed. `mode`: append (default),
-    replace, or upsert with `key: id` (a record replaces the row with the same key)."""
-    return sqlite_write_chunks([single(input)], db=db, table=table, mode=mode, key=key)
+    replace, or upsert with `key: id` (a record updates the row with the same key).
+    Upsert only: on_conflict update (default; rows whose values did not change are left alone),
+    do_nothing (keep the existing row) or error (fail on a duplicate key); update_columns limits
+    the update to those columns. The result reports inserted, updated and unchanged."""
+    return sqlite_write_chunks(
+        [single(input)],
+        db=db,
+        table=table,
+        mode=mode,
+        key=key,
+        on_conflict=on_conflict,
+        update_columns=update_columns,
+    )

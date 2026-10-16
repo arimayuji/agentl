@@ -22,7 +22,7 @@ def test_sqlite_upsert_replaces_rows_by_key(tmp_path):
     )
     rows = sqlite3.connect(db).execute("select id, status from events order by id").fetchall()
     assert rows == [("E-1", "open"), ("E-2", "paid"), ("E-3", "late")]  # last one wins within a batch
-    assert out == [{"table": "events", "written": 2}]
+    assert out == [{"table": "events", "written": 2, "inserted": 1, "updated": 1, "unchanged": 0}]
 
 
 def test_sqlite_upsert_needs_a_key_and_a_known_mode(tmp_path):

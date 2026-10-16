@@ -124,3 +124,32 @@ def single(input: Any) -> list[dict]:
     if isinstance(input, dict):
         raise ValueError("this connector takes a single input step")
     return input
+
+
+ON_CONFLICT = ("update", "do_nothing", "error")
+
+
+def upsert_options(
+    name: str, mode: str, keys: list[str], on_conflict: str | None, update_columns: str | list[str] | None
+) -> tuple[str, list[str] | None]:
+    """Check `on_conflict` / `update_columns` before any I/O; shared with sqlite.write."""
+    if mode != "upsert" and (on_conflict is not None or update_columns is not None):
+        raise ValueError(f"{name}: on_conflict and update_columns need mode: upsert (got mode: {mode})")
+    conflict = on_conflict or "update"
+    if conflict not in ON_CONFLICT:
+        raise ValueError(f"{name}: on_conflict must be one of {', '.join(ON_CONFLICT)}, got {on_conflict!r}")
+    if update_columns is None:
+        return conflict, None
+    if conflict != "update":
+        raise ValueError(f"{name}: update_columns only applies to on_conflict: update")
+    upd = [update_columns] if isinstance(update_columns, str) else list(update_columns)
+    if not upd or not all(isinstance(c, str) and c for c in upd):
+        raise ValueError(f"{name}: update_columns must be a column name or a non-empty list of names")
+    if in_key := [c for c in upd if c in keys]:
+        raise ValueError(f"{name}: update_columns cannot include key column(s) {in_key}")
+    return conflict, upd
+
+
+def check_update_columns(name: str, upd: list[str] | None, cols: list[str]) -> None:
+    if upd and (unknown := [c for c in upd if c not in cols]):
+        raise ValueError(f"{name}: update_columns names unknown column(s) {unknown}; columns: {cols}")

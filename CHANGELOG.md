@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Upsert options for `postgres.write` and `sqlite.write` (#183): `on_conflict: update|do_nothing|error`
+  and `update_columns`. Upserts report `inserted`, `updated` and `unchanged` in the step result,
+  the `step.succeeded` event and the run summary (`writes`); rows whose values did not change are
+  not rewritten, so a re-run leaves the table unchanged.
 - Quarantine for rejected records (#180): records rejected by agent steps, `cast`, `compute` and
   other connectors are kept in the run store (`rejected` / `agentl_rejected`) with run id, step,
   reason and the raw record, secrets masked. `agentl rejected list|show` lists them and

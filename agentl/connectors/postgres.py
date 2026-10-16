@@ -8,7 +8,7 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 from ..registry import arrow_writer, connector, require, stream_reader, stream_writer
-from ._util import single
+from ._util import check_update_columns, single, upsert_options
 
 MODES = ("append", "replace", "upsert")
 
@@ -82,6 +82,8 @@ def postgres_write_chunks(
     key: str | list[str] | None = None,
     batch_size: int = 1000,
     create: bool = True,
+    on_conflict: str | None = None,
+    update_columns: str | list[str] | None = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. The table is created from the first chunk with
     records; columns that first appear later are added, typed from the chunk they appear in."""
@@ -90,6 +92,7 @@ def postgres_write_chunks(
     keys = [key] if isinstance(key, str) else list(key or [])
     if mode == "upsert" and not keys:
         raise ValueError("mode 'upsert' needs 'key'")
+    conflict, upd = upsert_options("postgres.write", mode, keys, on_conflict, update_columns)
     psycopg = require("psycopg", "postgres")
     sql = require("psycopg.sql", "postgres")
     jsonb = require("psycopg.types.json", "postgres").Jsonb
@@ -99,7 +102,7 @@ def postgres_write_chunks(
         return jsonb(v) if isinstance(v, (dict, list)) else v
 
     cols: list[str] = []
-    written = 0
+    written = inserted = updated = 0
     with psycopg.connect(dsn) as conn, conn.transaction():
         if mode == "replace":
             conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(tbl))
@@ -134,32 +137,65 @@ def postgres_write_chunks(
                             )
                         )
             cols.extend(new)
-            stmt = _insert(sql, tbl, cols, keys if mode == "upsert" else [])
+            if mode != "upsert":
+                stmt = _insert(sql, tbl, cols, [], conflict, None)
+                with conn.cursor() as cur:
+                    for i in range(0, len(rows), batch_size):
+                        cur.executemany(
+                            stmt, [[val(r.get(c)) for c in cols] for r in rows[i : i + batch_size]]
+                        )
+                written += len(rows)
+                continue
+            check_update_columns("postgres.write", upd, cols)
+            stmt = _insert(sql, tbl, cols, keys, conflict, upd)
             with conn.cursor() as cur:
                 for i in range(0, len(rows), batch_size):
-                    cur.executemany(stmt, [[val(r.get(c)) for c in cols] for r in rows[i : i + batch_size]])
+                    params = [[val(r.get(c)) for c in cols] for r in rows[i : i + batch_size]]
+                    if conflict == "error":
+                        cur.executemany(stmt, params)
+                        inserted += len(params)
+                        continue
+                    cur.executemany(stmt, params, returning=True)
+                    while True:  # one result per row that was inserted or changed
+                        for (was_insert,) in cur.fetchall():
+                            if was_insert:
+                                inserted += 1
+                            else:
+                                updated += 1
+                        if not cur.nextset():
+                            break
             written += len(rows)
-    return [{"table": table, "written": written, "mode": mode}]
+    out: dict[str, Any] = {"table": table, "written": written, "mode": mode}
+    if mode == "upsert":
+        out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
+    return [out]
 
 
-def _insert(sql: Any, tbl: Any, cols: list[str], keys: list[str]) -> Any:
+def _insert(
+    sql: Any, tbl: Any, cols: list[str], keys: list[str], conflict: str, upd: list[str] | None
+) -> Any:
+    """INSERT for append/replace; for upsert, an ON CONFLICT clause that only touches rows whose
+    values change and RETURNING `(xmax = 0)`, true for an inserted row and false for an updated one."""
     stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
         tbl,
         sql.SQL(", ").join(map(sql.Identifier, cols)),
         sql.SQL(", ").join(sql.Placeholder() * len(cols)),
     )
-    if not keys:
+    if not keys or conflict == "error":
         return stmt
-    rest = [c for c in cols if c not in keys]
-    action = (
-        sql.SQL("DO UPDATE SET {}").format(
-            sql.SQL(", ").join(sql.SQL("{0} = EXCLUDED.{0}").format(sql.Identifier(c)) for c in rest)
-        )
-        if rest
-        else sql.SQL("DO NOTHING")
-    )
-    return sql.SQL("{} ON CONFLICT ({}) {}").format(
-        stmt, sql.SQL(", ").join(map(sql.Identifier, keys)), action
+    rest = upd if upd is not None else [c for c in cols if c not in keys]
+    target = sql.SQL(", ").join(map(sql.Identifier, keys))
+    if conflict == "do_nothing" or not rest:
+        return sql.SQL("{} ON CONFLICT ({}) DO NOTHING RETURNING true").format(stmt, target)
+    ids = [sql.Identifier(c) for c in rest]
+    return sql.SQL(
+        "{} ON CONFLICT ({}) DO UPDATE SET {} WHERE ({}) IS DISTINCT FROM ({}) RETURNING (xmax = 0)"
+    ).format(
+        stmt,
+        target,
+        sql.SQL(", ").join(sql.SQL("{0} = EXCLUDED.{0}").format(i) for i in ids),
+        sql.SQL(", ").join(sql.SQL("{}.{}").format(tbl, i) for i in ids),
+        sql.SQL(", ").join(sql.SQL("EXCLUDED.{}").format(i) for i in ids),
     )
 
 
@@ -172,14 +208,27 @@ def postgres_write(
     key: str | list[str] | None = None,
     batch_size: int = 1000,
     create: bool = True,
+    on_conflict: str | None = None,
+    update_columns: str | list[str] | None = None,
 ) -> list[dict]:
     """Write records to `table` (optionally `schema.table`).
 
     mode: append (insert), replace (drop and recreate), upsert (insert or update on `key`).
     The table is created from the records when missing; upsert adds a unique index on `key`.
+    Upsert only: on_conflict update (default; rows whose values did not change are left alone),
+    do_nothing (keep the existing row) or error (fail on a duplicate key); update_columns limits
+    the update to those columns. The result reports inserted, updated and unchanged.
     All batches run in one transaction."""
     return postgres_write_chunks(
-        [single(input)], dsn=dsn, table=table, mode=mode, key=key, batch_size=batch_size, create=create
+        [single(input)],
+        dsn=dsn,
+        table=table,
+        mode=mode,
+        key=key,
+        batch_size=batch_size,
+        create=create,
+        on_conflict=on_conflict,
+        update_columns=update_columns,
     )
 
 
@@ -205,7 +254,14 @@ def _arrow_pg_type(t: Any) -> str | None:
     return None
 
 
-@arrow_writer("postgres.write", accepts=lambda w: w.get("mode", "append") in ("append", "replace"))
+@arrow_writer(
+    "postgres.write",
+    accepts=lambda w: (
+        w.get("mode", "append") in ("append", "replace")
+        and w.get("on_conflict") is None
+        and w.get("update_columns") is None
+    ),
+)
 def postgres_write_arrow(
     data: Any,
     dsn: str = "",

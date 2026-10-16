@@ -151,9 +151,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`), `on_conflict`, `update_columns` (upsert only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -439,6 +439,32 @@ Install with `pip install 'agentl-etl[postgres]'`. Missing tables are created wi
 from the records (`bigint`, `double precision`, `boolean`, `jsonb`, `timestamptz`, `text`).
 `upsert` creates a unique index on `key` and uses `ON CONFLICT ... DO UPDATE`. Identifiers are
 quoted and values are always sent as parameters. Keep the DSN in an environment variable.
+
+Upsert options, the same on `postgres.write` and `sqlite.write`:
+
+| Option | Meaning |
+|---|---|
+| `on_conflict: update` | Default. A record whose key exists updates the row, only when a value differs (`... DO UPDATE ... WHERE (cols) IS DISTINCT FROM (EXCLUDED cols)`). |
+| `on_conflict: do_nothing` | Keep the existing row; only new keys are inserted. |
+| `on_conflict: error` | Fail the step (and roll back the transaction) on a key that already exists. |
+| `update_columns: [status, amount]` | With `update`, change only these columns; the others keep their stored values. |
+
+```yaml
+    with:
+      dsn: ${DATABASE_URL}
+      table: public.sales
+      mode: upsert
+      key: id
+      update_columns: [status, amount]
+```
+
+An upsert reports `inserted`, `updated` and `unchanged` (key existed, nothing changed, or skipped
+by `do_nothing`) in its result, in the `step.succeeded` event next to `written`, and per step under
+`writes` in the run summary. Loading the same data twice reports `inserted: 0` and
+`unchanged` equal to the number of records, and leaves the table as it was. The options are
+checked before connecting: `on_conflict` or `update_columns` without `mode: upsert`, an unknown
+value, a key column in `update_columns` or a column the records do not have is an error.
+`sqlite.write` needs no unique index on `key`.
 
 ## Any SQL database
 
