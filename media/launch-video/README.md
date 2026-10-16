@@ -44,6 +44,7 @@ The run numbers are sample output and labelled as such on screen.
 `run` and a cached re-run stream in line by line, with entry and exit effects
 (`npm run render:terminal`, `npm run render:terminal-vertical`). Sample output, labelled.
 Its typing sounds are synthesized by `python3 scripts/sfx.py` into `public/sfx` (no third-party audio).
+Both promo and terminal play a quiet lo-fi loop, `public/sfx/music.mp3`, synthesized by `python3 scripts/music.py`.
 
 ## Web version
 
