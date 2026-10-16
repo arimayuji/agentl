@@ -3,7 +3,6 @@
 Run: python3 scripts/music.py (writes the .wav, then encodes the .mp3 with ffmpeg)"""
 
 import subprocess
-
 import wave
 from pathlib import Path
 
@@ -49,10 +48,10 @@ for b in range(int(SECONDS / bar) + 1):
         tone = np.sin(2 * np.pi * f * detune * tt) + 0.3 * np.sin(2 * np.pi * 2 * f * tt + 0.5)
         tone *= 1 + 0.15 * np.sin(2 * np.pi * 0.3 * tt + i)  # slow movement
         pan = 0.3 + 0.4 * (i / 3)
-        mix[start:start + length, 0] += tone * shape * (1 - pan) * 0.18
-        mix[start:start + length, 1] += tone * shape * pan * 0.18
+        mix[start : start + length, 0] += tone * shape * (1 - pan) * 0.18
+        mix[start : start + length, 1] += tone * shape * pan * 0.18
     bass = np.sin(2 * np.pi * note(chord[0] - 12) * tt) * shape * 0.35
-    mix[start:start + length] += bass[:, None]
+    mix[start : start + length] += bass[:, None]
 
 # Soft kick on beats 1 and 3, hat on the off-beats.
 for k in range(int(SECONDS / BEAT)):
@@ -61,12 +60,12 @@ for k in range(int(SECONDS / BEAT)):
         m = min(int(0.25 * RATE), n - s)
         tt = np.arange(m) / RATE
         kick = np.sin(2 * np.pi * (45 + 60 * np.exp(-tt * 30)) * tt) * np.exp(-tt * 12) * 0.5
-        mix[s:s + m] += kick[:, None]
+        mix[s : s + m] += kick[:, None]
     h = int((k + 0.5) * BEAT * RATE)
     m = min(int(0.05 * RATE), n - h)
     if m > 0:
         hat = np.diff(rng.normal(size=m), prepend=0) * np.exp(-np.arange(m) / RATE * 90) * 0.05
-        mix[h:h + m] += hat[:, None]
+        mix[h : h + m] += hat[:, None]
 
 # Warmth: gentle low-pass, then fade in and out.
 mix = np.stack([lowpass(mix[:, ch], 0.25) for ch in (0, 1)], axis=1)
@@ -81,6 +80,20 @@ with wave.open(str(OUT), "wb") as w:
     w.setframerate(RATE)
     w.writeframes((mix * 32767).astype("<i2").tobytes())
 
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(OUT), "-c:a", "libmp3lame", "-b:a", "128k",
-                str(OUT.with_suffix(".mp3"))], check=True)
+subprocess.run(
+    [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(OUT),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        str(OUT.with_suffix(".mp3")),
+    ],
+    check=True,
+)
 OUT.unlink()
