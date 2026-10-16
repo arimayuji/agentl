@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Changed
+
+- `agentl run` and the MCP `run_pipeline` tool check the pipeline first (#147): on an error the
+  run does not start, and only the first error is shown with its line and fix (`--no-check`, or
+  `no_check` in MCP, skips it). The skill drops the separate lint step.
+
 ### Added
 
 - `discord.send`: post records to a Discord channel through a webhook, one message per record or

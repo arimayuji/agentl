@@ -40,3 +40,38 @@ def test_connectors_name_shows_parameters(capsys):
     assert main(["connectors", "filter"]) == 0
     assert "need a `fn:` step" in capsys.readouterr().out
     assert main(["connectors"]) == 0 and "csv.read" in capsys.readouterr().out
+
+
+BROKEN = """name: t
+steps:
+  - id: read
+    use: csv.reed
+    with: { path: in.csv }
+  - id: save
+    use: json.write
+    input: nowhere
+    with: { path: out.json }
+"""
+
+
+def test_run_checks_first_and_shows_only_the_first_error(tmp_path, capsys, monkeypatch):
+    """#147: a broken pipeline stops before running, with one error and its fix."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "p.yaml").write_text(BROKEN)
+    assert main(["run", "p.yaml", "--db", str(tmp_path / "s.db")]) == 2
+    err = capsys.readouterr().err
+    assert err.count(" error AE") == 1 and "fix:" in err
+    assert "1 more error(s): agentl lint p.yaml" in err and "the run did not start" in err
+    assert not (tmp_path / "s.db").exists()  # nothing ran
+
+
+def test_run_with_no_check_skips_the_lint(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in.csv").write_text("id\n1\n")
+    (tmp_path / "p.yaml").write_text(
+        "name: t\nsteps:\n  - id: read\n    use: csv.read\n    with: { path: in.csv }\n"
+        "  - id: save\n    use: json.write\n    input: read\n    with: { path: out.json }\n"
+    )
+    assert main(["run", "p.yaml", "--db", str(tmp_path / "s.db")]) == 0
+    assert (tmp_path / "out.json").is_file()
+    assert main(["run", "p.yaml", "--no-check", "--db", str(tmp_path / "s.db")]) == 0

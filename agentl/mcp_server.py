@@ -128,11 +128,13 @@ class Server:
         add(
             "run_pipeline",
             "Run a pipeline file and return its status, spend and how many records each step produced. "
-            "Pipelines that run Python code (fn: steps, Python tools, local MCP servers) need the "
-            "server started with --allow-code.",
+            "It is checked first: on an error it does not start and returns status not_started with "
+            "the first error and its fix. Pipelines that run Python code (fn: steps, Python tools, "
+            "local MCP servers) need the server started with --allow-code.",
             {
                 "pipeline": {"type": "string", "description": "path to a pipeline YAML file"},
                 "no_cache": {"type": "boolean", "description": "ignore cached agent answers"},
+                "no_check": {"type": "boolean", "description": "skip the check that runs first"},
             },
             self.run_pipeline,
             read_only=False,
@@ -209,14 +211,17 @@ class Server:
     def diagram(self, args: dict) -> str:
         return graph.mermaid(_spec(args["pipeline"]))
 
-    def _file(self, args: dict, tool: str) -> PipelineSpec:
-        """A pipeline file under --root, loaded with the real environment."""
+    def _path(self, args: dict, tool: str) -> Path:
         path = Path(args["pipeline"])
         if "\n" in args["pipeline"] or not path.is_file():
             raise ValueError(f"{tool} takes the path of a pipeline file, not YAML text")
         if not path.resolve().is_relative_to(self.root):
             raise ValueError(f"{tool} only runs files under {self.root}")
-        return _spec(str(path), real_env=True)
+        return path
+
+    def _file(self, args: dict, tool: str) -> PipelineSpec:
+        """A pipeline file under --root, loaded with the real environment."""
+        return _spec(str(self._path(args, tool)), real_env=True)
 
     def lint(self, args: dict) -> dict:
         from . import lint
@@ -251,8 +256,18 @@ class Server:
         return text
 
     def run_pipeline(self, args: dict) -> dict:
+        from . import lint
         from .runner import Runner
 
+        path = self._path(args, "run_pipeline")
+        found = lint.check_file(str(path), warnings=False)
+        if found.errors and not args.get("no_check"):  # like `agentl run` (#147): fix first, then run
+            first = found.errors[0]
+            return {
+                "status": "not_started",
+                "error": {"code": first.code, "line": first.line, "message": first.message, "fix": first.fix},
+                "more_errors": len(found.errors) - 1,
+            }
         spec = self._file(args, "run_pipeline")
         code = code_in(spec)
         if code and not self.allow_code:

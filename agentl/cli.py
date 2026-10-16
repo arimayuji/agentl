@@ -32,6 +32,22 @@ def _listeners(a: argparse.Namespace) -> list:
     return out
 
 
+def _checked(path: str) -> bool:
+    """Lint before running (#147): on errors print the first one with its fix, so an agent fixes
+    it in one turn, and do not start the run. Warnings stay with `agentl lint`."""
+    from . import lint
+
+    found = lint.check_file(path, warnings=False)
+    if not found.errors:
+        return True
+    print(found.errors[0].text(path), file=sys.stderr)
+    more = len(found.errors) - 1
+    if more:
+        print(f"{more} more error(s): agentl lint {path}", file=sys.stderr)
+    print("the run did not start (agentl run --no-check skips this check)", file=sys.stderr)
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -51,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     r = cmd("run", "run a pipeline")
     r.add_argument("pipeline")
     r.add_argument("--no-cache", action="store_true")
+    r.add_argument(
+        "--no-check", action="store_true", help="skip the lint that runs first (errors stop the run)"
+    )
     r.add_argument("--show", metavar="STEP", help="print the output records of a step")
     r.add_argument(
         "--log-format",
@@ -145,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
     try:
         if a.cmd == "run":
+            if not a.no_check and not _checked(a.pipeline):
+                return 2
             spec = load(a.pipeline)
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))

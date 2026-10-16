@@ -1,7 +1,7 @@
 # CLI and dashboard
 
 ```text
-agentl run PIPELINE [--no-cache] [--show STEP]
+agentl run PIPELINE [--no-cache] [--no-check] [--show STEP]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
 agentl preview PIPELINE STEP [-n 5]
@@ -10,7 +10,7 @@ agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl diagram PIPELINE
 agentl runs
-agentl connectors
+agentl connectors [NAME]
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]

@@ -39,12 +39,13 @@ Python. URLs to private addresses are refused unless `AGENTL_ALLOW_HOSTS` allows
 
 1. Write `pipeline.yaml` (shapes below). `agentl connectors` lists the connectors and
    `agentl connectors http.get` shows one's `with:` parameters; never invent one.
-2. `agentl lint pipeline.yaml --format json` and fix every finding. Each has `line`, `code` and
-   `fix`. Errors (`AE...`) block the run; warnings (`AL...`) are best practices.
+2. `agentl run` checks the pipeline first: on an error it stops before running and prints the
+   line, the code and the `fix`. `agentl lint pipeline.yaml --format json` lists every finding,
+   warnings (`AL...`, best practices) included.
 3. If the pipeline calls a paid LLM on many records: `agentl plan pipeline.yaml` shows the LLM
    calls and a cost range; show it to the user first. `agentl preview pipeline.yaml STEP` shows a
    step's first records when a transform needs checking.
-4. `agentl run pipeline.yaml`. On failure: `agentl doctor` explains the failing step.
+4. `agentl run pipeline.yaml`. If a step fails: `agentl doctor` explains it.
    `agentl validate pipeline.yaml --connect` checks databases, URLs, files and LLM keys.
 
 With the MCP server (`agentl mcp`) the same steps are tools: `lint`, `preview_step`, `plan`,
