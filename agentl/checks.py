@@ -22,9 +22,15 @@ EXPECTATIONS = (
     "range",
     "fresh",
     "vs_last_run",
+    "vs_runs",
     "rejected_rate",
     "pii",
 )
+# What a failing rule does (#185): `fail` stops the step (or warns, with `on_fail: warn`), `warn`
+# only emits an event, `reject` drops the failing rows (row rules only) into the quarantine.
+SEVERITIES = ("fail", "warn", "reject")
+ROW_RULES = ("not_null", "unique", "accepted", "range")
+HISTORY = 50  # passing-run profiles kept per check, for `vs_runs`
 _RATE = re.compile(r"^(<=?)?\s*(\d+(?:\.\d+)?)\s*(%?)$")
 
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhdw])$")
@@ -126,10 +132,12 @@ def run_expectations(
     now: _dt.datetime | None = None,
     rejected: dict[str, tuple[int, int]] | None = None,
     step: str = "",
+    history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Failed expectations as [{check, detail}]. `previous` is the profile of the last passing run;
     `rejected` maps a step to (rejected records, records it saw) in this run; `step` is the
-    checked step, for `rejected_rate` given as a single limit."""
+    checked step, for `rejected_rate` given as a single limit; `history` holds the profiles of
+    the passing runs, newest first, for `vs_runs`."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     fails: list[dict[str, str]] = []
 
@@ -194,6 +202,23 @@ def run_expectations(
                 after = sum(x for x in (_number(r.get(c)) for r in records) if x is not None)
                 if before is not None:
                     _change(fail, f"sum of {c}", before, after, parse_percent(limit))
+        elif key == "vs_runs":
+            window = (history or [])[: int(rule.get("last", 5))]
+            if not window:
+                continue  # first run: nothing to compare with
+            label = f"median of the last {len(window)} run{'s' if len(window) != 1 else ''}"
+            if "rows" in rule:
+                before = _median([p.get("rows", 0) for p in window])
+                _change(fail, "rows", before, n, parse_percent(rule["rows"]), "vs_runs", label)
+            for c, limit in (rule.get("sum") or {}).items():
+                sums = [
+                    s
+                    for s in ((p.get("columns", {}).get(c) or {}).get("sum") for p in window)
+                    if s is not None
+                ]
+                after = sum(x for x in (_number(r.get(c)) for r in records) if x is not None)
+                if sums:
+                    _change(fail, f"sum of {c}", _median(sums), after, parse_percent(limit), "vs_runs", label)
         elif key == "rejected_rate":
             for name, (op, limit) in rejected_limits(rule, step).items():
                 n_bad, total = (rejected or {}).get(name, (0, 0))
@@ -217,17 +242,64 @@ def run_expectations(
     return fails
 
 
-def _change(fail: Any, label: str, before: float, after: float, limit: float) -> None:
+def _median(values: list[float]) -> float:
+    v = sorted(float(x) for x in values)
+    mid = len(v) // 2
+    return v[mid] if len(v) % 2 else (v[mid - 1] + v[mid]) / 2
+
+
+def _change(
+    fail: Any,
+    label: str,
+    before: float,
+    after: float,
+    limit: float,
+    check: str = "vs_last_run",
+    against: str = "the last run",
+) -> None:
     if before == 0:
         if after != 0:
-            fail("vs_last_run", f"{label}: {after:g} now, 0 on the last run")
+            fail(check, f"{label}: {after:g} now, 0 on {against}")
         return
     delta = (after - before) / abs(before)
     if abs(delta) > limit:
-        fail(
-            "vs_last_run",
-            f"{label}: {after:g} vs {before:g} on the last run ({delta:+.0%}, limit {limit:.0%})",
-        )
+        fail(check, f"{label}: {after:g} vs {before:g} on {against} ({delta:+.0%}, limit {limit:.0%})")
+
+
+def failing_rows(records: Records, key: str, rule: Any) -> dict[int, str]:
+    """Index -> reason for each record a row rule (`ROW_RULES`) fails, for `severity: reject`.
+    For `unique`, the first record with a value is kept and the later ones are rejected."""
+    bad: dict[int, str] = {}
+    if key == "not_null":
+        for c in _names(rule):
+            for i, r in enumerate(records):
+                if _empty(r.get(c)):
+                    bad.setdefault(i, f"not_null: {c} is empty")
+    elif key == "unique":
+        for c in _names(rule):
+            seen: set[str] = set()
+            for i, r in enumerate(records):
+                if _empty(r.get(c)):
+                    continue
+                v = str(r.get(c))
+                if v in seen:
+                    bad.setdefault(i, f"unique: duplicate {c} {v!r}")
+                seen.add(v)
+    elif key == "accepted":
+        for c, allowed in rule.items():
+            ok = {str(a) for a in allowed}
+            for i, r in enumerate(records):
+                if not _empty(r.get(c)) and str(r.get(c)) not in ok:
+                    bad.setdefault(i, f"accepted: {c} {r.get(c)!r} is not accepted")
+    elif key == "range":
+        for c, lim in rule.items():
+            for i, r in enumerate(records):
+                x = _number(r.get(c))
+                if x is not None and (("min" in lim and x < lim["min"]) or ("max" in lim and x > lim["max"])):
+                    bad.setdefault(i, f"range: {c} {x:g} is out of range")
+    else:
+        raise ValueError(f"severity reject works only for row rules ({', '.join(ROW_RULES)})")
+    return bad
 
 
 def _names(value: str | list[str]) -> list[str]:

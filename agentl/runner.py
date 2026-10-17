@@ -1036,11 +1036,32 @@ class Runner:
         records = list(records)
         memory = _hash("check-profile", self.spec.name, step.id)
         previous = self.store.cache_get(memory)
+        history_key = _hash("check-history", self.spec.name, step.id)
+        history = self.store.cache_get(history_key) or [] if "vs_runs" in step.expect else []
         with self._spend:
             stats = {k: (v[0], v[1]) for k, v in self._reject_stats.items()}
         findings = checks.run_expectations(
-            records, step.expect, previous, rejected=stats, step=step.check or ""
+            records, step.expect, previous, rejected=stats, step=step.check or "", history=history
         )
+        rules = {k: "passed" for k in step.expect}
+        for f in findings:
+            f["severity"] = step.severity.get(f["check"], "fail")
+            rules[f["check"]] = f["severity"] if f["severity"] != "fail" else "failed"
+        rejecting = {f["check"] for f in findings if f["severity"] == "reject"}
+        if rejecting:
+            bad: dict[int, str] = {}
+            for key in step.expect:
+                if key in rejecting:
+                    for i, why in checks.failing_rows(records, key, step.expect[key]).items():
+                        bad.setdefault(i, why)
+            dropped = [{**records[i], "_error": bad[i]} for i in sorted(bad)]
+            total = len(records)
+            records = [r for i, r in enumerate(records) if i not in bad]
+            self._rejects(run_id, step.id, dropped, total, result)
+        warnings = [f for f in findings if f["severity"] == "warn"]
+        if warnings:
+            self._emit(run_id, "check.warned", step.id, rows=len(records), findings=warnings)
+        findings = [f for f in findings if f["severity"] == "fail"]
         prof = checks.profile(records)
         notes: list[str] = []
         if step.review:
@@ -1061,11 +1082,25 @@ class Runner:
             verdict = res.value.model_dump()
             if verdict["passed"]:
                 notes = list(verdict["findings"])
+                rules["review"] = "passed"
             else:
-                findings += [{"check": "review", "detail": f} for f in verdict["findings"]] or [
+                found = [{"check": "review", "detail": f} for f in verdict["findings"]] or [
                     {"check": "review", "detail": "the reviewer rejected the data without a reason"}
                 ]
-        data = {"rows": len(records), "findings": findings, **({"notes": notes} if notes else {})}
+                level = step.severity.get("review", "fail")
+                for f in found:
+                    f["severity"] = level
+                rules["review"] = "failed" if level == "fail" else level
+                if level == "fail":
+                    findings += found
+                else:
+                    self._emit(run_id, "check.warned", step.id, rows=len(records), findings=found)
+        data = {
+            "rows": len(records),
+            "findings": findings,
+            "rules": rules,
+            **({"notes": notes} if notes else {}),
+        }
         if findings:
             self._emit(run_id, "check.failed", step.id, on_fail=step.on_fail, **data)
             if step.on_fail == "stop":
@@ -1074,7 +1109,10 @@ class Runner:
                 raise CheckFailed(f"{len(findings)} problem(s): {first}{more}")
         else:
             self._emit(run_id, "check.passed", step.id, **data)
-            self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
+            kept = {k: v for k, v in prof.items() if k != "sample"}
+            self.store.cache_set(memory, kept)
+            if "vs_runs" in step.expect:
+                self.store.cache_set(history_key, [kept, *history][: checks.HISTORY])
         return records
 
     # waits ------------------------------------------------------------------
