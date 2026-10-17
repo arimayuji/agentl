@@ -18,6 +18,12 @@ They are always listed under **Changed** or **Removed**.
   (`obey_robots: false` is logged), waits `delay` per host, honours `Retry-After`, sends an
   identifying User-Agent, takes a `proxy` per run or per host, and with `incremental: true`
   skips pages unchanged since the last successful run (ETag, Last-Modified, content hash).
+- `resolve` step (#179): match messy names to a reference table (inline values, a file or a
+  previous step). Values are normalised (case, accents, punctuation, suffixes such as Ltda or Inc),
+  matched exactly, then by similarity (`difflib`, or `rapidfuzz` with the `fuzzy` extra); only
+  values below `threshold` go to the model, once each. Each record gets the match, score and
+  method; unresolved ones are rejected. A `resolve.counts` event reports the rows per path, and
+  `agentl resolve export|import` round-trips the model decisions for review.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or

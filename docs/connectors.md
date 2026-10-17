@@ -248,6 +248,45 @@ the transform is naturally a join, several group-bys or window functions over da
 memory. When the data already lives in a warehouse, run the SQL there (a `sql.read` query) instead
 of moving it out to transform it.
 
+### Match names to a reference table: `resolve`
+
+Maps messy values ("SÃO PAULO", "S. Paulo", "SP") to one id of a reference table. Each value is
+normalised (lower case, accents and punctuation removed, suffixes such as Ltda, Inc or LLC
+dropped), then matched exactly against the reference names and ids, then by similarity. Only
+values whose best similarity is below `threshold` and at least `min_score` go to the model, with
+the closest `candidates`; the model can only answer one of those ids or null.
+
+```yaml
+- id: regions
+  use: resolve
+  input: [rows, region_table]       # the reference can be one of the inputs
+  with:
+    field: region
+    reference: region_table         # or {file: regions.csv} or {values: [{id: SP, name: Sao Paulo}]}
+    key: id                         # reference column with the id (default id)
+    name: name                      # reference column with the name (default name)
+    threshold: 0.9                  # similarity accepted without the model (0 to 1)
+    min_score: 0.5                  # below this, unresolved without asking the model
+    on_unresolved: reject           # reject (default), keep (match null) or drop
+```
+
+Each record gets `<field>_match` (the id; rename with `into`), `<field>_match_score` and
+`<field>_match_method` (`exact`, `fuzzy`, `model` or `unresolved`). Unresolved records are
+rejected, so they never reach the destination; list and retry them with `agentl rejected`.
+`model: false` turns the model off; `llm:` on the step picks which one to use.
+
+Similarity uses the standard library's `difflib`; install `agentl-etl[fuzzy]` to use
+`rapidfuzz`, which is much faster on large reference tables (scores differ slightly).
+
+The model's decisions are stored per pipeline and step, so a value never costs twice. A
+`resolve.counts` event reports how many rows took each path, plus how many model decisions came
+from the store (`cached`). Export them for review, fix them, and import them back:
+
+```bash
+agentl resolve export my-pipeline regions decisions.json
+agentl resolve import my-pipeline regions decisions.json
+```
+
 ### Time windows: `aggregate` with `window`
 
 `window: {field: ts, every: 1m}` puts each record in a tumbling window of `every` (`30s`, `5m`,
