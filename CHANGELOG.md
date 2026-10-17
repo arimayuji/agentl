@@ -11,6 +11,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Check steps take per-row `rules:` with `on_fail: drop | flag | fail` (a broken rule never stops the run) and emit a `check.digest` event with new, resolved and ongoing findings by `identity` against the previous day, including an all-clear heartbeat (#218).
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

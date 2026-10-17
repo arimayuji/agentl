@@ -146,6 +146,35 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+class RowRuleSpec(BaseModel):
+    """A per-row rule of a check step (#218). `on_fail`: `drop` removes the row, `flag` keeps it
+    and reports it, `fail` stops the step. An error inside the rule never stops the pipeline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule: Literal["not_null", "between", "accepted", "matches", "abs_diff_max"]
+    column: str
+    other: str | None = None  # abs_diff_max: the column compared with `column`
+    min: float | None = None
+    max: float | None = None
+    values: list[Any] | None = None
+    pattern: str | None = None
+    on_fail: Literal["drop", "flag", "fail"] = "flag"
+
+    @model_validator(mode="after")
+    def _needs(self) -> RowRuleSpec:
+        need = {
+            "between": self.min is not None or self.max is not None,
+            "accepted": self.values is not None,
+            "matches": self.pattern is not None,
+            "abs_diff_max": self.other is not None and self.max is not None,
+        }.get(self.rule, True)
+        if not need:
+            hint = {"between": "min and/or max", "accepted": "values", "matches": "pattern"}
+            raise ValueError(f"rule {self.rule}: needs {hint.get(self.rule, 'other and max')}")
+        return self
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -159,6 +188,10 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
+    # Per-row rules and the digest of their findings (#218). `identity` names the columns that
+    # identify a finding from one day to the next (default: the rule's column value).
+    rules: list[RowRuleSpec] = Field(default_factory=list)
+    identity: list[str] = Field(default_factory=list)
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
@@ -214,8 +247,10 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
-        if self.check and not (self.expect or self.review):
-            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or both")
+        if self.check and not (self.expect or self.review or self.rules):
+            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or 'rules'")
+        if (self.rules or self.identity) and not self.check:
+            raise ValueError(f"step '{self.id}': rules and identity belong to check steps")
         unknown = [k for k in self.expect if k not in _EXPECTATIONS]
         if unknown:
             raise ValueError(
