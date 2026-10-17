@@ -144,6 +144,49 @@ check would pass `timeout`. With `on_timeout: fail` the run fails before the dat
 step; with `continue` it goes on with the last data it got. The run process stays alive while it
 waits, so give your scheduler's job timeout room for it.
 
+## Overlapping runs and shared caches
+
+A job scheduled every minute must not overlap the previous run, and an expensive lookup should not
+run once per worker. Both work through the run store, so they hold across hosts when the workers
+share a Postgres store (on one host, the SQLite file is enough).
+
+```yaml
+name: prices
+concurrency: { key: "{pipeline}:${PRODUCT}", on_overlap: skip }   # skip | queue | fail
+steps:
+  - id: catalog
+    use: cache
+    with:
+      key: "catalog:${AREA}"
+      ttl: 1d
+      single_flight: true       # one computes, the others wait for its result
+      do: [ { use: http.get, with: { url: "https://api.example.org/catalog" } } ]
+  - id: prices
+    input: catalog
+    use: http.get
+    with: { url: "https://api.example.org/prices" }
+```
+
+`concurrency` allows one run at a time per `key` (default `{pipeline}`, the pipeline name). When
+another run holds the key:
+
+| `on_overlap` | The new run |
+| --- | --- |
+| `skip` (default) | ends at once with status `skipped`. Not a failure: `agentl run` exits 0 and `raise_on_failure` does not raise |
+| `queue` | waits for the other run to finish, up to `wait` (default `1h`), then fails |
+| `fail` | ends with status `failed` |
+
+The lock is a lease (`lease`, default `5m`) that the running process renews while it works. If the
+process dies, the lease lapses and the next run takes over; no stale lock to clear by hand.
+
+A `cache` step runs its `do` steps (each fed the output of the one before; the first gets the
+step's input) and keeps the result under `key` for `ttl` (`30m`, `6h`, `1d`; default: no expiry).
+With `single_flight` (the default), concurrent callers compute it once: threads in one run, runs
+in parallel and workers on other hosts. One holds a lease on the key, the others wait up to `wait`
+for its result; a holder that dies is replaced after `lease` (default `1m`). `cache_ttl: 6h` on any
+cached step (agent steps cache per record by default) makes those entries expire too. To force a
+fresh computation, `agentl cache clear catalog:north`.
+
 ## GitHub Actions
 
 ```yaml

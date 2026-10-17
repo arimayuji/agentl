@@ -10,6 +10,9 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_run ON events(run_id);
 CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS locks (key TEXT PRIMARY KEY, owner TEXT, expires REAL);
 CREATE TABLE IF NOT EXISTS state (
   pipeline TEXT, step TEXT, value TEXT, run_id TEXT, ts REAL, PRIMARY KEY (pipeline, step)
 );
@@ -54,6 +58,8 @@ POSTGRES_SCHEMA = [
     "CREATE INDEX IF NOT EXISTS agentl_events_run ON agentl_events(run_id)",
     "CREATE INDEX IF NOT EXISTS agentl_runs_started ON agentl_runs(started DESC)",
     "CREATE TABLE IF NOT EXISTS agentl_cache (key TEXT PRIMARY KEY, value JSONB, ts DOUBLE PRECISION)",
+    "ALTER TABLE agentl_cache ADD COLUMN IF NOT EXISTS expires DOUBLE PRECISION",
+    "CREATE TABLE IF NOT EXISTS agentl_locks (key TEXT PRIMARY KEY, owner TEXT, expires DOUBLE PRECISION)",
     """CREATE TABLE IF NOT EXISTS agentl_state (
       pipeline TEXT, step TEXT, value JSONB, run_id TEXT, ts DOUBLE PRECISION,
       PRIMARY KEY (pipeline, step))""",
@@ -78,10 +84,17 @@ class Store:
         "state": "state",
         "samples": "samples",
         "rejected": "rejected",
+        "locks": "locks",
         "seen": "seen",
     }
     INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
-    UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts) VALUES (?, ?, ?)"
+    UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts, expires) VALUES (?, ?, ?, ?)"
+    # Take the lease when it is free or expired; a single statement, so atomic across processes.
+    ACQUIRE_LOCK = (
+        "INSERT INTO {locks} (key, owner, expires) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE "
+        "SET owner = excluded.owner, expires = excluded.expires "
+        "WHERE {locks}.expires < ? OR {locks}.owner = excluded.owner"
+    )
     UPSERT_STATE = "INSERT OR REPLACE INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?, ?, ?)"
     INSERT_REJECTED = (
         "INSERT INTO {rejected} (run_id, pipeline, step, ts, error, record) VALUES (?, ?, ?, ?, ?, ?)"
@@ -95,6 +108,10 @@ class Store:
         self._conn: Any = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SQLITE_SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache)")}
+        if "expires" not in cols:  # stores created before cache TTLs
+            self._conn.execute("ALTER TABLE cache ADD COLUMN expires REAL")
+            self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -109,10 +126,11 @@ class Store:
     def _sql(self, sql: str) -> str:
         return sql.format(**self.T)
 
-    def _exec(self, sql: str, params: tuple = ()) -> None:
+    def _exec(self, sql: str, params: tuple = ()) -> int:
         with self._lock:
-            self._conn.execute(self._sql(sql), params)
+            n = self._conn.execute(self._sql(sql), params).rowcount
             self._conn.commit()
+            return n
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:
@@ -141,11 +159,115 @@ class Store:
         )
 
     def cache_get(self, key: str) -> Any | None:
-        rows = self._query("SELECT value FROM {cache} WHERE key = ?", (key,))
+        """The cached value, or None when missing or past its TTL."""
+        rows = self._query(
+            "SELECT value FROM {cache} WHERE key = ? AND (expires IS NULL OR expires > ?)", (key, time.time())
+        )
         return self._load(rows[0]["value"]) if rows else None
 
-    def cache_set(self, key: str, value: Any) -> None:
-        self._exec(self.UPSERT_CACHE, (key, json.dumps(value, default=str), time.time()))
+    def cache_set(self, key: str, value: Any, ttl: float | None = None) -> None:
+        """Store `value`; with `ttl` (seconds) it expires after that long."""
+        now = time.time()
+        expires = None if ttl is None else now + ttl
+        self._exec(self.UPSERT_CACHE, (key, json.dumps(value, default=str), now, expires))
+
+    def cache_clear(self, key: str | None = None) -> int:
+        """Delete one key, every key starting with a prefix (`key*`), or all (None). Returns the count."""
+        if key is None:
+            return self._exec("DELETE FROM {cache}")
+        if key.endswith("*"):
+            prefix = key[:-1].replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            return self._exec("DELETE FROM {cache} WHERE key LIKE ? ESCAPE '!'", (prefix + "%",))
+        return self._exec("DELETE FROM {cache} WHERE key = ?", (key,))
+
+    def cache_compute(
+        self,
+        key: str,
+        compute: Callable[[], Any],
+        ttl: float | None = None,
+        single_flight: bool = True,
+        lease: float = 60.0,
+        wait: float = 3600.0,
+    ) -> Any:
+        """The cached value of `key`, computing and storing it on a miss. With `single_flight`,
+        concurrent callers (threads, processes or hosts sharing the store) compute it once: one
+        holds a lease on the key, the others wait for its result. A lease of a dead process expires
+        after `lease` seconds and another caller takes over. `None` results are not cached."""
+        hit = self.cache_get(key)
+        if hit is not None or not single_flight:
+            if hit is None:
+                hit = compute()
+                if hit is not None:
+                    self.cache_set(key, hit, ttl)
+            return hit
+        deadline = time.monotonic() + wait
+        pause = 0.02
+        while True:
+            with self.lease("cache:" + key, lease) as held:
+                if held:
+                    hit = self.cache_get(key)  # filled while we were waiting for the lease
+                    if hit is None:
+                        hit = compute()
+                        if hit is not None:
+                            self.cache_set(key, hit, ttl)
+                    return hit
+            hit = self.cache_get(key)
+            if hit is not None:
+                return hit
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"cache key {key!r}: still computed elsewhere after {wait:.0f}s")
+            time.sleep(pause)
+            pause = min(pause * 2, 1.0)
+
+    # leases: locks that expire if their holder dies (#204)
+    def lock_acquire(self, key: str, owner: str, ttl: float) -> bool:
+        """Take the lease on `key` for `ttl` seconds. True when `owner` now holds it (also when it
+        already did: that extends it)."""
+        now = time.time()
+        return self._exec(self.ACQUIRE_LOCK, (key, owner, now + ttl, now)) > 0
+
+    def lock_refresh(self, key: str, owner: str, ttl: float) -> bool:
+        return (
+            self._exec(
+                "UPDATE {locks} SET expires = ? WHERE key = ? AND owner = ?", (time.time() + ttl, key, owner)
+            )
+            > 0
+        )
+
+    def lock_release(self, key: str, owner: str) -> None:
+        self._exec("DELETE FROM {locks} WHERE key = ? AND owner = ?", (key, owner))
+
+    def lock_holder(self, key: str) -> dict | None:
+        rows = self._query(
+            "SELECT owner, expires FROM {locks} WHERE key = ? AND expires >= ?", (key, time.time())
+        )
+        return rows[0] if rows else None
+
+    @contextmanager
+    def lease(self, key: str, ttl: float, owner: str | None = None) -> Iterator[bool]:
+        """Try once to take the lease on `key`; yields whether it was taken. While held, a thread
+        renews it every `ttl / 3` seconds, so it lapses only when the process dies or hangs."""
+        owner = owner or uuid.uuid4().hex
+        if not self.lock_acquire(key, owner, ttl):
+            yield False
+            return
+        stop = threading.Event()
+
+        def renew() -> None:
+            while not stop.wait(ttl / 3):
+                try:
+                    self.lock_refresh(key, owner, ttl)
+                except Exception:  # the store is closing; the lease will lapse on its own
+                    return
+
+        beat = threading.Thread(target=renew, name=f"agentl-lease-{key[:20]}", daemon=True)
+        beat.start()
+        try:
+            yield True
+        finally:
+            stop.set()
+            beat.join()
+            self.lock_release(key, owner)
 
     # column mappings of map_schema steps (#177), per pipeline and step: {"layouts": {sig: mapping}}
     MAPPING_PREFIX: ClassVar[str] = "map_schema:"
@@ -319,7 +441,7 @@ class Store:
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
     Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state,
-    agentl_samples, agentl_rejected."""
+    agentl_samples, agentl_rejected, agentl_locks."""
 
     T: ClassVar[dict[str, str]] = {
         "runs": "agentl_runs",
@@ -328,14 +450,15 @@ class PostgresStore(Store):
         "state": "agentl_state",
         "samples": "agentl_samples",
         "rejected": "agentl_rejected",
+        "locks": "agentl_locks",
         "seen": "agentl_seen",
     }
     INSERT_SEEN = (
         "INSERT INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING"
     )
     UPSERT_CACHE = (
-        "INSERT INTO {cache} (key, value, ts) VALUES (?, ?::jsonb, ?) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts"
+        "INSERT INTO {cache} (key, value, ts, expires) VALUES (?, ?::jsonb, ?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts, expires = EXCLUDED.expires"
     )
     UPSERT_STATE = (
         "INSERT INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?::jsonb, ?, ?) "
@@ -363,9 +486,9 @@ class PostgresStore(Store):
     def _sql(self, sql: str) -> str:
         return super()._sql(sql).replace("?", "%s")
 
-    def _exec(self, sql: str, params: tuple = ()) -> None:
+    def _exec(self, sql: str, params: tuple = ()) -> int:
         with self._lock:
-            self._conn.execute(self._sql(sql), params)
+            return int(self._conn.execute(self._sql(sql), params).rowcount)
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:

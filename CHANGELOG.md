@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Concurrency control and single-flight cache (#204): `concurrency: {key, on_overlap: skip | queue
+  | fail}` allows one run per key across workers sharing the run store (`skip` ends as `skipped`,
+  not an error); the `cache` step keeps the result of its `do` steps for a `ttl` and computes it
+  once for concurrent callers; `cache_ttl` on cached steps; `agentl cache clear <key>`. Locks are
+  leases renewed while held, so they lapse if the process dies. SQLite on one host, Postgres across
+  hosts (table `agentl_locks`).
 - `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` (#236): slowly changing
   dimensions type 2 with `valid_from`, `valid_to` and `is_current`. A record whose `track` columns
   (default: all but `key`) changed closes the current version and inserts a new one; unchanged

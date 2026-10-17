@@ -336,6 +336,43 @@ def test_rejected_records_are_kept_and_retried_on_postgres():
         assert store.rejected_get(row["id"])["retried_by"] == result.run_id
 
 
+def test_leases_and_single_flight_across_workers():
+    """Two connections act as two hosts: one lease holder, one computation (#204)."""
+    import threading
+    import time
+
+    from agentl.store import PostgresStore
+
+    a, b = PostgresStore(DSN), PostgresStore(DSN)
+    try:
+        lock = f"run:{uuid.uuid4().hex}"
+        assert a.lock_acquire(lock, "host-a", 0.3)
+        assert not b.lock_acquire(lock, "host-b", 0.3)
+        time.sleep(0.4)  # host-a died without releasing
+        assert b.lock_acquire(lock, "host-b", 5)
+        b.lock_release(lock, "host-b")
+
+        key, calls, out = f"sf:{uuid.uuid4().hex}", [], []
+
+        def compute():
+            calls.append(1)
+            time.sleep(0.3)
+            return [{"ok": True}]
+
+        threads = [
+            threading.Thread(target=lambda s=s: out.append(s.cache_compute(key, compute))) for s in (a, b)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(calls) == 1 and out == [[{"ok": True}]] * 2
+        a.cache_clear(key)
+    finally:
+        a.close()
+        b.close()
+
+
 def test_upsert_rejects_null_keys(table):
     write = get("postgres.write")
     data = [{"id": 1, "v": "a"}, {"id": None, "v": "x"}, {"id": None, "v": "y"}]
