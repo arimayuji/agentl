@@ -130,6 +130,55 @@ agentl schema > pipeline.schema.json
 name: tickets
 ```
 
+## Test against a golden file
+
+`agentl test` runs a pipeline on fixture files and compares what each writer would write with an
+expected JSON file. Nothing leaves the machine: source steps read the fixtures, every LLM uses the
+offline `echo` provider, writers (and `rejected_to`) become pass-through steps, notifications and
+budgets are off and the run uses a throwaway store.
+
+```bash
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json --update
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+- `--fixture PATH` when the pipeline has one source step, `--fixture STEP=PATH` otherwise (repeat
+  it). The file is read with `file.read`, so CSV, JSON, Excel, Parquet and the other formats work.
+  Sources that read local files may run without a fixture; any other source needs one.
+- The golden file is a list of records (one writer) or `{"writer_step": [records]}`. With no writer,
+  the last step is compared. `--update` writes it from the current run.
+- Rows are matched by position, or by a field with `--key id`. `_file` and `_archive` are left out;
+  `--ignore FIELD` leaves out more.
+- Exit code 0 when everything matches, 1 on a difference or a failed run, 2 on a usage error. The
+  diff names each changed field:
+
+```text
+FAIL save: expected 3 record(s), got 2
+  ~ row 1
+      amount: expected 31, got 30
+  - missing row 2: {"id": 9, "amount": 99}
+```
+
+In GitHub Actions:
+
+```yaml
+name: pipelines
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install agentl-etl
+      - run: agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+Agent steps get `echo` answers (fields copied from the record), so the golden file checks the
+pipeline's plumbing, not the model. A dry diff of inserts and updates against the destination
+(`agentl diff`) is planned.
+
 ## Run store
 
 The run store keeps run history, events and the per-record agent cache.

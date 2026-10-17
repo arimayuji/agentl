@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
+  LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
+  with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
+  Exits 1 with a per-field row diff on a mismatch, for CI.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
