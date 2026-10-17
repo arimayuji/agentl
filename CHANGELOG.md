@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
+  Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
+  an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters
+  attachments on both providers; records now carry `received_at`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
