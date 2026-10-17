@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `map_schema` step (#177): maps messy columns (multi-row headers, merged cells, varying names)
+  onto typed target fields. Matches by name and `synonyms` first, asks the LLM once only for the
+  rest, and keeps the mapping per layout in the run store, so later runs make no model call. A new
+  layout fails clearly; `review: required` waits for `agentl mappings approve`; `mapping:` pins it
+  in the YAML. New `agentl mappings show|approve|forget`.
 - `web.crawl` (#240): crawl a site breadth first from `start` URLs and `sitemap` (indexes and
   gzip), with `max_depth`, `max_pages`, `allowed_domains`, `include`/`exclude` regexes and URL
   normalisation and dedupe; one record per page with `url`, `status`, `depth`, `referrer`,

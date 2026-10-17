@@ -179,6 +179,56 @@ Other databases will ship as plugins.
 | `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
 | `sql` | `query` or `file`, `params`, `allow_files` (false) | SQL over the previous steps, each one a table (below) |
+| `map_schema` | `target` (field: type), `header_rows`, `synonyms`, `mapping`, `review`, `on_drift`, `sample_rows` (30), `locale`, `on_bad` | Map messy columns onto fields: inferred once per layout, then free (below) |
+
+### Map messy columns once: `map_schema`
+
+Weekly reports from other teams rarely keep their headers: two or three header rows, merged cells,
+names that change from `Região` to `Region`. `map_schema` works out which column holds each target
+field once per layout, keeps that mapping in the run store, and applies it on every later run with
+no model call.
+
+Given an Excel sheet whose header spans two rows (the reader's header plus one more row, with
+`Sales` merged over two columns):
+
+| Report date | Região | Sales | |
+|---|---|---|---|
+| | | Units | Revenue |
+| 02/01/2026 | North | 1.200 | 10,5 |
+
+```yaml
+- id: sheet
+  use: file.read
+  with: { path: data/weekly.xlsx }
+- id: mapped
+  use: map_schema
+  input: sheet
+  with:
+    header_rows: 1                       # one more header row under the reader's own
+    target: { report_date: date, region: str, value: float }
+    synonyms: { region: [regiao, area] } # matched by name, no LLM
+    review: required                     # or auto (default)
+```
+
+1. The header rows become one name per column, joined with ` / `, and a merged cell carries its
+   value to the right: `Report date`, `Região`, `Sales / Units`, `Sales / Revenue`.
+2. Fields are matched by name first: the field or a synonym equals a column, or the last part of a
+   joined name, without case, accents or punctuation. `report_date` and `region` match here.
+3. Only the fields still unmatched go to the step's `llm`, in one structured call with the column
+   names and `sample_rows` rows. An answer that is not one of the columns is ignored.
+4. The mapping is stored by the layout's signature (a hash of the column names). The next run on
+   the same layout makes no model call. Blank rows are dropped and the fields are typed with the
+   [`cast`](#clean-types-cast) types (`str` is `text`), bad values going to the rejected records.
+
+Nothing is mapped silently:
+
+- With `review: required`, the first run stops with the proposed mapping until
+  `agentl mappings approve <pipeline> <step>`.
+- A new layout (columns added, removed or reordered) fails the run with the difference. Pin
+  `mapping:`, set `on_drift: infer` to infer a mapping for it, or `agentl mappings forget` the old one.
+- `agentl mappings show` prints each stored mapping as YAML. Paste it under `with:` as `mapping:`
+  (`field: column`) to version it with the pipeline; a pinned mapping skips the store and the LLM,
+  and fails if a column it names is missing.
 
 ### SQL over previous steps: `sql`
 
