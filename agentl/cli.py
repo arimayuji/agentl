@@ -152,6 +152,33 @@ def _rejected(a: argparse.Namespace) -> int:
     return 0 if result.status == "succeeded" else 1
 
 
+def _params(pairs: list[str] | None) -> dict[str, str]:
+    """`--param key=value`, repeatable. Values stay strings; the pipeline's types convert them."""
+    out = {}
+    for pair in pairs or []:
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--param expects key=value, got {pair!r}")
+        out[key.strip()] = value
+    return out
+
+
+def _declared(path: str) -> set[str]:
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    return set((raw or {}).get("params") or {}) if isinstance(raw, dict) else set()
+
+
+def _param_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--param",
+        action="append",
+        metavar="KEY=VALUE",
+        help="run parameter declared under params: (repeatable)",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -171,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     r = cmd("run", "run a pipeline")
     r.add_argument("pipeline")
     r.add_argument("--no-cache", action="store_true")
+    _param_arg(r)
     r.add_argument(
         "--no-check", action="store_true", help="skip the lint that runs first (errors stop the run)"
     )
@@ -273,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sv = cmd("serve", "run pipelines on their triggers: schedules, webhooks and new files")
     sv.add_argument("pipelines", nargs="+")
+    _param_arg(sv)
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
     sv.add_argument("--port", type=int, default=7071)
 
@@ -298,6 +327,19 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
+    bf = cmd("backfill", "one run per file or per date, resumable")
+    bf.add_argument("pipeline")
+    src = bf.add_mutually_exclusive_group(required=True)
+    src.add_argument("--glob", help="one run per matching file (local or s3://, gs://... with [remote])")
+    src.add_argument("--from", dest="start", metavar="DATE", help="first date (ISO), with --to")
+    bf.add_argument("--to", dest="end", metavar="DATE", help="last date, included")
+    bf.add_argument("--every", choices=["day", "week", "month"], default="day")
+    bf.add_argument("--param-name", help="the param that gets each file or date (default: the only one)")
+    bf.add_argument("--concurrency", type=int, default=1)
+    bf.add_argument("--redo", action="store_true", help="run items that already succeeded again")
+    bf.add_argument("--json", action="store_true", help="print the final report as JSON")
+    _param_arg(bf)
+
     ds = cmd("dashboard", "open the local dashboard")
     ds.add_argument("--port", type=int, default=7070)
     ds.add_argument("--host", default="127.0.0.1")
@@ -307,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "run":
             if not a.no_check and not _checked(a.pipeline):
                 return 2
-            spec = load(a.pipeline)
+            spec = load(a.pipeline, params=_params(a.param))
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
@@ -474,12 +516,41 @@ def main(argv: list[str] | None = None) -> int:
                 handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
                 serve_log.addHandler(handler)
                 serve_log.setLevel(logging.INFO)
-            specs = [load(p) for p in a.pipelines]
+            fixed = _params(a.param)
+            specs = [
+                load(p, params={k: v for k, v in fixed.items() if k in _declared(p)}) for p in a.pipelines
+            ]
             for spec in specs:
                 assist.check(spec)
             with open_store(a.db) as store:
                 Service(specs, store).serve(a.host, a.port)
             return 0
+        if a.cmd == "backfill":
+            from . import backfill as bfill
+
+            if a.start and not a.end:
+                raise ValueError("--from needs --to")
+            items = bfill.periods(a.start, a.end, a.every) if a.start else bfill.files(a.glob)
+            if not items:
+                print("backfill: nothing matches", file=sys.stderr)
+                return 0
+
+            def progress(item: str, status: str, err: str | None) -> None:
+                print(f"{status} {item}" + (f": {err}" if err else ""), file=sys.stderr)
+
+            outcome = bfill.backfill(
+                a.pipeline,
+                items,
+                param=a.param_name,
+                params=_params(a.param),
+                db=a.db,
+                concurrency=a.concurrency,
+                redo=a.redo,
+                kind="date" if a.start else "str",
+                on_done=progress,
+            )
+            print(json.dumps(outcome.to_dict(), indent=2) if a.json else outcome.text())
+            return 0 if outcome.ok else 1
         if a.cmd == "mcp":
             if a.action == "serve":
                 from .mcp_server import serve as serve_mcp
