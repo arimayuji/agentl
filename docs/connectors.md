@@ -578,8 +578,8 @@ with commas. XPath is not supported.
 **Good conduct.** `crawl` makes one request at a time, `delay` seconds apart (1 by default), with
 a `User-Agent` that names agentl (`user_agent` changes it), follows only links on the start
 host (`same_host: false` to leave it), and goes through the same private-network guard as every
-other connector (see [HTTP](#http)). It does not read `robots.txt` yet: check the
-site's terms before crawling it.
+other connector (see [HTTP](#http)). It does not read `robots.txt`: to cover a whole site, use
+[`web.crawl`](#crawling-a-whole-site), and check the site's terms before crawling it.
 
 **When the site changes.** A selector that matches nothing is how a scraper breaks. With
 `on_selector_miss: fail_with_snapshot` (default) the step fails with an error that names the
@@ -589,6 +589,51 @@ selector and the URL, saves the HTML it received under `.agentl/evidence/<date>/
 page (or the item, for a field) and logs a warning; `empty` keeps the item with `null` in the
 field. A missing `next_page` link is the end of the list, not a miss. A future mode will hand the
 snapshot to an agent step as the fallback when a selector fails (#195).
+
+
+## Crawling a whole site
+
+`web.crawl` walks a site breadth first from `start` URLs (or the `url` field of upstream
+records) and the pages listed in `sitemap` (sitemap indexes and `.gz` sitemaps are followed),
+and outputs one record per page: `url`, `status`, `depth`, `referrer`, `links` (absolute,
+normalised) and `html` (`format: markdown` or `both` adds `markdown`, which needs the `web`
+extra). Feed it to `html.select`, `html.read` or an agent step.
+
+```yaml
+- id: docs_site
+  use: web.crawl
+  with:
+    start: https://example.org/docs/
+    sitemap: https://example.org/sitemap.xml
+    max_depth: 3          # 0 reads only the start and sitemap pages
+    max_pages: 500
+    allowed_domains: [example.org]   # default: the start hosts; subdomains included
+    include: ["/docs/"]              # regexes; a URL must match one (when set)
+    exclude: ["\\.pdf$", "/login"]  # and none of these
+    delay: 1                         # seconds between requests to the same host
+    incremental: true
+    proxy: ${CRAWL_PROXY}            # or {example.org: ..., "*": ...}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_depth`, `max_pages` | 2, 100 | link depth from the start pages, pages fetched per run |
+| `allowed_domains`, `include`, `exclude` | start hosts | scope of the links followed (start URLs are always read) |
+| `delay` | 1 | per host; a larger `Crawl-delay` in robots.txt wins |
+| `obey_robots` | `true` | `false` skips robots.txt and logs a warning: an explicit, visible override |
+| `user_agent`, `headers` | `agentl/<version> (+https://agentl.com.br)` | identify yourself |
+| `proxy` | none | one proxy URL, or host to proxy URL (`"*"` for the rest); pass it from a secret |
+| `incremental` | `false` | skip pages unchanged since the last successful run |
+| `retries`, `timeout` | 2, 30 | 429 and 5xx are retried after `Retry-After` (seconds or a date), else with backoff |
+
+URLs are normalised before dedupe (lowercase scheme and host, no default port, no fragment,
+sorted query), so `/a`, `/a#top` and `HTTP://Example.org:80/a` are one page. With `incremental: true`
+each page's ETag, Last-Modified and content hash are kept in the run store (`agentl state`) and
+move only when the run succeeds; the next run sends `If-None-Match` / `If-Modified-Since`, and a
+`304` or an identical body is not output again (its links are still followed). Pages that error
+(4xx, 5xx after retries) come out with their `status` and empty `html`. Requests go one at a
+time through the private-network guard. Sitemaps that declare a DTD or entities are refused.
+`web.crawl` does not try to get past CAPTCHAs or bot protection.
 
 ## Email (IMAP)
 

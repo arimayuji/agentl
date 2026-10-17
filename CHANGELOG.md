@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `web.crawl` (#240): crawl a site breadth first from `start` URLs and `sitemap` (indexes and
+  gzip), with `max_depth`, `max_pages`, `allowed_domains`, `include`/`exclude` regexes and URL
+  normalisation and dedupe; one record per page with `url`, `status`, `depth`, `referrer`,
+  `links` and `html` and/or `markdown`. Obeys `robots.txt` and `Crawl-delay` by default
+  (`obey_robots: false` is logged), waits `delay` per host, honours `Retry-After`, sends an
+  identifying User-Agent, takes a `proxy` per run or per host, and with `incremental: true`
+  skips pages unchanged since the last successful run (ETag, Last-Modified, content hash).
 - Declarative HTML extraction and list-to-detail crawling (#192). `html.select` gives one record
   per element matching `items`, with `fields` read by CSS selector (text, `attr`, `absolute`
   links, `type` with the `cast` types, `all`, `required`), from `url`, `path` or upstream records

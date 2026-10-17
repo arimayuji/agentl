@@ -19,4 +19,5 @@ from . import (  # noqa: F401  (registers connectors)
     scrape,
     sql,
     transforms,
+    webcrawl,
 )
