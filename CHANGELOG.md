@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Pipeline chaining under `agentl serve` (#203): `on_success` / `on_failure` / `after` actions
+  start another pipeline with parameters (`${outputs.<step>}`, `${trigger.<field>}`) or emit an
+  event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
+  `rows_changed`, `outcome`); an `after: <pipeline>` trigger; parent and child runs are linked;
+  cycles are rejected at start.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve

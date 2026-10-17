@@ -321,14 +321,16 @@ class TriggerSpec(BaseModel):
     files: str | None = None  # glob, local or remote: "inbox/*.csv", "s3://bucket/in/*.xlsx"
     every: str | float = "1m"  # files: how often to look; alone: run again at this interval
     storage_options: dict[str, Any] = Field(default_factory=dict)
+    after: str | None = None  # another pipeline's name: run when that one finishes
+    status: Literal["succeeded", "failed", "any"] = "succeeded"  # after: which outcomes count
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
-        kinds = [k for k in ("cron", "webhook", "files") if getattr(self, k)]
+        kinds = [k for k in ("cron", "webhook", "files", "after") if getattr(self, k)]
         if not kinds and "every" in self.model_fields_set:
             kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, webhook, files or every")
+            raise ValueError("a trigger has exactly one of cron, webhook, files, after or every")
         if self.cron:
             from .triggers import Cron
 
@@ -337,13 +339,47 @@ class TriggerSpec(BaseModel):
             raise ValueError(f"webhook path must start with '/': {self.webhook}")
         if self.secret and not self.webhook:
             raise ValueError("secret belongs to webhook triggers")
+        if "status" in self.model_fields_set and not self.after:
+            raise ValueError("status belongs to after triggers")
         return self
 
     @property
     def kind(self) -> str:
         if self.cron or self.webhook or self.files:
             return "cron" if self.cron else "webhook" if self.webhook else "files"
-        return "every"
+        return "after" if self.after else "every"
+
+
+class EmitSpec(BaseModel):
+    """POST an event to a webhook: `{id, topic, pipeline, run_id, status, payload}`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    topic: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    secret: str | None = None  # signs the body: X-Signature-256: sha256=<hmac>
+
+
+class ActionSpec(BaseModel):
+    """One `on_success` / `on_failure` / `after` action under `agentl serve`."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    trigger: str | None = None  # another pipeline to run, its `use: trigger` step gets `with`
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+    emit: EmitSpec | None = None
+    when: str | None = None  # e.g. "all_ok and rows_changed > 0"
+
+    @model_validator(mode="after")
+    def _one(self) -> ActionSpec:
+        if bool(self.trigger) == bool(self.emit):
+            raise ValueError("an action has exactly one of trigger or emit")
+        if self.when:
+            from .chain import check_when
+
+            check_when(self.when)
+        return self
 
 
 class ParamSpec(BaseModel):
@@ -474,6 +510,10 @@ class PipelineSpec(BaseModel):
     llm: dict[str, LLMSpec] = Field(default_factory=lambda: {"default": LLMSpec()})
     steps: list[StepSpec]
     notify: NotifySpec | None = None
+    # Under `agentl serve`: what to do when a run ends (start another pipeline, emit an event).
+    on_success: list[ActionSpec] = Field(default_factory=list)
+    on_failure: list[ActionSpec] = Field(default_factory=list)
+    after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
     # Independent steps run together, up to this many; 1 = one at a time.
     max_parallel_steps: int = Field(default=4, ge=1, le=64)
