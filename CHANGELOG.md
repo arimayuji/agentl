@@ -91,6 +91,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Fixed
 
+- Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
+  send a record whose key field is null or missing to the step's rejected records with the reason
+  (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index
+  on the key. A writer's `step.succeeded` event reports the rows written in `records` (it said 1,
+  the number of summary records), and chunked runs now report `written` and upsert counts too.
 - `budget:` with parallel agent workers (`concurrency`): calls already running count against
   `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
   limit together and the run stops after the same number of calls every time.
