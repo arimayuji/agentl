@@ -7,10 +7,11 @@ import decimal
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-from ..registry import arrow_writer, connector, require, stream_reader, stream_writer
+from ..registry import Rejects, arrow_writer, connector, require, stream_reader, stream_writer
 from ._util import (
     check_scd2_columns,
     check_update_columns,
+    null_keys,
     scd2_options,
     single,
     upsert_options,
@@ -116,6 +117,7 @@ def postgres_write_chunks(
 
     cols: list[str] = []
     written = inserted = updated = 0
+    rejected: list[dict] = []
     with psycopg.connect(dsn) as conn, conn.transaction():
         if mode == "replace":
             conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(tbl))
@@ -186,6 +188,8 @@ def postgres_write_chunks(
                         )
             cols.extend(new)
             if mode == "scd2":
+                rows, bad = null_keys("postgres.write", rows, keys)
+                rejected.extend(bad)
                 stmt = _insert(sql, stage, cols, [], conflict, None)
                 with conn.cursor() as cur:
                     for i in range(0, len(rows), batch_size):
@@ -203,6 +207,8 @@ def postgres_write_chunks(
                 written += len(rows)
                 continue
             check_update_columns("postgres.write", upd, cols)
+            rows, bad = null_keys("postgres.write", rows, keys)
+            rejected.extend(bad)
             stmt = _insert(sql, tbl, cols, keys, conflict, upd)
             with conn.cursor() as cur:
                 for i in range(0, len(rows), batch_size):
@@ -223,7 +229,7 @@ def postgres_write_chunks(
             written += len(rows)
         if mode == "scd2":
             if not staged:  # an empty input changes nothing, even with on_missing: close
-                return [
+                done = [
                     {
                         "table": table,
                         "written": 0,
@@ -233,12 +239,14 @@ def postgres_write_chunks(
                         "unchanged": 0,
                     }
                 ]
-            counts = _pg_scd2(conn, sql, tbl, stage, cols, keys, tracked, missing_rows, when)
-            return [{"table": table, "written": counts.pop("written"), "mode": mode, **counts}]
+            else:
+                counts = _pg_scd2(conn, sql, tbl, stage, cols, keys, tracked, missing_rows, when)
+                done = [{"table": table, "written": counts.pop("written"), "mode": mode, **counts}]
+            return Rejects(done, rejected) if rejected else done
     out: dict[str, Any] = {"table": table, "written": written, "mode": mode}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
-    return [out]
+    return Rejects([out], rejected) if rejected else [out]
 
 
 def _pg_scd2(

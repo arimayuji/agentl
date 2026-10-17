@@ -334,3 +334,12 @@ def test_rejected_records_are_kept_and_retried_on_postgres():
         result = retry_rejected(spec, store)
         assert result is not None and result.status == "succeeded"
         assert store.rejected_get(row["id"])["retried_by"] == result.run_id
+
+
+def test_upsert_rejects_null_keys(table):
+    write = get("postgres.write")
+    data = [{"id": 1, "v": "a"}, {"id": None, "v": "x"}, {"id": None, "v": "y"}]
+    out = write(data, dsn=DSN, table=table, mode="upsert", key="id")
+    assert out[0]["written"] == out[0]["inserted"] == 1
+    assert [r["v"] for r in out.rejected] == ["x", "y"] and "is null" in out.rejected[0]["_error"]
+    assert [r["v"] for r in read(table)] == ["a"]

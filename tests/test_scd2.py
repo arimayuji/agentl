@@ -114,8 +114,6 @@ def test_bad_options(tmp_path):
         write(db, [{"id": 1, "is_current": 1}])
     with pytest.raises(ValueError, match="unknown"):
         write(db, [{"id": 1}], track="nope")
-    with pytest.raises(ValueError, match="every key"):
-        write(db, [{"id": None, "v": 1}])
     assert write(db, [], on_missing="close")["written"] == 0
 
 
@@ -141,3 +139,24 @@ def test_sql_write_scd2(tmp_path):
     ]
     with pytest.raises(ValueError, match="before the start"):
         go([{"id": 1, "v": "z"}], "2025-12-01T00:00:00Z")
+
+
+def test_null_keys_are_rejected_not_written(tmp_path):
+    """As upsert (#281): a record with a null key cannot be versioned; it goes to the rejected
+    records and the rest are written."""
+    db = tmp_path / "w.db"
+    out = get("sqlite.write")(
+        [{"id": None, "v": 1}, {"id": 2, "v": 2}], db=str(db), table="dim", mode="scd2", key="id", as_of=JAN
+    )
+    assert out[0]["inserted"] == 1
+    assert len(out.rejected) == 1 and "null" in out.rejected[0]["_error"]
+    assert [r["id"] for r in table(db)] == [2]
+
+
+def test_sql_write_scd2_rejects_null_keys(tmp_path):
+    pytest.importorskip("sqlalchemy")
+    url = f"sqlite:///{tmp_path / 's.db'}"
+    out = get("sql.write")(
+        [{"id": None, "v": 1}, {"id": 2, "v": 2}], url=url, table="dim", mode="scd2", key="id"
+    )
+    assert out[0]["inserted"] == 1 and len(out.rejected) == 1

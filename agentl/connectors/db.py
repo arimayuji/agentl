@@ -8,8 +8,8 @@ import datetime as _dt
 import decimal
 from typing import Any
 
-from ..registry import connector, require
-from ._util import SCD2_COLUMNS, check_scd2_columns, scd2_options, single
+from ..registry import Rejects, connector, require
+from ._util import SCD2_COLUMNS, check_scd2_columns, null_keys, scd2_options, single
 
 MODES = ("append", "replace", "upsert", "scd2")
 
@@ -115,6 +115,9 @@ def sql_write(
     tracked, missing_rows, when = scd2_options("sql.write", mode, keys, track, on_missing, as_of)
     sa = require("sqlalchemy", "sql")
     rows = single(input)
+    rejected: list[dict] = []
+    if mode in ("upsert", "scd2"):
+        rows, rejected = null_keys("sql.write", rows, keys)
     cols: list[str] = []
     for r in rows:
         cols.extend(k for k in r if k not in cols)
@@ -136,7 +139,7 @@ def sql_write(
                 out: dict[str, Any] = {"table": table, "written": 0, "mode": mode}
                 if mode == "scd2":
                     out.update(inserted=0, versioned=0, unchanged=0)
-                return [out]
+                return Rejects([out], rejected) if rejected else [out]
             if exists:
                 tbl = sa.Table(table, meta, autoload_with=conn)
             elif create:
@@ -166,7 +169,8 @@ def sql_write(
 
             if mode == "scd2":
                 counts = _scd2(sa, conn, tbl, rows, cols, keys, tracked, missing_rows, when, batch_size)
-                return [{"table": table, "mode": mode, **counts}]
+                done = [{"table": table, "mode": mode, **counts}]
+                return Rejects(done, rejected) if rejected else done
             for i in range(0, len(rows), batch_size):
                 batch = [{c: r.get(c) for c in cols} for r in rows[i : i + batch_size]]
                 if mode != "upsert":
@@ -181,7 +185,8 @@ def sql_write(
                     conn.execute(tbl.insert(), batch)
     finally:
         engine.dispose()
-    return [{"table": table, "written": len(rows), "mode": mode}]
+    written: list[dict] = [{"table": table, "written": len(rows), "mode": mode}]
+    return Rejects(written, rejected) if rejected else written
 
 
 def _utc(v: Any) -> Any:
