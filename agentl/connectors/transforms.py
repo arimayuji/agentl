@@ -18,19 +18,45 @@ def _names(value: str | list[str] | None) -> list[str]:
 def select(
     input: Any, fields: str | list[str] | None = None, rename: dict[str, str] | None = None
 ) -> list[dict]:
+    """Keep and rename fields. `rename` maps an input name to an output name. `fields` lists the
+    fields to keep, in order, by output name (after `rename`) or by input name; when a name is
+    both, the renamed field wins. Without `fields` every field is kept. A record without a listed
+    field gets null for it, but a listed field that no record has fails the step (a typo would
+    otherwise give a column of nulls)."""
     names = _names(fields)  # once, not per record: this runs on millions of records
-    renames = list((rename or {}).items())
+    mapping = dict(rename or {})
     rows = single(input)
-    if names and not renames:
-        return [{k: r.get(k) for k in names} for r in rows]
-    out = []
-    for r in rows:
-        row = {k: r.get(k) for k in names} if names else dict(r)
-        for old, new in renames:
-            if old in row:
-                row[new] = row.pop(old)
-        out.append(row)
-    return out
+    if not names:
+        renames = list(mapping.items())
+        out = []
+        for r in rows:
+            row = dict(r)
+            for old, new in renames:
+                if old in row:
+                    row[new] = row.pop(old)
+            out.append(row)
+        return out
+    source = {new: old for old, new in mapping.items()}
+    pairs: dict[str, str] = {}  # output name -> input name
+    for n in names:
+        src = source.get(n, n)
+        pairs.setdefault(mapping.get(src, src), src)
+    plain = all(k == v for k, v in pairs.items())
+    if plain:
+        keys = list(pairs)
+        result = [{k: r.get(k) for k in keys} for r in rows]
+    else:
+        items = list(pairs.items())
+        result = [{k: r.get(src) for k, src in items} for r in rows]
+    if rows:
+        missing = [n for n in names if not any(source.get(n, n) in r for r in rows)]
+        if missing:
+            seen = sorted({k for r in rows[:100] for k in r})
+            raise ValueError(
+                f"select: no record has the field(s) {', '.join(map(repr, missing))}; "
+                f"fields seen: {', '.join(seen) or 'none'}"
+            )
+    return result
 
 
 @connector("filter")
@@ -268,7 +294,8 @@ def _cast_spec(spec: Any, label: str = "cast") -> tuple[str, dict]:
         raise ValueError(f"{label}: cannot read the type {spec!r}")
     if not isinstance(name, str):
         raise ValueError(f"{label}: cannot read the type {spec!r}")
-    optional = name.endswith("?")
+    flags = [opts.pop(k) for k in ("optional", "nullable") if k in opts]
+    optional = name.endswith("?") or any(bool(f) for f in flags)
     name = name.rstrip("?")
     if name not in types.TYPES:
         import difflib
@@ -294,7 +321,9 @@ def cast(
     when a value says so (25/02), month first likewise; a column where nothing tells uses the
     locale, or fails with `strict: true`. Empty values become null. `on_bad`: reject (the record
     goes to the step's rejected records with `_error` and `_raw`), fail (stop the run), or keep
-    (leave the original value). Dates and times come out as ISO text."""
+    (leave the original value). Under `fail` a missing or null field also stops the run, unless
+    its type is optional (`int?` or `{type: int, optional: true}`, `nullable` is an alias).
+    Dates and times come out as ISO text."""
     from .. import types
     from ..registry import Rejects
 
@@ -322,6 +351,12 @@ def cast(
         errors = []
         for f, (name, opts) in specs.items():
             v = r.get(f)
+            if v is None and on_bad == "fail" and not opts["_optional"]:
+                what = "is missing" if f not in r else "is null"
+                raise ValueError(
+                    f"cast: field {f!r} {what} (mark it optional with `{name}?` or "
+                    f"`{{type: {name}, optional: true}}` to let null through)"
+                )
             kw = {k: val for k, val in opts.items() if k != "_optional"}
             if name in ("int", "decimal", "float", "money", "percent"):
                 kw.setdefault("locale", locale)

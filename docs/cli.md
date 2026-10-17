@@ -80,6 +80,7 @@ set. Exit code 2 when there are errors.
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
+| AL009 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.

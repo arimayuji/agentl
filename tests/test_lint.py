@@ -134,3 +134,26 @@ def test_examples_have_no_structure_errors():
     for p in Path("examples").rglob("*.yaml"):
         report = lint.check_file(p, env={"SLACK_WEBHOOK": "x", "DATABASE_URL": "x", "INVOICES_DSN": "x"})
         assert not [f for f in report.errors if f.code != "AE008"], (p, report.render())
+
+
+def test_cast_without_locale_on_en_us_numbers_warns(tmp_path):
+    (tmp_path / "prices.csv").write_text('id,price\n1,"1,234.50"\n2,3.10\n', encoding="utf-8")
+    pipe = """name: p
+steps:
+  - id: read
+    use: csv.read
+    with: { path: prices.csv }
+  - id: clean
+    input: read
+    use: cast
+    with:
+      fields: { price: decimal }
+"""
+    (tmp_path / "p.yaml").write_text(pipe, encoding="utf-8")
+    codes = [f.code for f in lint.check_file(tmp_path / "p.yaml").findings]
+    assert "AL009" in codes
+    (tmp_path / "p.yaml").write_text(
+        pipe.replace("    with:\n      fields", "    with:\n      locale: en-US\n      fields"),
+        encoding="utf-8",
+    )
+    assert "AL009" not in [f.code for f in lint.check_file(tmp_path / "p.yaml").findings]
