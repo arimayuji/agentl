@@ -33,6 +33,31 @@ from one). Unsupported files are skipped with a warning, or fail the step with
 `on_unsupported: error`. Archives are extracted safely: paths escaping the archive are rejected and
 the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 
+### Archive members and encodings: `archive.read`
+
+```yaml
+- id: members
+  use: archive.read                  # zip, tar (also .tar.gz, .tgz) or gz, detected
+  with: { path: data.zip, pattern: "(?i)report\\d+\\.csv$", password: "${ZIP_PASS}" }
+- id: rows
+  use: csv.read
+  input: members
+  with: { encoding: [utf-8, latin-1] }   # a list of attempts, or auto
+```
+
+`archive.read` extracts only the members whose path matches `pattern` (a regex, searched in the
+member path) and gives one record per member: `path` (the extracted file, so any reader can take it
+as input), `member`, `archive` and `size`. Members are streamed to disk, never loaded whole. A
+pattern that matches nothing fails the step listing the members available. Safety: paths escaping
+the archive are rejected, links inside tars are ignored, and the step fails above `max_members`
+(10,000) members or `max_extract_bytes` (1 GiB) of real expanded bytes. `password` opens
+traditional (ZipCrypto) encrypted zips; AES-encrypted zips are not supported by Python's `zipfile`.
+
+`csv.read`, `json.read`, `txt.read` and `file.read` take `encoding` as a name, a list of attempts or
+`auto` (UTF-8, then Latin-1). Each file is decoded in chunks with each attempt in turn; the first
+that decodes the whole file wins and is recorded in each record as `_encoding`. A single name keeps
+the old behavior and adds no field.
+
 ### Support matrix
 
 | Format | Connector | Record shape | Extra |
@@ -51,6 +76,7 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
 | ZIP, GZ | `file.read` | records of the inner files | |
+| ZIP, TAR, GZ members | `archive.read` (`pattern`, `password`) | `path`, `member`, `archive`, `size` | |
 
 Writers: `csv.write`, `json.write` (`.json` or `.jsonl`), `parquet.write` (`compression`, needs
 `agentl-etl[parquet]`) and `excel.write` (needs `agentl-etl[excel]`). All of them take
