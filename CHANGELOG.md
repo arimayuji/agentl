@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Run ledger (#209, first part): `agentl runs show RUN_ID` prints records per step, rows changed,
+  rejected records, LLM calls, tokens, cost, duration and outcome of one run; `agentl cost --since
+  30d --by pipeline,model` groups LLM spend by pipeline, step, model or day. Step events now carry
+  `models`: calls, tokens and cost per model, so fallbacks show which model was paid for.
 - `time.normalize` step (#213): hour-ending, hour-beginning, half-hour and accumulated-window
   labels to ISO instants with an offset. DST gaps and overlaps fail by default (`on_missing`,
   `on_ambiguous`); `clock: elapsed` reads 23- and 25-hour days.
