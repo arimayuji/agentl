@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
+  (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
+  storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
+  broken files go to the rejected records, and `validate: true` checks the `chave` check digit and
+  orphan events.
 - Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
   in the column order of `output` and builds the records, so one record can give many rows. A
   truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without

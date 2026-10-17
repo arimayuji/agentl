@@ -72,6 +72,7 @@ the old behavior and adds no field.
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
+| NF-e, NFC-e | `nfe.read` (`level: item`) | one record per invoice or item, see [NF-e invoices](nfe.md) | |
 | HTML tables | `html.read` (`table: 0`, `select`, `header_rows`) | one record per row, `table` index | |
 | HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
