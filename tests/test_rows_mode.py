@@ -132,6 +132,7 @@ def test_parse_and_overlap_helpers():
         {"mode": "batch"},
         {"tools": ["http.get"]},
         {"rules": [{"cast": {"name": "str"}}]},
+        {"attempts": [{"llm": "default"}, {"llm": "default", "feedback": True}]},
     ],
 )
 def test_rows_mode_rejects_incompatible_options(extra):
