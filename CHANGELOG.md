@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Best-effort steps and step order (#206): `required: false` (or `criticality: best_effort`) on a
+  step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,
+  `partial` on the result, its summary and `run.succeeded`) without failing the run. `after:`
+  orders steps without passing data, e.g. the legacy write after the new one.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
