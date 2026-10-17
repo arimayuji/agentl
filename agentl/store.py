@@ -108,6 +108,9 @@ class Store:
         self._conn: Any = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SQLITE_SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)")}
+        if "outcome" not in cols:  # stores created before #188
+            self._conn.execute("ALTER TABLE runs ADD COLUMN outcome TEXT")
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache)")}
         if "expires" not in cols:  # stores created before cache TTLs
             self._conn.execute("ALTER TABLE cache ADD COLUMN expires REAL")
@@ -146,10 +149,12 @@ class Store:
             (run_id, pipeline, time.time(), diagram),
         )
 
-    def finish_run(self, run_id: str, status: str, error: str | None = None) -> None:
+    def finish_run(
+        self, run_id: str, status: str, error: str | None = None, outcome: str | None = None
+    ) -> None:
         self._exec(
-            "UPDATE {runs} SET status = ?, finished = ?, error = ? WHERE id = ?",
-            (status, time.time(), error, run_id),
+            "UPDATE {runs} SET status = ?, finished = ?, error = ?, outcome = ? WHERE id = ?",
+            (status, time.time(), error, outcome, run_id),
         )
 
     def event(self, run_id: str, type: str, step: str | None, data: dict[str, Any]) -> None:
@@ -349,7 +354,8 @@ class Store:
 
     def runs(self, limit: int = 20) -> list[dict]:
         return self._query(
-            "SELECT id, pipeline, status, started, finished, error FROM {runs} ORDER BY started DESC LIMIT ?",
+            "SELECT id, pipeline, status, outcome, started, finished, error FROM {runs} "
+            "ORDER BY started DESC LIMIT ?",
             (limit,),
         )
 
@@ -357,8 +363,16 @@ class Store:
         """Every run started at or after `since` (epoch seconds), oldest first."""
         where = "started >= ?" + (" AND pipeline = ?" if pipeline else "")
         params: tuple = (since, pipeline) if pipeline else (since,)
-        cols = "id, pipeline, status, started, finished, error"
+        cols = "id, pipeline, status, outcome, started, finished, error"
         return self._query(f"SELECT {cols} FROM {{runs}} WHERE {where} ORDER BY started", params)
+
+    def recent_runs(self, pipeline: str, limit: int) -> list[dict]:
+        """The latest runs of one pipeline, newest first."""
+        return self._query(
+            "SELECT id, status, outcome, started FROM {runs} WHERE pipeline = ? "
+            "ORDER BY started DESC LIMIT ?",
+            (pipeline, limit),
+        )
 
     def events_of(self, since: float, types: tuple[str, ...]) -> list[dict]:
         """Events of the given types recorded at or after `since`, for aggregate views."""
@@ -482,6 +496,7 @@ class PostgresStore(Store):
         self._conn = psycopg.connect(dsn, autocommit=True, row_factory=rows.dict_row)
         for stmt in POSTGRES_SCHEMA:
             self._conn.execute(stmt)
+        self._conn.execute("ALTER TABLE agentl_runs ADD COLUMN IF NOT EXISTS outcome TEXT")
 
     def _sql(self, sql: str) -> str:
         return super()._sql(sql).replace("?", "%s")

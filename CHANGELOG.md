@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Run outcomes (#188): every run gets an `outcome` (`success`, `no_change`, `skipped`, `partial`,
+  `failed`) next to its unchanged `status`, set by an `outcomes:` policy (`on_transport_error:
+  skipped_upstream`, `on_empty`, `on_rejected`, `alert_on`, `max_skipped`, `exit_codes`). Skipped
+  runs end with `run.skipped` (status `skipped`), outcomes in `alert_on` emit `run.alert`, too many
+  skipped runs in a row fail, and `agentl runs`, `agentl stats` and the dashboard show the outcome.
+
 - Concurrency control and single-flight cache (#204): `concurrency: {key, on_overlap: skip | queue
   | fail}` allows one run per key across workers sharing the run store (`skip` ends as `skipped`,
   not an error); the `cache` step keeps the result of its `do` steps for a `ttl` and computes it

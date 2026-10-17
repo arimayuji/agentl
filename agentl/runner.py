@@ -33,7 +33,7 @@ Listener = Callable[[dict], None]
 @dataclass
 class RunResult:
     run_id: str
-    status: str
+    status: str  # running, succeeded, failed, or skipped (only with outcomes.on_transport_error)
     outputs: dict[str, Records] = field(default_factory=lambda: Outputs())
     rejected: dict[str, Records] = field(default_factory=dict)
     error: str | None = None
@@ -46,6 +46,9 @@ class RunResult:
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
     # per upsert or scd2 step: {"inserted": n, "updated": n, "unchanged": n} (scd2: versioned, closed)
     writes: dict[str, dict[str, int]] = field(default_factory=dict)
+    # success, no_change, skipped, partial or failed (#188); see `outcome_status` for the mapping
+    outcome: str | None = None
+    reason: str | None = None  # why the run was skipped (or failed after too many skips)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
@@ -209,6 +212,30 @@ def _describe(e: BaseException) -> str:
     return text
 
 
+_TRANSPORT_NAMES = ("Timeout", "ConnectionError", "ConnectError", "ConnectTimeout", "ReadTimeout")
+
+
+def is_transport_error(e: BaseException) -> bool:
+    """A timeout or connection error anywhere in the exception chain. HTTP status errors
+    (4xx/5xx) and parsing errors are not: the source answered."""
+    import urllib.error
+
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, urllib.error.HTTPError) or "HTTPStatus" in type(cur).__name__:
+            return False
+        if isinstance(cur, (TimeoutError, ConnectionError)):
+            return True
+        if isinstance(cur, urllib.error.URLError) and isinstance(cur.reason, (OSError, TimeoutError)):
+            return True
+        if any(n in t.__name__ for t in type(cur).__mro__ for n in _TRANSPORT_NAMES):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _hash(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -246,6 +273,7 @@ class Runner:
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
+        self._source_records: dict[str, int] = {}  # records read by steps without inputs, this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
         from . import lineage
@@ -264,6 +292,8 @@ class Runner:
             "step": step,
             "data": data,
         }
+        if type == "step.succeeded" and step is not None and not self.spec.step(step).inputs:
+            self._source_records[step] = int(data.get("records") or 0)
         with self._events:  # steps may run in parallel: one event at a time, store and listeners
             self.store.event(run_id, type, step, data)
             for listener in self.listeners:
@@ -1575,9 +1605,11 @@ class Runner:
     def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
+        self._source_records = {}
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()
+        failure: BaseException | None = None
         try:
             self._run_graph(run_id, result)
             result.status = "succeeded"
@@ -1588,24 +1620,69 @@ class Runner:
         except Exception as e:
             result.status = "failed"
             result.error = _describe(e)
+            failure = e
         finally:
             if self._toolbox is not None:  # MCP servers started for this run
                 self._toolbox.close()
                 self._toolbox = None
+        skip = self.spec.outcomes.on_transport_error == "skipped_upstream"
+        if failure is not None and skip and is_transport_error(failure):
+            result.status = "skipped"
+            result.reason = f"source unreachable: {result.error}"
         self._finish_after_run(run_id, result)
         self._save_cursors(run_id, result)
-        self.store.finish_run(run_id, result.status, result.error)
+        self._classify(result)
+        self.store.finish_run(run_id, result.status, result.error, result.outcome)
+        # before the final event, so run.<status> stays the last event of a run
+        if result.outcome in self.spec.outcomes.alert_on:
+            extra = {"error": result.error} if result.error else {}
+            self._emit(run_id, "run.alert", outcome=result.outcome, **extra)
         self._emit(
             run_id,
             f"run.{result.status}",
+            outcome=result.outcome,
             seconds=round(time.time() - started, 3),
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cost_usd=round(result.cost_usd, 6),
             rejected=sum(len(v) for v in result.rejected.values()),
+            **({"reason": result.reason} if result.reason else {}),
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+    def _classify(self, result: RunResult) -> None:
+        """Set `result.outcome` from the status and the `outcomes` policy. Too many skipped runs in
+        a row fail the run, so an unreachable source does not go unnoticed forever."""
+        policy = self.spec.outcomes
+        if result.status == "failed":
+            result.outcome = "failed"
+        elif result.status == "no_change":  # a source raised NoChange
+            result.outcome = "no_change"
+        elif result.status == "skipped":
+            result.outcome = "skipped"
+            if policy.max_skipped is not None and self._skipped_streak() + 1 >= policy.max_skipped:
+                result.status, result.outcome = "failed", "failed"
+                result.error = f"{policy.max_skipped} skipped runs in a row; last: {result.reason}"
+        elif policy.on_rejected == "partial" and any(result.rejected.values()):
+            result.outcome = "partial"
+        elif (
+            policy.on_empty == "no_change" and self._source_records and not any(self._source_records.values())
+        ):
+            result.outcome = "no_change"
+        else:
+            result.outcome = "success"
+
+    def _skipped_streak(self) -> int:
+        """Skipped runs of this pipeline right before the current one."""
+        n = 0
+        for run in self.store.recent_runs(self.spec.name, (self.spec.outcomes.max_skipped or 1) + 1):
+            if run["id"] == self._run_id or run["status"] == "running":
+                continue
+            if run["status"] != "skipped":
+                break
+            n += 1
+        return n
 
     # incremental loading -------------------------------------------------
     def _with_cursor(self, step: StepSpec) -> StepSpec:
@@ -1886,6 +1963,6 @@ def run(
     else:
         with open_store(db) as store:
             result = Runner(spec, store=store, **kwargs).run()
-    if raise_on_failure and result.status not in ("succeeded", "skipped", "no_change"):
+    if raise_on_failure and result.status == "failed":
         raise PipelineFailed(result)
     return result

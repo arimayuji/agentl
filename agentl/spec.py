@@ -524,6 +524,29 @@ class LineageSpec(BaseModel):
     endpoint: str = "api/v1/lineage"
 
 
+Outcome = Literal["success", "no_change", "skipped", "partial", "failed"]
+OUTCOMES: tuple[str, ...] = ("success", "no_change", "skipped", "partial", "failed")
+
+
+class OutcomesSpec(BaseModel):
+    """How a finished run is classified (#188). `status` stays `succeeded`/`failed` for
+    every outcome but `skipped`, whose status is `skipped`."""
+
+    model_config = ConfigDict(extra="forbid")
+    # Timeouts and connection errors only; HTTP 4xx/5xx and parsing errors stay failed.
+    on_transport_error: Literal["failed", "skipped_upstream"] = "failed"
+    on_empty: Literal["no_change", "success"] = "no_change"  # every source step read 0 records
+    on_rejected: Literal["partial", "success"] = "partial"  # the run quarantined records
+    alert_on: list[Outcome] = ["failed", "partial"]  # pydantic copies mutable defaults
+    # This many skipped runs in a row (this one included) turn the run into failed.
+    max_skipped: int | None = Field(default=3, ge=1)
+    exit_codes: dict[Outcome, int] = Field(default_factory=dict)
+
+    def exit_code(self, outcome: str) -> int:
+        default = {"failed": 1, "partial": 0}.get(outcome, 0)
+        return self.exit_codes.get(outcome, default)  # type: ignore[call-overload]
+
+
 class ParamSpec(BaseModel):
     """A run parameter: `agentl run --param name=value`, `agentl.run(..., params={...})`."""
 
@@ -657,6 +680,7 @@ class PipelineSpec(BaseModel):
     on_failure: list[ActionSpec] = Field(default_factory=list)
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
+    outcomes: OutcomesSpec = Field(default_factory=OutcomesSpec)
     concurrency: ConcurrencySpec | None = None
     # OpenLineage events for data catalogs; see agentl.lineage.
     lineage: LineageSpec | None = None
