@@ -192,7 +192,9 @@ def scd2_options(
     else:
         if isinstance(as_of, str):
             try:
-                as_of = dt.datetime.fromisoformat(as_of)
+                as_of = dt.datetime.fromisoformat(
+                    as_of[:-1] + "+00:00" if as_of.endswith(("Z", "z")) else as_of
+                )
             except ValueError:
                 raise ValueError(f"{name}: as_of must be an ISO 8601 timestamp, got {as_of!r}") from None
         if not isinstance(as_of, dt.datetime):
