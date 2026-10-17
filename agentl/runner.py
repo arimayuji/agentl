@@ -44,7 +44,7 @@ class RunResult:
     tool_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
-    # per upsert step: {"inserted": n, "updated": n, "unchanged": n}
+    # per upsert or scd2 step: {"inserted": n, "updated": n, "unchanged": n} (scd2: versioned, closed)
     writes: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
@@ -58,7 +58,7 @@ class RunResult:
 
 
 SAMPLE_ROWS = 5
-UPSERT_COUNTS = ("inserted", "updated", "unchanged")
+UPSERT_COUNTS = ("inserted", "updated", "unchanged", "versioned", "closed")
 SAMPLE_CHARS = 200
 
 

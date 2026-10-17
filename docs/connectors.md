@@ -208,9 +208,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`), `on_conflict`, `update_columns` (upsert only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert` or `scd2` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -950,6 +950,49 @@ type. A record with a null or missing key field cannot be matched to a row: `pos
 `sqlite.write` and `sql.write` send it to the step's rejected records (`_error` names the key)
 instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
 `step.succeeded` event of a writer reports the rows written in `records` and `written`.
+
+### History of a dimension (SCD type 2)
+
+`mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` keeps every version of a row
+instead of overwriting it. The writer manages three columns: `valid_from`, `valid_to` (empty while
+the version is current) and `is_current`.
+
+```yaml
+- id: customers
+  use: postgres.write
+  with:
+    dsn: ${DATABASE_URL}
+    table: dim_customer
+    mode: scd2
+    key: customer_id
+    track: [address, segment]   # default: every column but the key
+    on_missing: close           # default: keep
+```
+
+For each record, by `key`:
+
+- a new key inserts a current version;
+- a key whose `track` columns changed closes the current version (`valid_to` set, `is_current`
+  false) and inserts a new one;
+- a key whose `track` columns did not change is left alone (columns outside `track` keep the
+  values of the version's first load);
+- with `on_missing: close`, current keys absent from the input are closed. An empty input changes
+  nothing.
+
+The result reports `inserted`, `versioned`, `unchanged` (and `closed`), which also appear in the
+`step.succeeded` event and under `writes` in the run summary. Re-running the same data changes
+nothing. If a key repeats in the input, the last record wins.
+
+`as_of` sets the time stamped on `valid_from` and `valid_to` (default: now). It must carry a time
+zone (`2026-01-31T00:00:00-03:00`, `...Z`) and is stored in UTC: `timestamptz` on Postgres, ISO
+8601 text such as `2026-01-31T03:00:00.000000+00:00` on SQLite. An `as_of` earlier than the start
+of a version it would close is an error. A record with a null key field is rejected, as in
+upsert: it goes to the step's rejected records and the others are written.
+
+`sqlite.write` and `postgres.write` stage the input in a temporary table and merge it with a few
+set-based statements in the write's transaction; Postgres adds a unique index on `key` among
+current rows. `sql.write` reads the key and tracked columns of the current versions in one query
+and compares them in Python, so those must fit in memory.
 
 ## Any SQL database
 

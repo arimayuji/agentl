@@ -28,7 +28,7 @@ def test_sqlite_upsert_replaces_rows_by_key(tmp_path):
 def test_sqlite_upsert_needs_a_key_and_a_known_mode(tmp_path):
     with pytest.raises(ValueError, match="needs `key`"):
         get("sqlite.write")([{"id": 1}], db=str(tmp_path / "x.db"), table="t", mode="upsert")
-    with pytest.raises(ValueError, match="append, replace or upsert"):
+    with pytest.raises(ValueError, match="append, replace, upsert or scd2"):
         get("sqlite.write")([{"id": 1}], db=str(tmp_path / "x.db"), table="t", mode="merge")
 
 
