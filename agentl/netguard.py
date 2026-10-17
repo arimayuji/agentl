@@ -167,15 +167,22 @@ def _opener() -> Any:
     return urllib.request.build_opener(_HTTPHandler, _HTTPSHandler, _GuardedRedirects)
 
 
-def urlopen(req: urllib.request.Request, timeout: float, check: Any = None) -> Any:
+def urlopen(req: urllib.request.Request, timeout: float, check: Any = None, proxy: str | None = None) -> Any:
     """urllib.request.urlopen with the guard applied to the URL, every redirect and the address
-    actually connected to. `check(url)` runs on the URL and on every redirect target too."""
+    actually connected to. `check(url)` runs on the URL and on every redirect target too. `proxy`
+    (an operator-configured http(s) proxy URL) is used for both schemes instead of the
+    environment's; the target URL is still checked."""
     check_url(req.full_url)
     opener = _opener()
-    if check is not None:
-        check(req.full_url)
-        redirects = type("_Redirects", (_GuardedRedirects,), {"extra": staticmethod(check)})
-        opener = urllib.request.build_opener(_HTTPHandler, _HTTPSHandler, redirects)
+    if check is not None or proxy:
+        if check is not None:
+            check(req.full_url)
+        extra = staticmethod(check) if check is not None else None
+        redirects = type("_Redirects", (_GuardedRedirects,), {"extra": extra})
+        handlers: list[Any] = [_HTTPHandler, _HTTPSHandler, redirects]
+        if proxy:
+            handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        opener = urllib.request.build_opener(*handlers)
     try:
         return opener.open(req, timeout=timeout)
     except urllib.error.URLError as e:
