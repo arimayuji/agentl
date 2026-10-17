@@ -18,7 +18,6 @@ import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -177,50 +176,32 @@ def read_xml(p: Path, items: str | None = None, **_: Any) -> Records:
     return out
 
 
-class _Tables(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.tables: list[list[list[str]]] = []
-        self._row: list[str] | None = None
-        self._cell: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs: Any) -> None:
-        if tag == "table":
-            self.tables.append([])
-        elif tag == "tr" and self.tables:
-            self._row = []
-        elif tag in ("td", "th") and self._row is not None:
-            self._cell = []
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in ("td", "th") and self._cell is not None and self._row is not None:
-            self._row.append(" ".join("".join(self._cell).split()))
-            self._cell = None
-        elif tag == "tr" and self._row is not None:
-            if self._row:
-                self.tables[-1].append(self._row)
-            self._row = None
-
-    def handle_data(self, data: str) -> None:
-        if self._cell is not None:
-            self._cell.append(data)
-
-
-def read_html(p: Path, table: int | None = None, encoding: str = "utf-8", **_: Any) -> Records:
+def read_html(p: Path, table: int | None = None, encoding: str = "utf-8", **opts: Any) -> Records:
     """Rows of the HTML tables; the first row of each table is the header."""
-    return html_tables(p.read_text(encoding=encoding, errors="replace"), table)
+    return html_tables(p.read_text(encoding=encoding, errors="replace"), table, **opts)
 
 
-def html_tables(html: str, table: int | None = None) -> Records:
-    """Rows of the tables in an HTML string; the first row of each table is the header."""
-    parser = _Tables()
-    parser.feed(html)
+def html_tables(
+    html: str, table: int | None = None, header_rows: int = 1, select: str | None = None, **_: Any
+) -> Records:
+    """Rows of the tables in an HTML string. The first `header_rows` rows are the header (several
+    are joined: 'Sales' over 'Q1' -> 'Sales Q1'); colspan and rowspan are repeated into every
+    cell they cover. `select` is a CSS selector for the tables to read; `table` is the index
+    among them."""
+    from .htmldom import grid, header_names, parse
+
+    root = parse(html)
+    found = root.select(select) if select else [n for n in root.iter() if n.tag == "table"]
     out: Records = []
-    for i, rows in enumerate(parser.tables):
-        if (table is not None and i != table) or len(rows) < 2:
+    for i, node in enumerate(n for n in found if n.tag == "table"):
+        if table is not None and i != table:
             continue
-        header = [h or f"col_{j}" for j, h in enumerate(rows[0])]
-        out.extend({"table": i, **dict(zip(header, r, strict=False))} for r in rows[1:])
+        rows = grid(node)
+        if len(rows) <= header_rows:
+            continue
+        width = max(len(r) for r in rows)
+        header = header_names(rows[:header_rows], width)
+        out.extend({"table": i, **dict(zip(header, r, strict=False))} for r in rows[header_rows:])
     return out
 
 
@@ -607,17 +588,30 @@ def html_read(
     evidence_keep_days: int | None = None,
     retry_if_empty: int = 0,
     encoding: str = "utf-8",
+    header_rows: int = 1,
+    select: str | None = None,
+    field: str = "html",
+    on_selector_miss: str = "fail_with_snapshot",
+    snapshot_dir: str | None = None,
 ) -> Records:
-    """`format: tables` (default) gives the rows of the HTML tables. `format: markdown` gives one
-    record per page with `title` and `markdown`: the main content, without menus, footers or
-    scripts (needs `agentl-etl[web]`). `evidence` keeps the raw HTML and the Markdown of every page
-    (true: `.agentl/evidence`, or a folder); `retry_if_empty` reads a page again when it gave
-    nothing."""
+    """`format: tables` (default) gives the rows of the HTML tables: `header_rows` rows of header
+    (joined), colspan and rowspan repeated into every cell, `select` a CSS selector for the
+    tables (a miss follows `on_selector_miss`). `format: markdown` gives one record per page with
+    `title` and `markdown`: the main content, without menus, footers or scripts (needs
+    `agentl-etl[web]`). `evidence` keeps the raw HTML and the Markdown of every page (true:
+    `.agentl/evidence`, or a folder); `retry_if_empty` reads a page again when it gave nothing.
+    Upstream records with an `html` field (browser.scrape, crawl) are read as pages."""
+    from . import scrape, web
+
     if format not in ("tables", "markdown"):
         raise ValueError("format must be 'tables' or 'markdown'")
-    if format == "tables" and not evidence and not retry_if_empty:
+    if header_rows < 1:
+        raise ValueError("header_rows must be 1 or more")
+    scrape.check_mode(on_selector_miss)
+    has_html = isinstance(input, list) and any(isinstance(r.get(field), str) for r in input)
+    plain = not evidence and not retry_if_empty and header_rows == 1 and not select and not has_html
+    if format == "tables" and plain:
         return _each(read_html, input, path, url, headers, table=table, storage_options=storage_options)
-    from . import web
 
     if evidence and evidence_keep_days:
         web.prune_evidence(evidence, evidence_keep_days)
@@ -625,14 +619,14 @@ def html_read(
     for attempt in range(retry_if_empty + 1):
         out = []
         empty = False
-        for p in paths(input, path, "path", url, headers, storage_options):
-            html = p.read_text(encoding=encoding, errors="replace")
-            source = url if url and "{" not in url else str(p)
+        for source, html in scrape.pages(input, path, url, headers, storage_options, field, encoding):
             if format == "markdown":
                 page = web.to_markdown(html, url=source if source.startswith("http") else None)
                 rows = [{**page, "_source": source}] if page["markdown"] else []
             else:
-                rows = html_tables(html, table)
+                if select and not scrape.parse(html).select(select):
+                    scrape.handle_miss(on_selector_miss, select, source, html, snapshot_dir)
+                rows = html_tables(html, table, header_rows=header_rows, select=select)
             empty = empty or not rows
             ev = (
                 web.save_evidence(evidence, source, html, page["markdown"] if format == "markdown" else None)
