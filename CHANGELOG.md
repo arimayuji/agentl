@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl snapshot` (#211, first part): runs a pipeline and compares step outputs with saved
+  snapshots by key, not by order, with a per-field diff; `--update-snapshots` shows the diff and
+  asks before accepting (`--yes` for CI). `agentl.snapshots` also has `redact_headers` and
+  `redact_url` to hide credentials in anything recorded.
 - `agentl gaps`: a top-level `expect:` block declares the partitions the destination should hold (daily or hourly, with `skip: weekends` or dates, and composite keys such as source x day); the command reads what is present with any reader (`sqlite.read`, `postgres.read`, `sql.read`) or a file glob, lists the missing periods as ranges, prints `agentl backfill` lines with `--commands`, and exits 1 with `--fail` for scheduled checks.
 - Best-effort steps and step order (#206): `required: false` (or `criticality: best_effort`) on a
   step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,

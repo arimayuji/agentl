@@ -188,6 +188,48 @@ def _gaps(a: argparse.Namespace) -> int:
     return 1 if a.fail and found.missing else 0
 
 
+def _snapshot(a: argparse.Namespace) -> int:
+    from . import snapshots
+
+    spec = load(a.pipeline, params=_params(a.param))
+    with open_store(a.db) as store:
+        result = Runner(spec, store=store, use_cache=not a.no_cache, listeners=[]).run()
+    if result.status != "succeeded":
+        print(f"run {result.status}: snapshots not compared", file=sys.stderr)
+        return 1
+    folder = Path(a.dir) / spec.name
+    key = [k.strip() for k in a.key.split(",") if k.strip()] if a.key else None
+    steps = a.step or [s.id for s in spec.steps]
+    pending: list[str] = []
+    for step in steps:
+        new = list(result.outputs.get(step, []))
+        old = snapshots.load_snapshot(folder, step)
+        if old is None:
+            print(f"{step}: no snapshot ({len(new)} records)")
+            pending.append(step)
+            continue
+        d = snapshots.diff_records(old, new, key)
+        if d.empty:
+            print(f"{step}: ok ({len(new)} records)")
+        else:
+            print(d.render(step))
+            pending.append(step)
+    if not pending:
+        return 0
+    if not a.update_snapshots:
+        print(f"{len(pending)} step(s) differ; accept with --update-snapshots", file=sys.stderr)
+        return 1
+    if not a.yes:
+        if not sys.stdin.isatty():
+            print("not a terminal: pass --yes to accept", file=sys.stderr)
+            return 1
+        if input(f"accept {len(pending)} snapshot(s)? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    for step in pending:
+        print(f"wrote {snapshots.save_snapshot(folder, step, result.outputs.get(step, []), key)}")
+    return 0
+
+
 def _mappings(a: argparse.Namespace) -> int:
     """`agentl mappings`: print stored mappings as YAML ready to pin, approve or forget them."""
     with open_store(a.db) as store:
@@ -443,6 +485,18 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
+    sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
+    sn.add_argument("pipeline")
+    sn.add_argument("--dir", default="snapshots", help="snapshot folder (default: snapshots/<pipeline name>)")
+    sn.add_argument("--step", action="append", help="only this step (repeatable; default: every step)")
+    sn.add_argument("--key", help="fields that identify a record, comma separated (e.g. id or id,date)")
+    sn.add_argument(
+        "--update-snapshots", "-u", action="store_true", help="show the diff and ask to accept it"
+    )
+    sn.add_argument("--yes", action="store_true", help="with -u: accept without asking")
+    sn.add_argument("--no-cache", action="store_true")
+    _param_arg(sn)
+
     gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
     gp.add_argument("pipeline")
     gp.add_argument("--since", help="first period to check (default: expect.partitions.from)")
@@ -480,6 +534,8 @@ def main(argv: list[str] | None = None) -> int:
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return _exit_code(spec, result)
+        if a.cmd == "snapshot":
+            return _snapshot(a)
         if a.cmd in ("validate", "lint"):
             from . import lint
 
