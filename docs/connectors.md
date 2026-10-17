@@ -108,7 +108,7 @@ fixed name is enough.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `if_changed`, `on_unchanged` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -142,6 +142,35 @@ URL fetches refuse loopback, private, link-local (for example cloud metadata at
 `169.254.169.254`) and reserved addresses, including after redirects, so URLs that come from data
 or from an agent cannot reach internal services. For intranet pipelines set
 `AGENTL_ALLOW_HOSTS=host1,10.0.0.0/8` (host names or CIDRs), or `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
+
+### Download only when the source changed
+
+For a large file that rarely changes, `if_changed` checks the source before downloading it, cheapest
+strategy first, and keeps what it saw in the run store (`agentl state`; reset with
+`agentl state reset`). Validators are saved only when the run succeeds.
+
+```yaml
+- id: report
+  use: http.get
+  with:
+    url: https://example.org/data/report.csv
+    if_changed:
+      by: [etag, last_modified, content_length]   # or page_stamp
+      # page_stamp: { url: https://example.org/reports, regex: 'Updated on (\d{2}/\d{2}/\d{4})' }
+    on_unchanged: stop        # stop (default) | continue_empty
+```
+
+| Strategy | How it checks |
+|---|---|
+| `page_stamp` | GET another, small page and compare the regex match (group 1 if any) |
+| `content_length` | HEAD request; compare `Content-Length` |
+| `etag`, `last_modified` | conditional GET (`If-None-Match`, `If-Modified-Since`); a 304 means unchanged |
+| hash | always last: SHA-256 of the downloaded body |
+
+When the source is unchanged, `on_unchanged: stop` ends the run with status `no_change`: the next
+steps do not run, the CLI exits 0 and `run(..., raise_on_failure=True)` does not raise.
+`continue_empty` returns no records and lets the run go on. `if_changed` works on one URL: not with
+an input step or `paginate`. Without a run store (the connector called directly) it always downloads.
 
 Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
 returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx

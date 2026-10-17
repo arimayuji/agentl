@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
+  page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
+  finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
+  `on_unchanged: stop` ends the run with the new status `no_change`; `continue_empty` returns no
+  records.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
