@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Pipeline chaining under `agentl serve` (#203): `on_success` / `on_failure` / `after` actions
+  start another pipeline with parameters (`${outputs.<step>}`, `${trigger.<field>}`) or emit an
+  event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
+  `rows_changed`, `outcome`); an `after: <pipeline>` trigger; parent and child runs are linked;
+  cycles are rejected at start.
 - `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
   page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
   finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
