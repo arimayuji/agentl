@@ -107,6 +107,9 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
     with Store(tmp_path / "db.sqlite") as store:
         result = Runner(spec, store=store, use_cache=False).run()
         detail = run_detail(store, result.run_id)
+    models = result.spend["a"].pop("models")
+    assert list(models) == ["m"] and models["m"]["llm_calls"] == 2
+    assert models["m"]["cost_usd"] == pytest.approx(0.021)
     assert result.spend["a"] == {
         "input_tokens": 2000,
         "output_tokens": 1000,
@@ -115,8 +118,67 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
         "tool_calls": 0,
         "cost_usd": 0.021,
         "answered_by": {"default": 2},
+        "model": "m",
+        "cache_hits": 0,
     }
     assert set(result.spend) == {"a", "b"}  # only agent steps
     assert detail["spend"]["steps"]["b"]["cost_usd"] == pytest.approx(0.021)
     assert detail["spend"]["total"] == {"input_tokens": 4000, "output_tokens": 2000, "cost_usd": 0.042}
     assert result.summary()["spend"]["a"]["input_tokens"] == 2000
+
+
+class Grouped(Metered):
+    """Answers a whole group (`records_per_call`) in one call."""
+
+    def structured(self, instruction, record, schema):
+        Metered.calls += 1
+        items = [{"index": i, "ok": True} for i in range(len(record["records"]))]
+        return Result(schema.model_validate({"items": items}), 1000, 500)
+
+
+register_provider("grouped", Grouped)
+
+
+def test_budget_ticket_is_released_from_another_thread(tmp_path):
+    """The charge may run on another thread than the check: the ticket, not the thread,
+    releases the reservation."""
+    import threading
+
+    from agentl.runner import BudgetExceeded, RunResult
+
+    spec = pipeline({"max_usd": 0.05}, price={"input": 3.0, "output": 15.0})
+    with Store(tmp_path / "db.sqlite") as store:
+        runner = Runner(spec, store=store, use_cache=False)
+        result = RunResult(run_id="r", status="running")
+        result.spend["ask"] = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+        result.spend["ask"] |= {"llm_calls": 0, "cost_usd": 0.0}
+        usage = Result(None, 1000, 500)
+        for _ in range(4):
+            ticket = runner._check_budget(result, "ask")
+            args = (result, spec.steps[1], spec.llm["default"], usage)
+            t = threading.Thread(target=runner._charge, args=args, kwargs={"ticket": ticket})
+            t.start()
+            t.join()
+        assert runner._inflight == {}  # 4 calls charged elsewhere, nothing leaked
+        runner._check_budget(result, "ask")  # 0.042 spent: the 5th call is allowed
+        with pytest.raises(BudgetExceeded, match="max_usd"):
+            runner._check_budget(result, "ask")  # 0.042 + one in flight >= 0.05
+
+
+def test_grouped_parallel_calls_do_not_leak_and_stop_at_the_limit(tmp_path):
+    def go(budget, n):
+        spec = pipeline(budget, price={"input": 3.0, "output": 15.0}, n=n)  # 0.0105 USD a call
+        spec.llm["default"].provider = "grouped"
+        spec.steps[1].records_per_call = 2
+        spec.steps[1].concurrency = 4
+        Metered.calls = 0
+        with Store(tmp_path / f"{n}.sqlite") as store:
+            runner = Runner(spec, store=store, use_cache=False)
+            return runner.run(), runner
+
+    result, runner = go({"max_usd": 1.0}, 10)
+    assert result.status == "succeeded" and Metered.calls == 5  # not stopped early
+    assert runner._inflight == {}
+    result, runner = go({"max_usd": 0.03}, 20)
+    assert result.status == "failed" and Metered.calls == 3
+    assert runner._inflight == {}
