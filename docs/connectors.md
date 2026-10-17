@@ -188,7 +188,7 @@ Other databases will ship as plugins.
 
 | Connector | Parameters | What it does |
 |---|---|---|
-| `select` | `fields` (name or list), `rename` (map) | Keep and rename fields |
+| `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
@@ -419,6 +419,22 @@ gives null, division by zero gives null, and a value that is not a number where 
 the record to the rejected records with the reason. Text in quotes is taken as written, so a regex
 keeps its backslashes. For more than this, use a `fn:` step.
 
+### Keep and rename: `select`
+
+```yaml
+- use: select
+  with:
+    rename: { Customer ID: customer_id }
+    fields: [customer_id, total]        # output names; input names (Customer ID) also work
+```
+
+- `rename` maps an input name to an output name; `fields` keeps those fields, in that order.
+  A name in `fields` can be the output name (after `rename`) or the input name; when it is both,
+  the renamed field wins.
+- A record that lacks a listed field gets null for it, but a listed field that **no** record has
+  fails the step with the fields it did see, so a typo does not become a column of nulls.
+- Without `fields`, every field is kept and only `rename` applies.
+
 ### Clean types: `cast`
 
 Most transform work is dirty data in known formats. `cast` turns it into clean values and moves
@@ -464,6 +480,11 @@ instead of letting them crash a later step or reach the database.
 Rules, so nothing is guessed silently:
 
 - **Empty is null**, not an error (a blank CPF is null, not a rejection).
+- **`on_bad: fail` also stops on a missing or null field**, unless its type is optional:
+  `int?` (quote it inside `{ }`), or `{ type: int, optional: true }` (`nullable: true` is the
+  same). With `reject` and `keep`, a missing field stays null as before.
+- **The locale defaults to pt-BR.** For English data set `locale: en-US`; `agentl lint` warns
+  (AL010) when a `cast` without `locale` reads a local CSV whose numbers look en-US.
 - **Dates are read in one order per column.** A value like `25/02` means the column is day first,
   `02/25` month first; a column with both fails. When nothing tells (`01/02`), the locale decides
   (pt-BR day first, en-US month first), or `strict: true` stops instead.
