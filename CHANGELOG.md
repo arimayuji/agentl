@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Layout drift detection (#178): a check with `on_drift: warn | fail | remap` (or `check: {schema_matches:
+  step, on_drift: ...}`) records its input's columns and types per pipeline and step and emits
+  `schema.drift` with the columns added, removed and probably renamed, and the type changes, on
+  records and Arrow inputs. `fail` and `remap` stop the run; `remap` also carries both layouts.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
