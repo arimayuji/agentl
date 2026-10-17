@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
+  and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
+  accuracy per field (numbers within a tolerance), cost and the records that differ.
+  `--compare model=NAME` runs the same check with another model side by side, and a run below
+  `min_accuracy` exits 1 for CI.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

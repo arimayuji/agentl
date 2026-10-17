@@ -227,6 +227,11 @@ reason. Pass the run id to `agentl doctor` for the details. The dashboard shows 
 for the last 30 days, and the MCP server has a `pipeline_stats` tool. Everything is computed from
 the run store; nothing extra is recorded.
 
+## Eval
+
+`agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
+golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+
 ## Diagram
 
 `agentl diagram` prints the pipeline as Mermaid. Connectors are boxes, functions are rounded and
