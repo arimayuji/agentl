@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import checks, contracts, graph, llm, registry, waits
+from . import checks, contracts, drift, graph, llm, registry, waits
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
@@ -147,6 +147,10 @@ class Outputs(dict):
 
 class CheckFailed(RuntimeError):
     """A check step with `on_fail: stop` found problems; the data was not passed on."""
+
+
+class SchemaDrift(CheckFailed):
+    """A check step with `on_drift: fail` or `remap` found that its input changed layout."""
 
 
 class WaitTimeout(RuntimeError):
@@ -650,12 +654,18 @@ class Runner:
         return out
 
     # checks ---------------------------------------------------------------
-    def _run_check(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+    def _run_check(self, run_id: str, step: StepSpec, records: Any, result: RunResult) -> Records:
         """Fixed expectations, then the optional agent review of the data's profile. Emits
         `check.passed` or `check.failed`; with `on_fail: stop` a failure stops the step before the
         data reaches the next one (usually the writer). The profile of each passing run is kept to
         compare the next run against."""
+        if step.on_drift:
+            self._check_drift(run_id, step, records)
+        if _is_table(records):
+            records = records.to_pylist()
         records = list(records)
+        if not (step.expect or step.review):
+            return records
         memory = _hash("check-profile", self.spec.name, step.id)
         previous = self.store.cache_get(memory)
         with self._spend:
@@ -698,6 +708,35 @@ class Runner:
             self._emit(run_id, "check.passed", step.id, **data)
             self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
         return records
+
+    def _check_drift(self, run_id: str, step: StepSpec, data: Any) -> None:
+        """Compares the input's layout with the one recorded for this pipeline and step (#178).
+        The first run records it. On drift emits `schema.drift`; `warn` accepts the new layout,
+        `fail` stops, `remap` stops and hands the new layout over for a reviewed mapping. An empty
+        input says nothing about the layout and is skipped."""
+        if not _is_table(data) and not data:
+            return
+        memory = _hash("schema-signature", self.spec.name, step.id)
+        now = drift.signature(data)
+        before = self.store.cache_get(memory)
+        if before is None:
+            self.store.cache_set(memory, now)
+            return
+        d = drift.diff(before, now)
+        if d is None:
+            return
+        layout = {"previous": before, "current": now} if step.on_drift == "remap" else {}
+        self._emit(run_id, "schema.drift", step.id, source=step.check, on_drift=step.on_drift, **d, **layout)
+        if step.on_drift == "warn":
+            self.store.cache_set(memory, now)
+            return
+        what = drift.summary(d)
+        if step.on_drift == "remap":
+            raise SchemaDrift(
+                f"'{step.check}' changed layout ({what}); it needs a new reviewed mapping "
+                "(the schema.drift event carries the previous and current layout)"
+            )
+        raise SchemaDrift(f"'{step.check}' changed layout: {what}")
 
     # waits ------------------------------------------------------------------
     def _run_wait(
@@ -747,7 +786,7 @@ class Runner:
     def _arrow_plan(self, chains: dict[str, list[StepSpec]]) -> set[str]:
         """Steps whose output stays a pyarrow Table: the step can produce one (an Arrow reader or a
         `@dataframe` fn) and every consumer can take one (an Arrow writer that accepts its settings,
-        or a `@dataframe` fn with that single input). Cached and chunked steps keep records."""
+        a check, or a `@dataframe` fn with that single input). Cached and chunked steps keep records."""
         wanted = self.spec.arrow
         if wanted is False:
             return set()
@@ -767,6 +806,8 @@ class Runner:
                 return not step.cached and step.id not in chunked
             if step.inputs != [src] or step.cached or step.id in chunked:
                 return False
+            if step.check:  # reads the Table's schema for drift, then hands on records
+                return True
             if step.use:
                 writer = registry.arrow(step.use)[1]
                 return writer is not None and writer[1](step.with_)

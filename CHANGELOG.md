@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Layout drift detection (#178): a check with `on_drift: warn | fail | remap` (or `check: {schema_matches:
+  step, on_drift: ...}`) records its input's columns and types per pipeline and step and emits
+  `schema.drift` with the columns added, removed and probably renamed, and the type changes, on
+  records and Arrow inputs. `fail` and `remap` stop the run; `remap` also carries both layouts.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
