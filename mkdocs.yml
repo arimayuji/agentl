@@ -112,7 +112,7 @@ markdown_extensions:
 
 extra:
   version_label: v0.11
-  version_headline: Clean types, reshaping, a quarantine for bad records and safe upserts
+  version_headline: Clean types, quarantine, safe upserts, field encryption and IoT sources
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/arimayuji/agentl
