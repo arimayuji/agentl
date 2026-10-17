@@ -127,6 +127,34 @@ def _rejected(a: argparse.Namespace) -> int:
     return 0 if result.status == "succeeded" else 1
 
 
+def _gaps(a: argparse.Namespace) -> int:
+    from . import gaps
+
+    spec = load(a.pipeline)
+    if spec.expect is None:
+        print(f"{a.pipeline}: no expect: block (expect.partitions and expect.present_in)", file=sys.stderr)
+        return 2
+    found = gaps.find(spec.expect, a.since, a.until, spec.base_dir)
+    cmds = gaps.backfill_commands(a.pipeline, found, spec.expect.partitions.fmt)
+    if a.json:
+        print(json.dumps({**found.to_dict(), "commands": cmds}, indent=2, ensure_ascii=False))
+    else:
+        n = len(found.missing)
+        print(f"{spec.name}: {n} of {found.expected} partitions missing")
+        for keys, first, last in found.ranges():
+            label = " ".join(f"{k}={v}" for k, v in keys.items())
+            span = first if first == last else f"{first} .. {last}"
+            print(f"  {label + '  ' if label else ''}{span}")
+        if a.commands:
+            if cmds:
+                print("\nbackfill:")
+                for c in cmds:
+                    print(f"  {c}")
+            elif n:
+                print("\n(no backfill lines: only daily partitions in %Y-%m-%d map to --from/--to)")
+    return 1 if a.fail and found.missing else 0
+
+
 def _params(pairs: list[str] | None) -> dict[str, str]:
     """`--param key=value`, repeatable. Values stay strings; the pipeline's types convert them."""
     out = {}
@@ -296,6 +324,14 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
+    gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
+    gp.add_argument("pipeline")
+    gp.add_argument("--since", help="first period to check (default: expect.partitions.from)")
+    gp.add_argument("--until", help="last period to check (default: the last complete one)")
+    gp.add_argument("--json", action="store_true", help="print the report as JSON")
+    gp.add_argument("--commands", action="store_true", help="print `agentl backfill` lines for the gaps")
+    gp.add_argument("--fail", action="store_true", help="exit 1 when something is missing (cron, CI)")
+
     bf = cmd("backfill", "one run per file or per date, resumable")
     bf.add_argument("pipeline")
     src = bf.add_mutually_exclusive_group(required=True)
@@ -357,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
                 planned = preflight.plan(load(a.pipeline), store)
             print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
             return 0
+        if a.cmd == "gaps":
+            return _gaps(a)
         if a.cmd == "preview":
             from . import preflight
 

@@ -232,6 +232,49 @@ reason. Pass the run id to `agentl doctor` for the details. The dashboard shows 
 for the last 30 days, and the MCP server has a `pipeline_stats` tool. Everything is computed from
 the run store; nothing extra is recorded.
 
+## Gaps
+
+A freshness check says the latest data is late; it does not say a day in the middle is missing.
+Declare the partitions the destination should hold under a top-level `expect:` block and
+`agentl gaps` lists the missing ones:
+
+```yaml
+expect:
+  partitions:
+    every: 1d              # or 1h
+    from: "2025-01-01"
+    skip: weekends         # weekends, weekdays or ISO dates; a list is fine
+    field: ref_date        # the column holding the partition value
+  present_in:
+    use: postgres.read     # any reader: sqlite.read, sql.read (SQLAlchemy)...
+    with: { dsn: "${DATABASE_URL}", query: "select distinct ref_date from facts" }
+```
+
+Files instead of a table: `present_in: { files: "out/{date:%Y-%m-%d}/*.parquet" }` is formatted
+once per expected period (relative to the YAML file) and the period is present when the glob
+matches anything. Composite partitions add `keys: { source: [web, store] }`: every key combination
+is expected for every period; the reader rows need a `source` column, and the glob can use
+`{source}`.
+
+```bash
+agentl gaps pipeline.yaml                         # 3 of 290 partitions missing, as ranges
+agentl gaps pipeline.yaml --since 2025-06-01 --until 2025-06-30
+agentl gaps pipeline.yaml --json                  # missing periods, ranges and commands
+agentl gaps pipeline.yaml --commands              # also print `agentl backfill` lines
+agentl gaps pipeline.yaml --fail                  # exit 1 when something is missing
+```
+
+`to:` defaults to the last complete period (yesterday, or the previous hour), in UTC. Values read
+from the destination are normalised (dates, datetimes and ISO strings) to `format:`, by default
+`%Y-%m-%d` or `%Y-%m-%dT%H`.
+
+`--commands` prints one `agentl backfill pipeline.yaml --from A --to B` line per contiguous run of
+missing days (with `--param key=value` for composite keys), for the `agentl backfill` command and
+run params of [#182](https://github.com/arimayuji/agentl/issues/182). Hourly gaps and custom
+formats get no lines. Running only the missing periods automatically (`--fill`, within request
+budgets) is not part of this release; for a scheduled check, run `agentl gaps --fail` from cron or
+CI and alert on the exit code.
+
 ## Diagram
 
 `agentl diagram` prints the pipeline as Mermaid. Connectors are boxes, functions are rounded and

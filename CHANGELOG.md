@@ -11,6 +11,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl gaps`: a top-level `expect:` block declares the partitions the destination should hold (daily or hourly, with `skip: weekends` or dates, and composite keys such as source x day); the command reads what is present with any reader (`sqlite.read`, `postgres.read`, `sql.read`) or a file glob, lists the missing periods as ranges, prints `agentl backfill` lines with `--commands`, and exits 1 with `--fail` for scheduled checks.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
