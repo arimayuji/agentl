@@ -304,3 +304,9 @@ _SEEN: contextvars.ContextVar[SeenKeys | None] = contextvars.ContextVar("agentl_
 def seen_keys() -> SeenKeys | None:
     """The run store's seen keys, or None outside a run (a connector called directly)."""
     return _SEEN.get()
+
+
+class NoChange(Exception):
+    """Raised by a source step that found its source unchanged since the last run (for example
+    `http.get` with `if_changed`). The runner ends the run as `no_change` instead of `failed`:
+    the steps after it do not run and the run is not an error."""

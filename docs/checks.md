@@ -61,10 +61,54 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
 | `vs_last_run` | `{ rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, changed more than that since the last run that passed |
+| `vs_runs` | `{ last: 5, rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, is further than that from the median of the last `last` runs that passed |
 | `rejected_rate` | `"< 1%"` or `{ orders: "<= 0.5%" }` | a step rejected a larger share of its records in this run (see [contracts](#schema-contracts)) |
+| `pii` | `true` or `{ allow: [customer_email] }` | a field looks like unprotected personal data (below); `allow` lists fields that may carry it |
+
+`pii` samples up to 200 records and flags a field when at least half of its values match one
+detector: CPF and CNPJ (check digits), US SSN (`123-45-6789`, format only), e-mail, phone (BR or US,
+written with separators or `+`), payment card (Luhn), IBAN (mod 97), IP address, and person names in
+fields named like `name`, `full_name` or `last_name`. Values already passed through
+[`protect`](connectors.md#protect-sensitive-fields-protect) no longer match. The failure names the
+field, the kind, a masked example (`*******4321`, never the full value) and the suggested `protect`
+action. From Python, `agentl.pii.scan(records)` returns the findings and
+`agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
+expect misses (free-text fields, unformatted phones) and some false positives.
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
+
+`vs_runs` compares with the median of the last `last` passing runs (default 5, at most 50), so
+one unusual run does not move the baseline. With fewer passing runs than `last` it uses the ones
+there are; with none it passes.
+
+### Severity per rule
+
+By default a failing rule fails the check (and `on_fail` decides what that does). `severity` sets
+it per rule:
+
+```yaml
+- id: verify
+  check: orders
+  expect:
+    rows: { min: 1000 }
+    not_null: [order_id]
+    accepted: { region: [north, south] }
+    vs_runs: { last: 5, rows: 30% }
+  severity:
+    vs_runs: warn        # emit `check.warned`, let the data through
+    accepted: reject     # drop the failing rows into the quarantine
+    # rows and not_null: fail (the default)
+```
+
+| Severity | What it does |
+| --- | --- |
+| `fail` | the check fails: stops before the writer, or warns with `on_fail: warn` |
+| `warn` | a `check.warned` event with the findings; the data goes through |
+| `reject` | the failing rows are dropped and quarantined like rejected records (`item.rejected`); only for `not_null`, `unique`, `accepted` and `range` |
+
+`review` takes `fail` or `warn` too. The `check.passed` and `check.failed` events carry `rules`,
+the result of each rule in this run: `passed`, `failed`, `warn` or `reject`.
 
 ## Agent review
 

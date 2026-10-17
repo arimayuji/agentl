@@ -273,6 +273,26 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd("keygen", "print a new random key for the protect and unprotect steps")
 
+    te = cmd("test", "run a pipeline on fixture files (echo LLM, no writes) and compare with a golden file")
+    te.add_argument("pipeline")
+    te.add_argument(
+        "--fixture",
+        action="append",
+        default=[],
+        metavar="[STEP=]PATH",
+        help="file a source step reads instead (STEP= may be left out with one source step)",
+    )
+    te.add_argument("--expect", required=True, help="golden JSON: [records] or {writer step: [records]}")
+    te.add_argument("--key", help="match rows by this field instead of by position")
+    te.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="FIELD",
+        help="leave this field out of the comparison",
+    )
+    te.add_argument("--update", action="store_true", help="write the golden file from this run")
+
     pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
     pv.add_argument("pipeline")
     pv.add_argument("step")
@@ -410,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return 0 if result.status in ("succeeded", "no_change") else 1
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -443,6 +463,29 @@ def main(argv: list[str] | None = None) -> int:
                 planned = preflight.plan(load(a.pipeline), store)
             print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
             return 0
+        if a.cmd == "test":
+            from . import testing
+
+            fixtures: dict[str | None, str] = {}
+            for f in a.fixture:
+                sid, sep, path = f.partition("=")
+                if sep and sid and not Path(f).exists():
+                    fixtures[sid] = path
+                else:
+                    fixtures[None] = f
+            tested = testing.run_test(
+                load(a.pipeline),
+                fixtures,
+                a.expect,
+                key=a.key,
+                ignore=testing.IGNORED + tuple(a.ignore),
+                update=a.update,
+            )
+            if a.update:
+                print(f"wrote {a.expect} ({tested.status})")
+                return 0 if tested.status == "succeeded" else 1
+            print(tested.text(), file=sys.stdout if tested.ok else sys.stderr)
+            return 0 if tested.ok else 1
         if a.cmd == "preview":
             from . import preflight
 

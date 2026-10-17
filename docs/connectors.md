@@ -72,6 +72,7 @@ the old behavior and adds no field.
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
+| NF-e, NFC-e | `nfe.read` (`level: item`) | one record per invoice or item, see [NF-e invoices](nfe.md) | |
 | HTML tables | `html.read` (`table: 0`, `select`, `header_rows`) | one record per row, `table` index | |
 | HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
@@ -134,7 +135,7 @@ fixed name is enough.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `if_changed`, `on_unchanged` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -168,6 +169,35 @@ URL fetches refuse loopback, private, link-local (for example cloud metadata at
 `169.254.169.254`) and reserved addresses, including after redirects, so URLs that come from data
 or from an agent cannot reach internal services. For intranet pipelines set
 `AGENTL_ALLOW_HOSTS=host1,10.0.0.0/8` (host names or CIDRs), or `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
+
+### Download only when the source changed
+
+For a large file that rarely changes, `if_changed` checks the source before downloading it, cheapest
+strategy first, and keeps what it saw in the run store (`agentl state`; reset with
+`agentl state reset`). Validators are saved only when the run succeeds.
+
+```yaml
+- id: report
+  use: http.get
+  with:
+    url: https://example.org/data/report.csv
+    if_changed:
+      by: [etag, last_modified, content_length]   # or page_stamp
+      # page_stamp: { url: https://example.org/reports, regex: 'Updated on (\d{2}/\d{2}/\d{4})' }
+    on_unchanged: stop        # stop (default) | continue_empty
+```
+
+| Strategy | How it checks |
+|---|---|
+| `page_stamp` | GET another, small page and compare the regex match (group 1 if any) |
+| `content_length` | HEAD request; compare `Content-Length` |
+| `etag`, `last_modified` | conditional GET (`If-None-Match`, `If-Modified-Since`); a 304 means unchanged |
+| hash | always last: SHA-256 of the downloaded body |
+
+When the source is unchanged, `on_unchanged: stop` ends the run with status `no_change`: the next
+steps do not run, the CLI exits 0 and `run(..., raise_on_failure=True)` does not raise.
+`continue_empty` returns no records and lets the run go on. `if_changed` works on one URL: not with
+an input step or `paginate`. Without a run store (the connector called directly) it always downloads.
 
 Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
 returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
@@ -834,13 +864,37 @@ time through the private-network guard. Sitemaps that declare a DTD or entities 
 
 | Connector | Parameters |
 |---|---|
-| `email.read` | `host`, `user`, `password`, `port` (993), `ssl` (true), `folder`, `search` (IMAP syntax, default `UNSEEN`), `limit` (newest N), `attachments` (true), `explode`, `extensions`, `mark_seen` (false) |
+| `email.read` | `host`, `user`, `password`, `port` (993), `ssl` (true), `folder`, `search` (IMAP syntax, default `UNSEEN`), `limit` (newest N), `attachments` (true, or `{name_regex}`), `explode`, `extensions`, `mark_seen` (false), `provider` (`imap` or `msgraph`), `since` |
 | `email.mark` | same connection settings; `seen` (true), `flags`, `move_to`. Takes upstream records with `uid` and `folder` |
 
 Each message record has `uid`, `folder`, `message_id`, `from`, `to`, `cc`, `subject`, `date`,
 `text`, `html` and `attachments` (`path`, `filename`, `content_type`, `size`). Messages are read
 without changing their flags. Attachment names come from the sender, so only a safe base name is
 kept and files are saved under the run's temporary folder. Standard library only.
+
+### Microsoft 365 (Graph)
+
+Where IMAP is turned off, read the mailbox through Microsoft Graph. The app registration needs the
+`Mail.Read` application permission (`Mail.ReadWrite` for `mark_seen`); credentials come from
+`MS_ACCESS_TOKEN`, or `MS_TENANT_ID`, `MS_CLIENT_ID` and `MS_CLIENT_SECRET`.
+
+```yaml
+- id: emails
+  use: email.read
+  with:
+    provider: msgraph            # imap (default) | msgraph
+    mailbox: reports@example.com
+    folder: "Reports/Weekly"     # resolved level by level; Inbox, Archive... work at the top
+    since: 7d                    # or an ISO date; also works with IMAP
+    attachments: { name_regex: '^Weekly .*\.xlsx$' }
+    explode: true
+```
+
+Extra parameters: `mailbox`, `since`, `filter` (OData, ANDed with `since`), `access_token`,
+`tenant`, `api_url`, `token_url`. Records have the same fields as IMAP (`uid` is the Graph message
+id, `message_id` the Internet Message-ID) plus `received_at`; exploded records also have `name`.
+Pages (`@odata.nextLink`) are followed until `limit`, and throttled requests (429) wait for
+`Retry-After`. Only file attachments are saved. `email.mark` is IMAP only for now.
 
 ## PostgreSQL
 
