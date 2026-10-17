@@ -5,7 +5,7 @@
 
     app = Celery("etl", broker="redis://localhost")
     run_pipeline = register(app)
-    run_pipeline.delay("pipelines/sales.yaml", vars={"DAY": "2026-10-13"})
+    run_pipeline.delay("pipelines/sales.yaml", params={"day": "2026-10-13"})
 
 A failed run raises, so Celery's retry options (`autoretry_for`, `max_retries`) apply."""
 
@@ -16,9 +16,15 @@ from typing import Any
 from ..runner import PipelineFailed, run
 
 
-def run_pipeline(pipeline: str, vars: dict[str, str] | None = None, db: str | None = None) -> dict[str, Any]:
-    """Task body: run and return a JSON-serializable summary; raise on failure."""
-    return run(pipeline, vars=vars, db=db, raise_on_failure=True).summary()
+def run_pipeline(
+    pipeline: str,
+    vars: dict[str, str] | None = None,
+    db: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Task body: run and return a JSON-serializable summary; raise on failure. `params` are
+    the pipeline's run parameters; bad ones raise SpecError, which is not retried."""
+    return run(pipeline, vars=vars, params=params, db=db, raise_on_failure=True).summary()
 
 
 def register(app: Any, name: str = "agentl.run", **task_options: Any) -> Any:
