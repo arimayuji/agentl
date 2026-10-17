@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from agentl import parse, register_provider
 from agentl.llm import Result
@@ -112,6 +113,32 @@ def sqlite_write(scale: float) -> dict:
     counter = iter(range(100))
     _, s = _median_timed(lambda: get("sqlite.write")(rows, db=str(d / f"b{next(counter)}.sqlite"), table="t"))
     return {"summary": _rate(n, s), "records": n, "seconds": round(s, 3)}
+
+
+def _sqlite_twice(scale: float, **kw: Any) -> dict:
+    """Load rows into a fresh table, then load them again with 1% changed: the rerun is timed."""
+    n = int(100_000 * scale)
+    rows = [{"id": i, "name": f"n{i}", "total": i * 0.5} for i in range(n)]
+    again = [dict(r, total=-1.0) if r["id"] % 100 == 0 else r for r in rows]
+    d = _tmp()
+    counter = iter(range(100))
+    w = get("sqlite.write")
+
+    def run() -> None:
+        db = str(d / f"u{next(counter)}.sqlite")
+        w(rows, db=db, table="t", key="id", **kw)
+        w(again, db=db, table="t", key="id", **kw)
+
+    _, s = _median_timed(run)
+    return {"summary": _rate(2 * n, s), "records": 2 * n, "seconds": round(s, 3)}
+
+
+def sqlite_upsert(scale: float) -> dict:
+    return _sqlite_twice(scale, mode="upsert")
+
+
+def sqlite_changeset(scale: float) -> dict:
+    return _sqlite_twice(scale, mode="changeset", deletes="missing")
 
 
 def postgres_upsert(scale: float) -> dict:
@@ -612,6 +639,8 @@ ALL = [
     ("csv.read", csv_read),
     ("transforms", transforms),
     ("sqlite.write", sqlite_write),
+    ("sqlite.upsert", sqlite_upsert),
+    ("sqlite.changeset", sqlite_changeset),
     ("postgres.upsert", postgres_upsert),
     ("http.get fan-out", http_fanout),
     ("agent step", agent_step),

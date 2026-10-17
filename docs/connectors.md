@@ -151,7 +151,7 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`), `on_conflict`, `update_columns` (upsert only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `deletes`, `partition_by`, `dry_run` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
 | `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
 
@@ -607,6 +607,41 @@ by `do_nothing`) in its result, in the `step.succeeded` event next to `written`,
 checked before connecting: `on_conflict` or `update_columns` without `mode: upsert`, an unknown
 value, a key column in `update_columns` or a column the records do not have is an error.
 `sqlite.write` needs no unique index on `key`.
+
+### Changeset writes
+
+`mode: changeset` on `sqlite.write` compares the source with the table and writes only what
+changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
+A table with triggers or versioning sees no write at all when nothing changed.
+
+```yaml
+load:
+  - id: save
+    use: sqlite.write
+    input: rows
+    with:
+      db: out/facts.db
+      table: facts
+      key: [country, month, product]
+      mode: changeset
+      partition_by: month
+      deletes: { when: partition_replaced }
+```
+
+| Option | Meaning |
+|---|---|
+| `deletes: none` | Default. Rows missing from the source stay. |
+| `deletes: missing` | Delete rows whose key is not in the source (the source is the whole table). |
+| `deletes: partition_replaced` | Delete missing rows only in the partitions (`partition_by` values) the source has. |
+| `partition_by: month` | Also report `partitions` and `partitions_unchanged` (partitions with no insert, update or delete). |
+| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column. |
+
+All chunks are staged in a temp table first and the diff runs as a few set-based statements in
+one transaction, so it stays fast on large loads; the last record of a repeated key wins. The
+result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_change` when
+nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
+in the run summary, so a notification rule can use `when: "deleted > 0"`. Postgres support is
+planned.
 
 ## Any SQL database
 

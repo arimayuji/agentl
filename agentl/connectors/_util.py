@@ -150,6 +150,40 @@ def upsert_options(
     return conflict, upd
 
 
+DELETES = ("none", "missing", "partition_replaced")
+
+
+def changeset_options(
+    name: str,
+    mode: str,
+    keys: list[str],
+    deletes: str | dict | None,
+    partition_by: str | list[str] | None,
+    dry_run: bool,
+) -> tuple[str, list[str]]:
+    """Check the mode: changeset options before any I/O. `deletes` takes a name or `{when: name}`."""
+    if mode != "changeset":
+        if deletes is not None or partition_by is not None or dry_run:
+            raise ValueError(
+                f"{name}: deletes, partition_by and dry_run need mode: changeset (got mode: {mode})"
+            )
+        return "none", []
+    if not keys:
+        raise ValueError(f"{name}: mode: changeset needs `key` (the column, or columns, that identify a row)")
+    when = deletes.get("when") if isinstance(deletes, dict) else deletes
+    if isinstance(deletes, dict) and set(deletes) - {"when"}:
+        raise ValueError(f"{name}: deletes takes only `when`, got {sorted(deletes)}")
+    drop = when or "none"
+    if drop not in DELETES:
+        raise ValueError(f"{name}: deletes must be one of {', '.join(DELETES)}, got {when!r}")
+    parts = [partition_by] if isinstance(partition_by, str) else list(partition_by or [])
+    if not all(isinstance(p, str) and p for p in parts):
+        raise ValueError(f"{name}: partition_by must be a column name or a list of names")
+    if drop == "partition_replaced" and not parts:
+        raise ValueError(f"{name}: deletes: partition_replaced needs partition_by")
+    return drop, parts
+
+
 def check_update_columns(name: str, upd: list[str] | None, cols: list[str]) -> None:
     if upd and (unknown := [c for c in upd if c not in cols]):
         raise ValueError(f"{name}: update_columns names unknown column(s) {unknown}; columns: {cols}")

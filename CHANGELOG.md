@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `mode: changeset` on `sqlite.write` (#205): compares with the table and writes only what
+  changed. `deletes: missing` or `partition_replaced` (with `partition_by`) removes rows the source
+  no longer has, `dry_run: true` reports the changeset without writing, and the result has
+  `inserted`, `updated`, `deleted`, `unchanged` and `outcome: no_change`. `deleted` is now a step
+  write count in events and the run summary.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
