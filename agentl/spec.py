@@ -103,6 +103,7 @@ _EXPECTATIONS = (  # see checks.py
     "range",
     "fresh",
     "vs_last_run",
+    "vs_runs",
     "rejected_rate",
 )
 
@@ -159,6 +160,8 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
+    # Per rule (#185): fail (default), warn (event only) or reject (drop the failing rows).
+    severity: dict[str, Literal["fail", "warn", "reject"]] = Field(default_factory=dict)
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
@@ -221,7 +224,30 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': unknown expectation {unknown}. Use {', '.join(_EXPECTATIONS)}"
             )
-        if (self.expect or self.review) and not self.check:
+        if self.severity:
+            from .checks import ROW_RULES
+
+            stray = [k for k in self.severity if k not in self.expect and k != "review"]
+            if stray:
+                raise ValueError(f"step '{self.id}': severity for {stray}, which is not in 'expect'")
+            wrong = [k for k, v in self.severity.items() if v == "reject" and k not in ROW_RULES]
+            if wrong:
+                raise ValueError(
+                    f"step '{self.id}': severity reject drops rows, so it works only for "
+                    f"{', '.join(ROW_RULES)} (not {wrong})"
+                )
+        if "vs_runs" in self.expect:
+            vr = self.expect["vs_runs"]
+            if (
+                not isinstance(vr, dict)
+                or not isinstance(vr.get("last", 5), int)
+                or not 1 <= vr.get("last", 5) <= 50
+            ):
+                raise ValueError(f"step '{self.id}': vs_runs needs a mapping like {{last: 5, rows: 30%}}")
+            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
+            if unknown_vr:
+                raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
+        if (self.expect or self.review or self.severity) and not self.check:
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")

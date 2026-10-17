@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Checks (#185): `vs_runs: { last: 5, rows: 30% }` compares with the median of the last N passing
+  runs, and `severity:` sets `fail`, `warn` or `reject` (drop the failing rows) per rule. Check
+  events carry the result of each rule in `rules`.
+
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
