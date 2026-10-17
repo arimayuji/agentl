@@ -68,20 +68,23 @@ def pages(
     storage_options: dict | None,
     field: str = "html",
     encoding: str = "utf-8",
-) -> list[tuple[str, str]]:
-    """(source, html) for each page: from `url` or `path`, from upstream records that carry the
-    HTML in `field` (browser.scrape, crawl, http.get), or from records with a `path`."""
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """(source, html, metadata) for each page from a URL, path, or upstream record."""
     rows = single(input) if isinstance(input, list) and not (url or path) else None
     if rows and any(isinstance(r.get(field), str) for r in rows):
         return [
-            (str(r.get("url") or r.get("_url") or r.get("_source") or f"record {i}"), r[field])
+            (
+                str(r.get("url") or r.get("_url") or r.get("_source") or f"record {i}"),
+                r[field],
+                {key: r[key] for key in ("url", "source_url") if key in r},
+            )
             for i, r in enumerate(rows)
             if isinstance(r.get(field), str)
         ]
-    out = []
+    out: list[tuple[str, str, dict[str, Any]]] = []
     for p in paths(input, path, "path", url, headers, storage_options):
         source = url if url and "{" not in url else str(p)
-        out.append((source, Path(p).read_text(encoding=encoding, errors="replace")))
+        out.append((source, Path(p).read_text(encoding=encoding, errors="replace"), {}))
     return out
 
 
@@ -129,6 +132,7 @@ def extract(
     on_selector_miss: str,
     snapshot_dir: str | None,
     locale: str,
+    metadata: dict[str, Any],
 ) -> Records:
     base = base_url(root, source)
     specs = {name: _field_spec(name, s) for name, s in fields.items()}
@@ -162,7 +166,7 @@ def extract(
                 values.append(_convert(name, v, spec, locale, source))
             rec[name] = values if spec.get("all") else values[0]
         if keep:
-            out.append({**rec, "_source": source})
+            out.append({**rec, **metadata, "_source": source})
     return out
 
 
@@ -191,8 +195,12 @@ def html_select(
     if not fields:
         raise ValueError("html.select: set 'fields', e.g. {name: h2, link: {select: a, attr: href}}")
     out: Records = []
-    for source, html in pages(input, path, url, headers, storage_options, field, encoding):
-        out.extend(extract(parse(html), source, html, items, fields, on_selector_miss, snapshot_dir, locale))
+    for source, html, metadata in pages(input, path, url, headers, storage_options, field, encoding):
+        out.extend(
+            extract(
+                parse(html), source, html, items, fields, on_selector_miss, snapshot_dir, locale, metadata
+            )
+        )
     return out
 
 
