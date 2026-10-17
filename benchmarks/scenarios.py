@@ -406,6 +406,107 @@ def agent_cascade(scale: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------- hybrid transforms
+_STATES = ["CA", "TX", "NY", "IL", "WA", "MA", "FL", "CO"]
+
+
+def _address(i: int) -> tuple[str, str, str]:
+    """One address of a messy dataset with its true zip and state. 9 in 10 follow the usual
+    layout; the rest put the zip first, spell out words or end with a unit number."""
+    zip_, state = f"{10000 + i * 37 % 89999:05d}", _STATES[i % len(_STATES)]
+    if i % 10 == 3:
+        return f"zip {zip_}, {i} Main St ({state})", zip_, state
+    if i % 10 == 7:
+        return f"{i} Oak Ave, {state} {zip_}, apt 4", zip_, state
+    return f"{i} Main St, Springfield, {state} {zip_}", zip_, state
+
+
+_TRUTH: dict[str, tuple[str, str]] = {}
+
+
+def _address_rows(input=None):
+    rows = []
+    for i in range(_N_AGENT):
+        text, zip_, state = _address(i)
+        _TRUTH[text] = (zip_, state)
+        rows.append({"i": i, "address": text})
+    return rows
+
+
+class _AddressLLM(_FakeLLM):
+    """Reads the address like a good model would: every 47th record gets a plausible but wrong
+    state, the rest are right. Same token model and latency as the other agent cases."""
+
+    def structured(self, instruction, record, schema, sleep=True):
+        if sleep:
+            time.sleep(self.latency)
+        zip_, state = _TRUTH[record["address"]]
+        if record["i"] % 47 == 0:
+            state = "ZZ"
+        value = schema.model_validate({"zip": zip_, "state": state})
+        return Result(value, self.prefix + self.per_in, self.per_out)
+
+
+register_provider("bench-address", _AddressLLM)
+
+
+def hybrid_transforms(scale: float) -> dict:
+    """1,000 messy addresses: rules only, agent only and `rules:` with the agent as fallback.
+    Accuracy is against the true zip and state; cost from the fake token model."""
+    global _N_AGENT
+    _N_AGENT = int(1000 * scale)
+    rules = [
+        {"compute": {"zip": "regex(address, '\\d{5}$')", "state": "regex(address, '[A-Z]{2}(?= \\d{5}$)')"}},
+        {"cast": {"state": "state"}},
+    ]
+    price = {"input": 3.0, "output": 15.0}
+    d = _tmp()
+    out = {}
+    for name in ("rules_only", "agent_only", "hybrid"):
+        if name == "rules_only":
+            step = {"use": "compute", "with": {"fields": rules[0]["compute"]}}
+        else:
+            step = {
+                "agent": "Extract the zip code and the state.",
+                "concurrency": 8,
+                "output": {"zip": "str", "state": "str"},
+                **({"rules": rules} if name == "hybrid" else {}),
+            }
+        spec = parse(
+            {
+                "name": "bench",
+                "llm": {"default": {"provider": "bench-address", "model": "m", "price": price}},
+                "steps": [
+                    {"id": "src", "fn": "benchmarks.scenarios:_address_rows"},
+                    {"id": "parse", "input": "src", **step},
+                ],
+            }
+        )
+        with Store(d / f"{name}.db") as store:
+            r, s = _timed(lambda spec=spec, store=store: Runner(spec, store=store, use_cache=False).run())
+        assert r.status == "succeeded", r.error
+        right = sum(
+            1 for rec in r.outputs["parse"] if (rec.get("zip"), rec.get("state")) == _TRUTH[rec["address"]]
+        )
+        out[name] = {
+            "calls": r.llm_calls,
+            "cost_usd": round(r.cost_usd, 4),
+            "accuracy": round(right / _N_AGENT, 4),
+            "seconds": round(s, 2),
+            **({"paths": r.spend["parse"]["paths"]} if name == "hybrid" else {}),
+        }
+    a, h, ro = out["agent_only"], out["hybrid"], out["rules_only"]
+    return {
+        "summary": (
+            f"rules only {ro['accuracy']:.1%} right, 0 USD; agent only {a['accuracy']:.1%} for "
+            f"{a['cost_usd']} USD; hybrid {h['accuracy']:.1%} for {h['cost_usd']} USD "
+            f"({h['calls']} calls)"
+        ),
+        "records": _N_AGENT,
+        **out,
+    }
+
+
 # ---------------------------------------------------------------- parallel steps
 def _slow_source(input=None, seconds=0.5):
     time.sleep(seconds)
@@ -618,6 +719,7 @@ ALL = [
     ("agent cache re-run", agent_cache),
     ("agent call shapes", agent_call_shapes),
     ("agent cascade", agent_cascade),
+    ("hybrid transforms", hybrid_transforms),
     ("parallel steps", parallel_steps),
     ("chunked", chunked),
     ("arrow csv-pandas-parquet", arrow_csv_pandas_parquet),

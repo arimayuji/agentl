@@ -16,6 +16,29 @@ They are always listed under **Changed** or **Removed**.
   limits; no match fails listing the members. `csv.read`, `json.read`, `txt.read` and `file.read`
   take `encoding` as a list of attempts or `auto` (UTF-8, then Latin-1) and record the one used in
   `_encoding`.
+- `map_schema` step (#177): maps messy columns (multi-row headers, merged cells, varying names)
+  onto typed target fields. Matches by name and `synonyms` first, asks the LLM once only for the
+  rest, and keeps the mapping per layout in the run store, so later runs make no model call. A new
+  layout fails clearly; `review: required` waits for `agentl mappings approve`; `mapping:` pins it
+  in the YAML. New `agentl mappings show|approve|forget`.
+- `web.crawl` (#240): crawl a site breadth first from `start` URLs and `sitemap` (indexes and
+  gzip), with `max_depth`, `max_pages`, `allowed_domains`, `include`/`exclude` regexes and URL
+  normalisation and dedupe; one record per page with `url`, `status`, `depth`, `referrer`,
+  `links` and `html` and/or `markdown`. Obeys `robots.txt` and `Crawl-delay` by default
+  (`obey_robots: false` is logged), waits `delay` per host, honours `Retry-After`, sends an
+  identifying User-Agent, takes a `proxy` per run or per host, and with `incremental: true`
+  skips pages unchanged since the last successful run (ETag, Last-Modified, content hash).
+- `resolve` step (#179): match messy names to a reference table (inline values, a file or a
+  previous step). Values are normalised (case, accents, punctuation, suffixes such as Ltda or Inc),
+  matched exactly, then by similarity (`difflib`, or `rapidfuzz` with the `fuzzy` extra); only
+  values below `threshold` go to the model, once each. Each record gets the match, score and
+  method; unresolved ones are rejected. A `resolve.counts` event reports the rows per path, and
+  `agentl resolve export|import` round-trips the model decisions for review.
+- Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
+  handles each record first; only records where a rule fails or an `output:` field is missing or
+  invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
+  `agent`), and the `hybrid.paths` event and the step's spend count each path. New `hybrid
+  transforms` benchmark compares rules only, agent only and hybrid on messy addresses.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve

@@ -205,6 +205,56 @@ Other databases will ship as plugins.
 | `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
 | `sql` | `query` or `file`, `params`, `allow_files` (false) | SQL over the previous steps, each one a table (below) |
+| `map_schema` | `target` (field: type), `header_rows`, `synonyms`, `mapping`, `review`, `on_drift`, `sample_rows` (30), `locale`, `on_bad` | Map messy columns onto fields: inferred once per layout, then free (below) |
+
+### Map messy columns once: `map_schema`
+
+Weekly reports from other teams rarely keep their headers: two or three header rows, merged cells,
+names that change from `Região` to `Region`. `map_schema` works out which column holds each target
+field once per layout, keeps that mapping in the run store, and applies it on every later run with
+no model call.
+
+Given an Excel sheet whose header spans two rows (the reader's header plus one more row, with
+`Sales` merged over two columns):
+
+| Report date | Região | Sales | |
+|---|---|---|---|
+| | | Units | Revenue |
+| 02/01/2026 | North | 1.200 | 10,5 |
+
+```yaml
+- id: sheet
+  use: file.read
+  with: { path: data/weekly.xlsx }
+- id: mapped
+  use: map_schema
+  input: sheet
+  with:
+    header_rows: 1                       # one more header row under the reader's own
+    target: { report_date: date, region: str, value: float }
+    synonyms: { region: [regiao, area] } # matched by name, no LLM
+    review: required                     # or auto (default)
+```
+
+1. The header rows become one name per column, joined with ` / `, and a merged cell carries its
+   value to the right: `Report date`, `Região`, `Sales / Units`, `Sales / Revenue`.
+2. Fields are matched by name first: the field or a synonym equals a column, or the last part of a
+   joined name, without case, accents or punctuation. `report_date` and `region` match here.
+3. Only the fields still unmatched go to the step's `llm`, in one structured call with the column
+   names and `sample_rows` rows. An answer that is not one of the columns is ignored.
+4. The mapping is stored by the layout's signature (a hash of the column names). The next run on
+   the same layout makes no model call. Blank rows are dropped and the fields are typed with the
+   [`cast`](#clean-types-cast) types (`str` is `text`), bad values going to the rejected records.
+
+Nothing is mapped silently:
+
+- With `review: required`, the first run stops with the proposed mapping until
+  `agentl mappings approve <pipeline> <step>`.
+- A new layout (columns added, removed or reordered) fails the run with the difference. Pin
+  `mapping:`, set `on_drift: infer` to infer a mapping for it, or `agentl mappings forget` the old one.
+- `agentl mappings show` prints each stored mapping as YAML. Paste it under `with:` as `mapping:`
+  (`field: column`) to version it with the pipeline; a pinned mapping skips the store and the LLM,
+  and fails if a column it names is missing.
 
 ### SQL over previous steps: `sql`
 
@@ -273,6 +323,45 @@ stream with `chunk_size`; use them for per-record expressions and simple group-b
 the transform is naturally a join, several group-bys or window functions over data that fits in
 memory. When the data already lives in a warehouse, run the SQL there (a `sql.read` query) instead
 of moving it out to transform it.
+
+### Match names to a reference table: `resolve`
+
+Maps messy values ("SÃO PAULO", "S. Paulo", "SP") to one id of a reference table. Each value is
+normalised (lower case, accents and punctuation removed, suffixes such as Ltda, Inc or LLC
+dropped), then matched exactly against the reference names and ids, then by similarity. Only
+values whose best similarity is below `threshold` and at least `min_score` go to the model, with
+the closest `candidates`; the model can only answer one of those ids or null.
+
+```yaml
+- id: regions
+  use: resolve
+  input: [rows, region_table]       # the reference can be one of the inputs
+  with:
+    field: region
+    reference: region_table         # or {file: regions.csv} or {values: [{id: SP, name: Sao Paulo}]}
+    key: id                         # reference column with the id (default id)
+    name: name                      # reference column with the name (default name)
+    threshold: 0.9                  # similarity accepted without the model (0 to 1)
+    min_score: 0.5                  # below this, unresolved without asking the model
+    on_unresolved: reject           # reject (default), keep (match null) or drop
+```
+
+Each record gets `<field>_match` (the id; rename with `into`), `<field>_match_score` and
+`<field>_match_method` (`exact`, `fuzzy`, `model` or `unresolved`). Unresolved records are
+rejected, so they never reach the destination; list and retry them with `agentl rejected`.
+`model: false` turns the model off; `llm:` on the step picks which one to use.
+
+Similarity uses the standard library's `difflib`; install `agentl-etl[fuzzy]` to use
+`rapidfuzz`, which is much faster on large reference tables (scores differ slightly).
+
+The model's decisions are stored per pipeline and step, so a value never costs twice. A
+`resolve.counts` event reports how many rows took each path, plus how many model decisions came
+from the store (`cached`). Export them for review, fix them, and import them back:
+
+```bash
+agentl resolve export my-pipeline regions decisions.json
+agentl resolve import my-pipeline regions decisions.json
+```
 
 ### Time windows: `aggregate` with `window`
 
@@ -604,8 +693,8 @@ with commas. XPath is not supported.
 **Good conduct.** `crawl` makes one request at a time, `delay` seconds apart (1 by default), with
 a `User-Agent` that names agentl (`user_agent` changes it), follows only links on the start
 host (`same_host: false` to leave it), and goes through the same private-network guard as every
-other connector (see [HTTP](#http)). It does not read `robots.txt` yet: check the
-site's terms before crawling it.
+other connector (see [HTTP](#http)). It does not read `robots.txt`: to cover a whole site, use
+[`web.crawl`](#crawling-a-whole-site), and check the site's terms before crawling it.
 
 **When the site changes.** A selector that matches nothing is how a scraper breaks. With
 `on_selector_miss: fail_with_snapshot` (default) the step fails with an error that names the
@@ -615,6 +704,51 @@ selector and the URL, saves the HTML it received under `.agentl/evidence/<date>/
 page (or the item, for a field) and logs a warning; `empty` keeps the item with `null` in the
 field. A missing `next_page` link is the end of the list, not a miss. A future mode will hand the
 snapshot to an agent step as the fallback when a selector fails (#195).
+
+
+## Crawling a whole site
+
+`web.crawl` walks a site breadth first from `start` URLs (or the `url` field of upstream
+records) and the pages listed in `sitemap` (sitemap indexes and `.gz` sitemaps are followed),
+and outputs one record per page: `url`, `status`, `depth`, `referrer`, `links` (absolute,
+normalised) and `html` (`format: markdown` or `both` adds `markdown`, which needs the `web`
+extra). Feed it to `html.select`, `html.read` or an agent step.
+
+```yaml
+- id: docs_site
+  use: web.crawl
+  with:
+    start: https://example.org/docs/
+    sitemap: https://example.org/sitemap.xml
+    max_depth: 3          # 0 reads only the start and sitemap pages
+    max_pages: 500
+    allowed_domains: [example.org]   # default: the start hosts; subdomains included
+    include: ["/docs/"]              # regexes; a URL must match one (when set)
+    exclude: ["\\.pdf$", "/login"]  # and none of these
+    delay: 1                         # seconds between requests to the same host
+    incremental: true
+    proxy: ${CRAWL_PROXY}            # or {example.org: ..., "*": ...}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_depth`, `max_pages` | 2, 100 | link depth from the start pages, pages fetched per run |
+| `allowed_domains`, `include`, `exclude` | start hosts | scope of the links followed (start URLs are always read) |
+| `delay` | 1 | per host; a larger `Crawl-delay` in robots.txt wins |
+| `obey_robots` | `true` | `false` skips robots.txt and logs a warning: an explicit, visible override |
+| `user_agent`, `headers` | `agentl/<version> (+https://agentl.com.br)` | identify yourself |
+| `proxy` | none | one proxy URL, or host to proxy URL (`"*"` for the rest); pass it from a secret |
+| `incremental` | `false` | skip pages unchanged since the last successful run |
+| `retries`, `timeout` | 2, 30 | 429 and 5xx are retried after `Retry-After` (seconds or a date), else with backoff |
+
+URLs are normalised before dedupe (lowercase scheme and host, no default port, no fragment,
+sorted query), so `/a`, `/a#top` and `HTTP://Example.org:80/a` are one page. With `incremental: true`
+each page's ETag, Last-Modified and content hash are kept in the run store (`agentl state`) and
+move only when the run succeeds; the next run sends `If-None-Match` / `If-Modified-Since`, and a
+`304` or an identical body is not output again (its links are still followed). Pages that error
+(4xx, 5xx after retries) come out with their `status` and empty `html`. Requests go one at a
+time through the private-network guard. Sitemaps that declare a DTD or entities are refused.
+`web.crawl` does not try to get past CAPTCHAs or bot protection.
 
 ## Email (IMAP)
 
