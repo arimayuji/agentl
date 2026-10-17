@@ -158,3 +158,30 @@ def test_attempts_validation():
         pipeline([{"llm": "nope"}])
     with pytest.raises(SpecError, match="llm of each attempt"):
         pipeline([{}], llm=["small", "large"])
+
+
+def mixed(input=None):
+    return [{"t": "clean", "clean": True}, {"t": "a"}, {"t": "clean2", "clean": True}]
+
+
+def clean_rule(record):
+    if not record.get("clean"):
+        raise ValueError("not clean")
+    return {"amount": 2.0, "tags": [7]}
+
+
+def test_hybrid_rules_with_attempts(tmp_path):
+    """Rows the rules handle never reach the llm; the rest go through the attempts loop."""
+    FAILS["n"] = 1
+    spec = pipeline(THREE, src="tests.test_attempts:mixed", rules=[{"fn": "tests.test_attempts:clean_rule"}])
+    with Store(tmp_path / "s.db") as store:
+        r = Runner(spec, store=store, use_cache=False).run()
+    out = r.outputs["rows"]
+    assert r.status == "succeeded"
+    assert [o["t"] for o in out] == ["clean", "a", "clean2"]
+    assert [o["_path"] for o in out] == ["rules", "agent", "rules"]
+    assert out[0]["amount"] == 2.0 and out[1]["amount"] == 1.5
+    assert [(m, t) for m, t, _ in SEEN] == [("small", "a"), ("small", "a")]
+    assert "rejected by the validator" in SEEN[1][2]
+    assert r.spend["rows"]["paths"] == {"rules": 2, "agent": 1}
+    assert r.spend["rows"]["attempts"]["1"]["failed"] == 1
