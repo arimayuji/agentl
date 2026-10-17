@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
+  handles each record first; only records where a rule fails or an `output:` field is missing or
+  invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
+  `agent`), and the `hybrid.paths` event and the step's spend count each path. New `hybrid
+  transforms` benchmark compares rules only, agent only and hybrid on messy addresses.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
