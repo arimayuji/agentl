@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
+  Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
+  an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters
+  attachments on both providers; records now carry `received_at`.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
