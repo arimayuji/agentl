@@ -59,6 +59,7 @@ RULES = {
     "AL005": "fn module not found",
     "AL006": "cursor never used",
     "AL007": "unknown top-level field (ignored when the pipeline runs)",
+    "AL008": "agent step sees fields before they are protected",
 }
 
 
@@ -388,6 +389,25 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                     "move it to an environment variable and write `${VAR}` (or a secret reference)",
                 )
             )
+    by_id = {s.id: s for s in spec.steps}
+    for s in spec.steps:
+        if s.use != "protect":
+            continue
+        fields = s.with_.get("fields")
+        names = ", ".join(map(str, fields)) if isinstance(fields, dict) else "the protected fields"
+        for a in sorted(_ancestors(spec, s.id)):
+            if by_id[a].kind == "agent":
+                line, col = pos.step(a)
+                out.append(
+                    Finding(
+                        "AL008",
+                        "warning",
+                        f"agent step '{a}' runs before '{s.id}', so the LLM provider sees {names}",
+                        line,
+                        col,
+                        f"move '{s.id}' before '{a}', or drop those fields with `select` first",
+                    )
+                )
     consumed = _consumers(spec)
     last = spec.steps[-1].id if spec.steps else None
     sink_verbs = ("write", "upload", "post", "produce", "publish", "send", "mark")

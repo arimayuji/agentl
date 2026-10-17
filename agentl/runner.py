@@ -845,6 +845,9 @@ class Runner:
         AGENTL_SAMPLES=0 turns it off."""
         if os.environ.get("AGENTL_SAMPLES", "1").lower() in ("0", "false", "no"):
             return
+        step = next((s for s in self.spec.steps if s.id == step_id), None)
+        if step is not None and step.use == "unprotect":  # decrypted values never reach the store
+            return
         try:
             from . import secrets
 

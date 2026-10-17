@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `protect` and `unprotect` steps (#225): encrypt (AES-256-GCM, key rotation), keyed hash, mask or
+  drop sensitive fields before they reach a destination. `agentl keygen` makes a key, the
+  `crypto` extra installs `cryptography`, and `lint` warns (AL008) when an agent step sees the fields
+  before `protect`. Decrypted values stay out of the run store's samples.
+
 ## [0.11.0] - 2026-10-17
 
 Data cleaning and safe re-runs: typed `cast`, expressions, reshaping, a quarantine for rejected

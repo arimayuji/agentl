@@ -182,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd("schema", "print the JSON Schema of a pipeline file (editor autocomplete)")
 
+    cmd("keygen", "print a new random key for the protect and unprotect steps")
+
     pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
     pv.add_argument("pipeline")
     pv.add_argument("step")
@@ -330,6 +332,11 @@ def main(argv: list[str] | None = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"installed {target}")
+            return 0
+        if a.cmd == "keygen":
+            from .connectors.protect import new_key
+
+            print(new_key())
             return 0
         if a.cmd == "schema":
             from . import lint
