@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
+  LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
+  with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
+  Exits 1 with a per-field row diff on a mismatch, for CI.
 - Pipeline chaining under `agentl serve` (#203): `on_success` / `on_failure` / `after` actions
   start another pipeline with parameters (`${outputs.<step>}`, `${trigger.<field>}`) or emit an
   event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
