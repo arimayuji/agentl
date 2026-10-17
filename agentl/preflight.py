@@ -31,6 +31,7 @@ SAFE = {
     "txt.read",
     "xml.read",
     "html.read",
+    "html.select",
     "pdf.read",
     "doc.read",
     "docx.read",
