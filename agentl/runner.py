@@ -597,9 +597,11 @@ class Runner:
         if self.use_cache and step.cached and (hit := self.store.cache_get(key)) is not None:
             return hit
         token = registry._AFTER_RUN.set(self._after_run)
+        state = registry._STEP_STATE.set(self._step_state(step.id))
         try:
             out = fn(data, **step.with_)
         finally:
+            registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
             bad = out.rejected
@@ -1115,6 +1117,16 @@ class Runner:
             if value is not None and value != start.get(step_id):
                 self.store.state_set(self.spec.name, step_id, value, run_id)
                 self._emit(run_id, "cursor.advanced", step_id, previous=start.get(step_id), cursor=value)
+
+    def _step_state(self, step_id: str) -> registry.StepState:
+        """Checkpoints of stream readers, stored like cursors (see `registry.step_state`)."""
+        run_id = self._run_id or ""
+
+        def put(value: Any) -> None:
+            self.store.state_set(self.spec.name, step_id, value, run_id)
+            self._emit(run_id, "cursor.advanced", step_id, cursor=value)
+
+        return registry.StepState(lambda: self.store.state_get(self.spec.name, step_id), put)
 
     def _finish_after_run(self, run_id: str, result: RunResult) -> None:
         """Acknowledge (on success) or release (on failure) what queue consumers read. A failed

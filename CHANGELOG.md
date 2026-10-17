@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `kinesis.read` and `eventhubs.consume` (#226): micro-batches from every Kinesis shard or Event
+  Hubs partition, with checkpoints (sequence number per shard or partition) kept in the run store
+  and advanced only when the run succeeds. Kinesis reads closed parent shards before their
+  children. New `eventhubs` extra (`azure-eventhub>=5.11`); Azure IoT Hub works through its Event
+  Hubs-compatible endpoint. Connectors can reach their step's stored state with
+  `registry.step_state()`.
 - `protect` and `unprotect` steps (#225): encrypt (AES-256-GCM, key rotation), keyed hash, mask or
   drop sensitive fields before they reach a destination. `agentl keygen` makes a key, the
   `crypto` extra installs `cryptography`, and `lint` warns (AL008) when an agent step sees the fields
