@@ -47,7 +47,8 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
-| HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
+| HTML tables | `html.read` (`table: 0`, `select`, `header_rows`) | one record per row, `table` index | |
+| HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
 | ZIP, GZ | `file.read` | records of the inner files | |
 
@@ -560,6 +561,73 @@ Pages that need clicks or forms still go through `browser.scrape` with `steps`. 
 navigates on its own, give an agent step a browser MCP server as a tool (for example
 [Playwright MCP](https://github.com/microsoft/playwright-mcp), see
 [Tools and MCP servers](agents.md#tools-and-mcp-servers)) rather than scripting every click.
+
+## Extracting data from web pages
+
+`html.select` turns HTML into records with CSS selectors; `crawl` walks a list of links (with
+pagination) and runs extraction steps on every page it links to. Both use the standard library
+only.
+
+```yaml
+- id: reports
+  use: crawl
+  with:
+    start: https://example.org/reports
+    list: { select: "div.item a", attr: href, next_page: "a.next", max_pages: 5 }
+    detail:
+      - use: html.select
+        with:
+          fields:
+            title: h2.title
+            price: { select: .price, type: money }
+            pdf: { select: a.pdf, attr: href, absolute: true }
+      - use: html.read
+        with: { select: table.data, header_rows: 2 }
+    limit: 20
+    on_selector_miss: fail_with_snapshot   # the default
+```
+
+Every record from a detail step gets `url` (the detail page) and `source_url` (the list page
+that linked to it). Without `detail`, `crawl` gives one record per page with its `html`, ready
+for a later `html.select`, `html.read` or agent step. Without `list`, the `start` URLs (or the
+`url` field of upstream records) are the pages to read.
+
+**html.select.** `items` is the selector of the repeated element (a card, a row); without it the
+whole page is one record. Each entry in `fields` is a selector (its trimmed text) or a mapping:
+
+| Key | Notes |
+|---|---|
+| `select` | CSS selector inside the item; empty means the item itself |
+| `attr` | read this attribute instead of the text (`href`, `src`, `data-id`) |
+| `absolute` | resolve a relative link against the page URL (or its `<base href>`) |
+| `type` | convert with the [`cast`](#clean-types-cast) types: `money`, `int`, `decimal`, `date`, `{money: USD}`... (`locale` on the step, `pt-BR` by default) |
+| `all` | every match as a list instead of the first |
+| `required` | `false` gives `null` when nothing matches instead of a selector miss |
+
+The HTML comes from `url`, `path`, or the `html` field of upstream records (`browser.scrape` with
+`extract: html`, `crawl`), so it chains after a login done in the browser. Supported selectors:
+tag, `#id`, `.class`, `[attr]`, `[attr=v]` (and `^=`, `$=`, `*=`, `~=`), `:first-child`,
+`:last-child`, `:nth-child(n)`, `:nth-of-type(n)`, descendant and `>` combinators, and groups
+with commas. XPath is not supported.
+
+**Tables.** `html.read` takes `select` (a CSS selector for the tables to read), `header_rows: N`
+(several header rows are joined: `Sales` over `Q1` becomes `Sales Q1`) and repeats `colspan` and
+`rowspan` cells into every row and column they cover, so merged cells come out denormalised.
+
+**Good conduct.** `crawl` makes one request at a time, `delay` seconds apart (1 by default), with
+a `User-Agent` that names agentl (`user_agent` changes it), follows only links on the start
+host (`same_host: false` to leave it), and goes through the same private-network guard as every
+other connector (see [HTTP](#http)). It does not read `robots.txt` yet: check the
+site's terms before crawling it.
+
+**When the site changes.** A selector that matches nothing is how a scraper breaks. With
+`on_selector_miss: fail_with_snapshot` (default) the step fails with an error that names the
+selector and the URL, saves the HTML it received under `.agentl/evidence/<date>/` (or
+`snapshot_dir`), puts that path in the error and emits a `selector.missed` event with
+`selector`, `url` and `snapshot`. Open the snapshot, fix the selector, run again. `skip` drops the
+page (or the item, for a field) and logs a warning; `empty` keeps the item with `null` in the
+field. A missing `next_page` link is the end of the list, not a miss. A future mode will hand the
+snapshot to an agent step as the fallback when a selector fails (#195).
 
 ## Email (IMAP)
 
