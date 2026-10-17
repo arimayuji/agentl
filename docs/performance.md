@@ -33,6 +33,7 @@ compare runs on the same machine, not across machines.
 | `arrow parquet-postgres` | 4.69 s INSERT, 0.21 s COPY from Arrow (22x), identical rows | 200k rows, `parquet.read` → `postgres.write`; needs `AGENTL_TEST_PG_DSN` |
 | `parallel steps` | 1.08 s one at a time, 0.51 s in parallel | Two independent 0.5 s sources and a step on one of them, `max_parallel_steps` 1 vs 4 |
 | `agent cascade` | 0.69 USD with one strong model, 0.13 with `llm: [cheap, strong]` (5.2x less) | 500 records, 350 distinct (both deduplicated to 350); the cheap model fails one record in ten, which goes to the strong one |
+| `hybrid transforms` | rules only 80% right for 0 USD; agent only 97.8% for 1.98 USD; `rules:` + agent fallback 99.5% for 0.40 USD (200 calls) | 1,000 addresses, 1 in 5 off the usual layout; the fake model gets every 47th wrong. Rules that match but are wrong are not modelled |
 | `agent call shapes` | 0.99 USD default, 0.45 with prompt caching, 0.42 with `records_per_call: 20`, 0.50 in batch mode | 500 records, fake provider with a 400-token fixed prefix (see below) |
 
 ## With agentl and without it
