@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
+  in the column order of `output` and builds the records, so one record can give many rows. A
+  truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without
+  duplicate rows (`on_truncated: continue | fail`); a bad row is rejected on its own; the step's
+  spend reports `output_tokens_saved_est`. Providers: `anthropic` and `echo`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
