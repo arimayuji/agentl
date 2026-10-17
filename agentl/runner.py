@@ -680,6 +680,11 @@ class Runner:
             else:
                 tables = {r: raw(r) for r in refs}
             return duck.run(step.id, tables, base_dir=self.spec.base_dir, **step.with_)
+        if step.use == "map_schema":
+            return self._run_map_schema(run_id, step, data, result)
+
+        if step.use == "resolve":
+            return self._run_resolve(run_id, step, refs, outputs, data, result)
         if step.id in self._arrow_out or _is_table(data):
             return self._run_arrow(step, data)
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
@@ -699,6 +704,88 @@ class Runner:
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
         return out
+
+    def _run_map_schema(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
+        """Map columns with the mapping stored for this layout; infer it (by name, then one LLM
+        call) only for a layout not seen yet. See agentl/mapping.py."""
+        from . import mapping
+
+        if isinstance(data, dict):
+            raise ValueError("map_schema steps take a single input")
+        llm_spec = self.spec.llm[step.llm]
+
+        def ask(instruction: str, record: dict, schema: type) -> Any:
+            self._check_budget(result)
+            try:
+                res = self._provider(step.llm).structured(instruction, record, schema)
+            except (ValidationError, ValueError, RuntimeError) as e:
+                self._charge(result, step, llm_spec, e)
+                raise RuntimeError(f"map_schema: the LLM did not answer with a mapping: {e}") from e
+            self._charge(result, step, llm_spec, res)
+            return res.value
+
+        name = self.spec.name
+        out, new = mapping.run(
+            list(data or []),
+            load=lambda: self.store.mapping_get(name, step.id),
+            save=lambda value: self.store.mapping_set(name, step.id, value),
+            ask=ask,
+            where=f"{name} {step.id}",
+            **step.with_,
+        )
+        if new is not None:
+            self._emit(
+                run_id,
+                "mapping.inferred",
+                step.id,
+                signature=new["signature"],
+                columns=new["columns"],
+                by_llm=new["by_llm"],
+                approved=new["approved"],
+            )
+        if out.rejected:
+            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+        return list(out)
+
+    def _run_resolve(
+        self, run_id: str, step: StepSpec, refs: list[str], outputs: dict, data: Any, result: RunResult
+    ) -> Records:
+        """Exact and fuzzy matches cost nothing; only ambiguous values go to the model, once each:
+        its decisions are stored per pipeline and step (`agentl resolve export|import`)."""
+        from . import resolve as res
+
+        opts = dict(step.with_)
+        field, reference = opts.pop("field"), opts.pop("reference")
+        use_model = opts.pop("model", True)
+        instruction = opts.pop("instruction", None) or res.INSTRUCTION
+        inputs = data if isinstance(data, dict) else {(refs or ["input"])[0]: list(data or [])}
+        ref_id = reference if isinstance(reference, str) else (reference or {}).get("step")
+        rows = [r for k, v in inputs.items() if k != ref_id for r in v]
+        table = res.reference_rows(reference, inputs, self.spec.base_dir)
+        memory = res.decisions_key(self.spec.name, step.id)
+        decisions = dict(self.store.cache_get(memory) or {}) if self.use_cache else {}
+        before = dict(decisions)
+
+        def ask(record: dict) -> tuple[str | None, Any]:
+            self._check_budget(result)
+            prov, spec = self._provider(step.llm), self.spec.llm[step.llm]
+            try:
+                out = prov.structured(instruction, record, res.Choice)
+            except llm.InvalidOutput as e:
+                self._charge(result, step, spec, e)
+                return None, e
+            self._charge(result, step, spec, out)
+            return getattr(out.value, "match", None), out
+
+        out, counts, reused = res.resolve(
+            rows, table, field, ask=ask if use_model else None, decisions=decisions, **opts
+        )
+        if self.use_cache and decisions != before:
+            self.store.cache_set(memory, decisions)
+        self._emit(run_id, "resolve.counts", step.id, **counts, cached=reused)
+        if out.rejected:
+            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+        return list(out)
 
     # checks ---------------------------------------------------------------
     def _run_check(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
@@ -866,7 +953,7 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind == "agent" or step.review:
+        if step.kind == "agent" or step.review or step.use in ("map_schema", "resolve"):
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0

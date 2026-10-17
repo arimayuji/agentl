@@ -167,6 +167,17 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+## Column mappings
+
+`map_schema` steps keep one column mapping per input layout in the run store
+([how](connectors.md#map-messy-columns-once-map_schema)).
+
+```bash
+agentl mappings show [pipeline]            # every stored mapping, as YAML ready to pin
+agentl mappings approve sales mapped       # unblock a step with review: required
+agentl mappings forget sales mapped        # infer again on the next run (--layout SIG for one)
+```
+
 ## Rejected records
 
 Records a step rejects (an agent answer that does not match the `output` schema, a value `cast`
