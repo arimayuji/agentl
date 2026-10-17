@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import assist, graph, registry
 from .runner import Runner
-from .spec import SpecError, load
+from .spec import PipelineSpec, SpecError, load
 from .store import open_store
 
 
@@ -125,6 +125,35 @@ def _rejected(a: argparse.Namespace) -> int:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
     return 0 if result.status == "succeeded" else 1
+
+
+def _schedule_next(spec: PipelineSpec, n: int) -> int:
+    """Print the next firings of every cron and schedule trigger, in their own time zones."""
+    import datetime as dt
+
+    from .schedule import Schedule
+    from .triggers import Cron, _now
+
+    found = False
+    for i, t in enumerate(spec.trigger):
+        if t.schedule:
+            found = True
+            sch = Schedule(t.schedule)
+            print(f"trigger {i} (schedule, {t.schedule.tz}):")
+            for d, when in sch.next_firings(dt.datetime.now(dt.timezone.utc), n):
+                first = " (expected)" if when == sch.start_of(d) else ""
+                print(f"  {when.isoformat()}  cycle {d.isoformat()}{first}")
+        elif t.cron:
+            found = True
+            print(f"trigger {i} (cron {t.cron}, {t.timezone or 'server local time'}):")
+            when = _now(t.timezone)
+            for _ in range(n):
+                when = Cron(t.cron).next_after(when)
+                print(f"  {when.isoformat()}")
+    if not found:
+        print(f"{spec.name} has no cron or schedule trigger", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("pipelines", nargs="+")
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
     sv.add_argument("--port", type=int, default=7071)
+
+    sc = cmd("schedule", "show when a pipeline's schedule triggers fire next")
+    sc.add_argument("action", choices=["next"])
+    sc.add_argument("pipeline")
+    sc.add_argument("--n", type=int, default=10, help="how many firings (default 10)")
 
     mc = cmd("mcp", "serve agentl as an MCP server over stdio, or install it in an MCP client")
     mc.add_argument(
@@ -430,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         if a.cmd == "rejected":
             return _rejected(a)
+        if a.cmd == "schedule":
+            return _schedule_next(load(a.pipeline), a.n)
         if a.cmd == "serve":
             import logging
 

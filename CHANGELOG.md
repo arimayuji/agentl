@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Schedules by publication cycle (#201): a `schedule:` trigger with a required `tz`, expected
+  `days` and `at`, built-in `us_federal` and `br_national` holiday calendars plus an exceptions
+  file, `if_holiday` (skip, next or previous business day, run), staged `poll.cadence`,
+  `stop_when: success_in_cycle`, `active.between`, `extra_dates` and `skip_dates`. `agentl serve`
+  logs a lateness warning when a cycle's window closes with no successful run, and
+  `agentl schedule next PIPELINE --n 10` prints the next firings. `agentl lint` refuses a `cron`
+  trigger without `timezone` (AL009).
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

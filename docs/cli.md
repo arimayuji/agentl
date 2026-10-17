@@ -17,6 +17,7 @@ agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071]
+agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
@@ -56,6 +57,7 @@ set. Exit code 2 when there are errors.
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
+| AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
