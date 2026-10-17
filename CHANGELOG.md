@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `time.normalize` step (#213): hour-ending, hour-beginning, half-hour and accumulated-window
+  labels to ISO instants with an offset. DST gaps and overlaps fail by default (`on_missing`,
+  `on_ambiguous`); `clock: elapsed` reads 23- and 25-hour days.
 - `archive.read` (#193): extract zip, tar or gz members whose path matches a regex `pattern`
   (with `password` for ZipCrypto zips), streamed to disk with zip-slip, member count and size
   limits; no match fails listing the members. `csv.read`, `json.read`, `txt.read` and `file.read`

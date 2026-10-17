@@ -19,6 +19,7 @@ from . import (  # noqa: F401  (registers connectors)
     saas,
     scrape,
     sql,
+    timeconv,
     transforms,
     webcrawl,
 )
