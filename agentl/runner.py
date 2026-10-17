@@ -4,9 +4,11 @@ record, emits events to the store, the dashboard and notifications."""
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import hashlib
 import inspect
 import json
+import logging
 import os
 import threading
 import time
@@ -24,6 +26,8 @@ from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
+
+log = logging.getLogger("agentl.runner")
 
 Records = list[dict[str, Any]]
 Listener = Callable[[dict], None]
@@ -143,6 +147,20 @@ class Outputs(dict):
 
     def copy(self) -> Outputs:
         return Outputs(self.items())
+
+
+def _today() -> str:
+    """The digest's day bucket (UTC)."""
+    return _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+
+
+def _digest_text(diff: dict[str, list[str]], cap: int) -> str:
+    lines = []
+    for name in ("new", "resolved", "ongoing"):
+        items = diff[name]
+        lines.append(f"{name}: {len(items)}")
+        lines += [f"  - {i}" for i in items[:cap]]
+    return "\n".join(lines)
 
 
 class CheckFailed(RuntimeError):
@@ -694,6 +712,9 @@ class Runner:
         data reaches the next one (usually the writer). The profile of each passing run is kept to
         compare the next run against."""
         records = list(records)
+        rule_findings: list[dict] = []
+        if step.rules:
+            records, rule_findings = self._run_rules(run_id, step, records, result)
         memory = _hash("check-profile", self.spec.name, step.id)
         previous = self.store.cache_get(memory)
         with self._spend:
@@ -725,10 +746,13 @@ class Runner:
                 findings += [{"check": "review", "detail": f} for f in verdict["findings"]] or [
                     {"check": "review", "detail": "the reviewer rejected the data without a reason"}
                 ]
+        fatal = [f for f in rule_findings if f["action"] == "fail"]
+        if fatal:
+            findings += [{"check": f["rule"], "detail": f["detail"]} for f in fatal]
         data = {"rows": len(records), "findings": findings, **({"notes": notes} if notes else {})}
         if findings:
             self._emit(run_id, "check.failed", step.id, on_fail=step.on_fail, **data)
-            if step.on_fail == "stop":
+            if step.on_fail == "stop" or fatal:
                 first = "; ".join(f["detail"] for f in findings[:3])
                 more = f" (+{len(findings) - 3} more)" if len(findings) > 3 else ""
                 raise CheckFailed(f"{len(findings)} problem(s): {first}{more}")
@@ -736,6 +760,48 @@ class Runner:
             self._emit(run_id, "check.passed", step.id, **data)
             self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
         return records
+
+    def _run_rules(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> tuple[Records, list[dict]]:
+        """Per-row rules (#218): drop, flag or fail rows; then the daily digest of the findings
+        against the previous day's bucket, emitted as `check.digest` even on a clean day."""
+        kept, found, errors = checks.run_rules(records, step.rules, step.identity)
+        for err in errors:
+            log.warning("check %s: rule error (row passed): %s", step.id, err)
+        kept_ids = {id(r) for r in kept}
+        dropped = [r for r in records if id(r) not in kept_ids]
+        if dropped:
+            bad = [{**r, "_error": "dropped by a check rule"} for r in dropped]
+            self._rejects(run_id, step.id, bad, len(records), result)
+        memory = _hash("check-digest", self.spec.name, step.id)
+        bucket = self.store.cache_get(memory) or {}
+        day = _today()
+        ids = sorted({f["id"] for f in found})
+        if bucket.get("day") == day:
+            ids = sorted(set(ids) | set(bucket.get("ids", [])))
+            prev = bucket.get("prev", [])
+        else:
+            prev = bucket.get("ids", [])
+        self.store.cache_set(memory, {"day": day, "ids": ids, "prev": prev})
+        diff = checks.digest(ids, prev)
+        cap = 50
+        self._emit(
+            run_id,
+            "check.digest",
+            step.id,
+            day=day,
+            all_clear=not ids,
+            new=len(diff["new"]),
+            resolved=len(diff["resolved"]),
+            ongoing=len(diff["ongoing"]),
+            dropped=len(dropped),
+            flagged=sum(1 for f in found if f["action"] == "flag"),
+            rule_errors=len(errors),
+            summary=_digest_text(diff, cap) if ids or prev else "all clear: no findings today",
+            sections={k: v[:cap] for k, v in diff.items()},
+        )
+        return kept, found
 
     # waits ------------------------------------------------------------------
     def _run_wait(

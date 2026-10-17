@@ -77,6 +77,47 @@ The agent answers with a verdict and findings in plain language, for example *"T
 has no orders today; on the last run it had 312."* When it passes, its findings are kept as
 `notes`. Its tokens count in the run's budget and in the step's spend.
 
+## Row rules and the daily digest
+
+`rules:` checks each row. Every rule has an `on_fail`: `drop` leaves the row out (it goes to the
+step's rejected records), `flag` keeps it and reports it (use it when two values disagree and it
+is unclear which one is wrong), `fail` stops the step. An error inside a rule (a value that is not
+a number, say) never stops the pipeline: the row passes and the error is logged.
+
+`rules:` means something different by step kind. On a `check` step (this page) it lists per-row
+checks (`rule: not_null | between | accepted | matches | abs_diff_max`) that drop, flag or fail
+rows. On an `agent` step it lists [hybrid rules](agents.md#rules-first-the-agent-for-the-rest)
+(`compute`, `cast`, `fn`) that try to produce the `output:` fields before the llm is asked. A
+hybrid rule on a check step, or `rules:` on any other kind of step, is a validation error.
+
+```yaml
+- id: verify
+  check: transform
+  identity: [order_id]          # what makes a finding "the same" from one day to the next
+  rules:
+    - { rule: between, column: amount, min: 0, max: 100000, on_fail: drop }
+    - { rule: abs_diff_max, column: amount, other: billed, max: 500, on_fail: flag }
+    - { rule: not_null, column: customer }
+    - { rule: accepted, column: status, values: [paid, refunded] }
+    - { rule: matches, column: email, pattern: "@" }
+```
+
+Findings are grouped by identity in a daily (UTC) bucket; runs on the same day add to it. Each run
+emits `check.digest` with what is `new`, `resolved` and `ongoing` compared with the previous
+day's bucket, the counts, and a `summary`. On a clean day it still goes out with
+`all_clear: true` and "all clear: no findings today", so a missing digest means the service did
+not run. Route it to any channel with a normal rule:
+
+```yaml
+notify:
+  channels: { slack: { webhook: "${SLACK_WEBHOOK}" } }
+  rules:
+    - { on: check.digest, to: [slack] }
+```
+
+Not yet: a scheduled digest sent once a day at a fixed time with a "sent today" guard; today the
+digest goes out with each run of the check.
+
 ## When a check fails
 
 - `on_fail: stop` (default): the step fails with the findings, so nothing after it runs and the

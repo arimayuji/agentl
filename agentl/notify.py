@@ -40,7 +40,7 @@ def matches(rule: Rule, event: dict) -> bool:
 def format_text(event: dict, pipeline: str) -> str:
     data = event.get("data", {})
     step = f" step {event['step']}" if event.get("step") else ""
-    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in ("error", "summary"))
+    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in ("error", "summary", "sections"))
     lines = [f"[agentl] {pipeline}: {event['type']}{step}"]
     if details:
         lines.append(details)
