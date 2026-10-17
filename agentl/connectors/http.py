@@ -3,7 +3,9 @@ from each upstream record, so one request is made per record."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -12,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .. import netguard
-from ..registry import connector
+from ..registry import NoChange, after_run, connector, step_state
 from ._util import single
 
 
@@ -38,6 +40,112 @@ def _request(method: str, url: str, headers: dict, body: Any, timeout: float, re
             if attempt == retries:
                 raise
         time.sleep(2**attempt)
+
+
+def _parse(raw: bytes) -> Any:
+    text = raw.decode()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"text": text}
+
+
+# ---------------------------------------------------------------- if_changed
+_STRATEGIES = ("page_stamp", "content_length", "etag", "last_modified", "hash")
+
+
+def _open(req: urllib.request.Request, timeout: float, retries: int) -> tuple[int, Any, bytes]:
+    """(status, headers, body) with retries on network errors, 429 and 5xx; a 304 is returned."""
+    for attempt in range(retries + 1):
+        try:
+            with netguard.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.headers, resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 304:
+                return 304, e.headers, b""
+            if (e.code < 500 and e.code != 429) or attempt == retries:
+                raise
+        except urllib.error.URLError:
+            if attempt == retries:
+                raise
+        time.sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
+def _changed_get(
+    url: str,
+    headers: dict,
+    items: str | None,
+    timeout: float,
+    retries: int,
+    if_changed: dict,
+    on_unchanged: str,
+) -> list[dict]:
+    """GET `url` only when it changed since the last successful run. Strategies run cheapest
+    first: `page_stamp` (a regex on another, small page), `content_length` (a HEAD request),
+    `etag` / `last_modified` (a conditional GET answered with 304), then a hash of the body,
+    which is always the last resort. The validators are kept in the run store (`agentl state`)
+    and saved only when the run succeeds."""
+    if on_unchanged not in ("stop", "continue_empty"):
+        raise ValueError("on_unchanged must be stop or continue_empty")
+    by = if_changed.get("by") or ["etag", "last_modified"]
+    by = [by] if isinstance(by, str) else list(by)
+    stamp_cfg = if_changed.get("page_stamp")
+    if stamp_cfg and "page_stamp" not in by:
+        by.insert(0, "page_stamp")
+    unknown = [b for b in by if b not in _STRATEGIES]
+    if unknown:
+        raise ValueError(f"if_changed.by: unknown strategy {unknown[0]!r}; use {', '.join(_STRATEGIES)}")
+    state = step_state()
+    saved: dict = dict((state.get() if state else None) or {})
+    new: dict = {}
+
+    def unchanged(reason: str) -> list[dict]:
+        if on_unchanged == "stop":
+            raise NoChange(f"{url}: {reason}")
+        return []
+
+    def save() -> None:
+        if state is not None:
+            value = {**saved, **new}
+            after_run(lambda: state.set(value))
+
+    headers = {"Accept": "application/json", **headers}
+    if "page_stamp" in by:
+        if not isinstance(stamp_cfg, dict) or not stamp_cfg.get("regex"):
+            raise ValueError("if_changed.page_stamp needs {url, regex}")
+        req = urllib.request.Request(stamp_cfg.get("url") or url, headers={"Accept": "*/*"})
+        _, _, page = _open(req, timeout, retries)
+        match = re.search(stamp_cfg["regex"], page.decode(errors="replace"))
+        if match is None:
+            raise RuntimeError(f"if_changed.page_stamp: regex found nothing on {req.full_url}")
+        new["page_stamp"] = match.group(1) if match.groups() else match.group(0)
+        if saved.get("page_stamp") == new["page_stamp"]:
+            return unchanged(f"page stamp {new['page_stamp']!r} unchanged")
+    if "content_length" in by:
+        _, head, _ = _open(urllib.request.Request(url, headers=headers, method="HEAD"), timeout, retries)
+        length = head.get("Content-Length")
+        if length is not None:
+            new["content_length"] = int(length)
+            if saved.get("content_length") == new["content_length"]:
+                return unchanged(f"content length {length} unchanged")
+    conditional = dict(headers)
+    if "etag" in by and saved.get("etag"):
+        conditional["If-None-Match"] = saved["etag"]
+    if "last_modified" in by and saved.get("last_modified"):
+        conditional["If-Modified-Since"] = saved["last_modified"]
+    status, resp_headers, body = _open(urllib.request.Request(url, headers=conditional), timeout, retries)
+    if status == 304:
+        return unchanged("not modified (304)")
+    for key, header in (("etag", "ETag"), ("last_modified", "Last-Modified")):
+        if key in by and resp_headers.get(header):
+            new[key] = resp_headers[header]
+    new["hash"] = hashlib.sha256(body).hexdigest()
+    if saved.get("hash") == new["hash"]:
+        save()  # the validators may have changed even though the content did not
+        return unchanged("content hash unchanged")
+    save()
+    return _as_records(_parse(body), items)
 
 
 def _fill(value: Any, rec: dict) -> Any:
@@ -150,12 +258,25 @@ def http_get(
     retries: int = 2,
     params: dict | None = None,
     paginate: dict | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> list[dict]:
     """GET a JSON API. `items: data` picks the list inside each response. Every page:
     `paginate: { param: page, next: next_page }` (the page number goes in `param`, starting at
     `start`, 1 by default; it stops when the response's `next` key is empty, or without `next`
     when a page comes back empty). With an input step, one request per record: `{field}` in `url`
-    or `params` is filled from the record."""
+    or `params` is filled from the record.
+
+    `if_changed: {by: [etag, last_modified, content_length], page_stamp: {url, regex}}` skips the
+    download when the source did not change since the last successful run (304, an equal stamp,
+    length or body hash); `on_unchanged: stop` (default) then ends the run as `no_change`,
+    `continue_empty` returns no records instead."""
+    if if_changed is not None:
+        if single(input) or paginate:
+            raise ValueError("if_changed works on a single URL: no input step and no paginate")
+        return _changed_get(
+            _with_query(url, params), headers or {}, items, timeout, retries, if_changed, on_unchanged
+        )
     return _http("GET", input, url, headers, None, items, concurrency, timeout, retries, params, paginate)
 
 
