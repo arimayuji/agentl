@@ -244,6 +244,11 @@ class StepSpec(BaseModel):
     on_bad: Literal["reject", "fail", "coerce"] = "reject"
     extra: Literal["keep", "drop", "forbid"] = "keep"
     rejected_to: WriterSpec | None = None  # writes the step's rejected records (any reason)
+    # Criticality (#206): `required: false` (or `criticality: best_effort`) makes a failure of this
+    # step a recorded warning instead of a failed run. No step may read its output.
+    required: bool = True
+    # Order-only dependencies: steps that must finish (succeed, or fail best effort) first.
+    after: list[str] = Field(default_factory=list)
 
     @property
     def llms(self) -> list[str]:
@@ -265,6 +270,16 @@ class StepSpec(BaseModel):
             if not names:
                 raise ValueError(f"step '{raw.get('id')}': llm list is empty")
             raw = {**raw, "llm": names[0], "escalate": names[1:]}
+        if isinstance(raw, dict) and "criticality" in raw:
+            rest = {k: v for k, v in raw.items() if k != "criticality"}
+            value = raw["criticality"]
+            if value not in ("required", "best_effort"):
+                raise ValueError(f"step '{raw.get('id')}': criticality is 'required' or 'best_effort'")
+            if "required" in rest and rest["required"] != (value == "required"):
+                raise ValueError(f"step '{raw.get('id')}': set either required or criticality")
+            raw = {**rest, "required": value == "required"}
+        if isinstance(raw, dict) and isinstance(raw.get("after"), str):
+            raw = {**raw, "after": [raw["after"]]}
         return raw
 
     @model_validator(mode="after")
@@ -414,6 +429,11 @@ class StepSpec(BaseModel):
                 return [self.wait_until.step]
             return [self.check] if self.check else []
         return [self.input] if isinstance(self.input, str) else list(self.input)
+
+    @property
+    def depends(self) -> list[str]:
+        """Steps that must finish before this one: its inputs, then its `after` list."""
+        return [*self.inputs, *(a for a in self.after if a not in self.inputs)]
 
     @property
     def cached(self) -> bool:
@@ -718,6 +738,14 @@ class PipelineSpec(BaseModel):
             for ref in s.inputs:
                 if ref not in ids:
                     raise ValueError(f"step '{s.id}': unknown input '{ref}'")
+                if not self.step(ref).required:
+                    raise ValueError(
+                        f"step '{s.id}': input '{ref}' is best effort (required: false); "
+                        "use 'after' to order steps after it"
+                    )
+            for ref in s.after:
+                if ref not in ids or ref == s.id:
+                    raise ValueError(f"step '{s.id}': after names unknown step '{ref}'")
             for name in s.llms if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")

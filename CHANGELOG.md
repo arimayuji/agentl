@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Best-effort steps and step order (#206): `required: false` (or `criticality: best_effort`) on a
+  step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,
+  `partial` on the result, its summary and `run.succeeded`) without failing the run. `after:`
+  orders steps without passing data, e.g. the legacy write after the new one.
 - Run outcomes (#188): every run gets an `outcome` (`success`, `no_change`, `skipped`, `partial`,
   `failed`) next to its unchanged `status`, set by an `outcomes:` policy (`on_transport_error:
   skipped_upstream`, `on_empty`, `on_rejected`, `alert_on`, `max_skipped`, `exit_codes`). Skipped

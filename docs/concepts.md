@@ -39,6 +39,30 @@ max_parallel_steps: 4   # default; 1 runs one step at a time, in declaration ord
   `max_parallel_steps: 1`.
 - Spend and budget are counted per step and for the run, whichever steps overlap.
 
+### Required and best-effort steps
+
+A step is required by default: its failure fails the run. Mark a destination `required: false`
+(or `criticality: best_effort`) when its failure should be recorded but not stop anything, for
+example the legacy table during a migration. `after:` orders steps without passing data.
+
+```yaml
+steps:
+  - { id: rows, use: csv.read, with: { path: facts.csv } }
+  - { id: new, use: postgres.write, input: rows, with: { table: new_facts } }
+  - { id: legacy, use: sql.write, input: rows, with: { table: legacy_facts },
+      required: false, after: new }
+```
+
+- A failing best-effort step emits `step.failed` with `required: false`; the run keeps going and
+  ends `succeeded`. Writes of other steps are not rolled back.
+- `RunResult.best_effort_failed` maps each failed best-effort step to its error,
+  `RunResult.partial` is true when that is not empty, and `run.succeeded` and `summary()` carry
+  `partial` too. Cursors and queue acknowledgements follow `succeeded` as usual.
+- No step may take a best-effort step as `input` (its output is empty when it fails); use `after:`
+  to run something once it is done. `after:` waits for a best-effort step whether it failed or not.
+- Without `after:`, independent destinations still run in parallel.
+- A budget stop (`budget.exceeded`) always fails the run.
+
 ## Large inputs: chunk_size
 
 By default every step gets and returns all its records in memory. For big files and tables, set

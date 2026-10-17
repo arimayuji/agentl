@@ -49,12 +49,20 @@ class RunResult:
     # success, no_change, skipped, partial or failed (#188); see `outcome_status` for the mapping
     outcome: str | None = None
     reason: str | None = None  # why the run was skipped (or failed after too many skips)
+    # best-effort steps (`required: false`) that failed: {step_id: error}. The run still succeeds.
+    best_effort_failed: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def partial(self) -> bool:
+        """Succeeded, but at least one best-effort step failed."""
+        return self.status == "succeeded" and bool(self.best_effort_failed)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
         data = asdict(self)
         data["records"] = {k: len(v) for k, v in self.outputs.items()}
         data["rejected"] = {k: len(v) for k, v in self.rejected.items()}
+        data["partial"] = self.partial
         if not outputs:
             data.pop("outputs")
         return json.loads(json.dumps(data, default=str))
@@ -1324,8 +1332,14 @@ class Runner:
                 "step.failed",
                 step_id,
                 error=_describe(e),
+                **({} if step.required else {"required": False}),
                 **self._step_spend(step, result),
             )
+            if not step.required and not isinstance(e, BudgetExceeded):
+                with self._spend:
+                    result.best_effort_failed[step_id] = _describe(e)
+                result.outputs[step_id] = []
+                return
             raise
         result.outputs[step_id] = out
         self._sample(run_id, step_id, out)
@@ -1393,12 +1407,12 @@ class Runner:
                 consumers[ref].append(s)
         chains = {}
         for head in self.spec.steps:
-            if not head.use or head.inputs or head.cursor or registry.streaming(head.use)[0] is None:
+            if not head.use or head.depends or head.cursor or registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.inputs != [cur.id]:
+                if nxt.depends != [cur.id] or not nxt.required:
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -1540,7 +1554,7 @@ class Runner:
         self._arrow_out = self._arrow_plan(chains)
         inside = {s.id for chain in chains.values() for s in chain[1:]}
         pending = [i for i in graph.order(self.spec) if i not in inside]
-        deps = {s.id: set(s.inputs) for s in self.spec.steps}
+        deps = {s.id: set(s.depends) for s in self.spec.steps}
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
         running: dict[Future, str] = {}
@@ -1631,6 +1645,9 @@ class Runner:
             result.reason = f"source unreachable: {result.error}"
         self._finish_after_run(run_id, result)
         self._save_cursors(run_id, result)
+        partial: dict[str, Any] = {}
+        if result.partial:
+            partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
         self._classify(result)
         self.store.finish_run(run_id, result.status, result.error, result.outcome)
         # before the final event, so run.<status> stays the last event of a run
@@ -1646,6 +1663,7 @@ class Runner:
             output_tokens=result.output_tokens,
             cost_usd=round(result.cost_usd, 6),
             rejected=sum(len(v) for v in result.rejected.values()),
+            **partial,
             **({"reason": result.reason} if result.reason else {}),
             **({"error": result.error} if result.error else {}),
         )
@@ -1664,7 +1682,7 @@ class Runner:
             if policy.max_skipped is not None and self._skipped_streak() + 1 >= policy.max_skipped:
                 result.status, result.outcome = "failed", "failed"
                 result.error = f"{policy.max_skipped} skipped runs in a row; last: {result.reason}"
-        elif policy.on_rejected == "partial" and any(result.rejected.values()):
+        elif result.best_effort_failed or (policy.on_rejected == "partial" and any(result.rejected.values())):
             result.outcome = "partial"
         elif (
             policy.on_empty == "no_change" and self._source_records and not any(self._source_records.values())
