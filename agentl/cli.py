@@ -146,6 +146,55 @@ def _windowed(
     return 0 if report.status == "succeeded" else 1
 
 
+def _has_window(path: str) -> bool:
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    return isinstance(raw, dict) and raw.get("window") is not None
+
+
+def _window_backfill(a: argparse.Namespace) -> int:
+    import datetime as dt
+
+    if a.glob or a.param_name or a.every != "day" or a.concurrency != 1:
+        raise ValueError(
+            "a pipeline with `window:` is backfilled by date range only: "
+            "--glob, --param-name, --every and --concurrency do not apply"
+        )
+    if not _checked(a.pipeline):
+        return 2
+    spec = load(a.pipeline, params=_params(a.param))
+    end = dt.date.fromisoformat(a.end) + dt.timedelta(days=1)  # --to is inclusive
+    return _windowed(a, spec, dt.date.fromisoformat(a.start), end, resume=not a.redo)
+
+
+def _params(pairs: list[str] | None) -> dict[str, str]:
+    """`--param key=value`, repeatable. Values stay strings; the pipeline's types convert them."""
+    out = {}
+    for pair in pairs or []:
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--param expects key=value, got {pair!r}")
+        out[key.strip()] = value
+    return out
+
+
+def _declared(path: str) -> set[str]:
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    return set((raw or {}).get("params") or {}) if isinstance(raw, dict) else set()
+
+
+def _param_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--param",
+        action="append",
+        metavar="KEY=VALUE",
+        help="run parameter declared under params: (repeatable)",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -165,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     r = cmd("run", "run a pipeline")
     r.add_argument("pipeline")
     r.add_argument("--no-cache", action="store_true")
+    _param_arg(r)
     r.add_argument(
         "--no-check", action="store_true", help="skip the lint that runs first (errors stop the run)"
     )
@@ -179,18 +229,6 @@ def main(argv: list[str] | None = None) -> int:
         "--otel", action="store_true", help="emit OpenTelemetry traces and metrics (agentl-etl[otel])"
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
-
-    bf = cmd("backfill", "run a windowed pipeline over a date range, chunk by chunk, resumable")
-    bf.add_argument("pipeline")
-    bf.add_argument("--from", dest="start", required=True, help="first date, inclusive (YYYY-MM-DD)")
-    bf.add_argument("--to", dest="end", required=True, help="last date, exclusive (YYYY-MM-DD)")
-    bf.add_argument("--no-resume", action="store_true", help="re-run chunks that already succeeded")
-    bf.add_argument("--no-cache", action="store_true")
-    bf.add_argument(
-        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
-    )
-    bf.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
-    bf.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
 
     v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
@@ -273,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sv = cmd("serve", "run pipelines on their triggers: schedules, webhooks and new files")
     sv.add_argument("pipelines", nargs="+")
+    _param_arg(sv)
     sv.add_argument("--host", default="127.0.0.1", help="webhook address (default 127.0.0.1)")
     sv.add_argument("--port", type=int, default=7071)
 
@@ -298,6 +337,34 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
+    bf = cmd(
+        "backfill",
+        "one run per file or per date (params) or per window chunk (`window:`), resumable",
+    )
+    bf.add_argument("pipeline")
+    src = bf.add_mutually_exclusive_group(required=True)
+    src.add_argument("--glob", help="one run per matching file (local or s3://, gs://... with [remote])")
+    src.add_argument("--from", dest="start", metavar="DATE", help="first date (ISO), with --to")
+    bf.add_argument("--to", dest="end", metavar="DATE", help="last date, included")
+    bf.add_argument("--every", choices=["day", "week", "month"], default="day")
+    bf.add_argument("--param-name", help="the param that gets each file or date (default: the only one)")
+    bf.add_argument("--concurrency", type=int, default=1)
+    bf.add_argument(
+        "--redo",
+        "--no-resume",
+        dest="redo",
+        action="store_true",
+        help="run items (or window chunks) that already succeeded again",
+    )
+    bf.add_argument("--no-cache", action="store_true")
+    bf.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    bf.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    bf.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
+    bf.add_argument("--json", action="store_true", help="print the final report as JSON")
+    _param_arg(bf)
+
     ds = cmd("dashboard", "open the local dashboard")
     ds.add_argument("--port", type=int, default=7070)
     ds.add_argument("--host", default="127.0.0.1")
@@ -307,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "run":
             if not a.no_check and not _checked(a.pipeline):
                 return 2
-            spec = load(a.pipeline)
+            spec = load(a.pipeline, params=_params(a.param))
             if spec.window is not None:
                 return _windowed(a, spec)
             with open_store(a.db) as store:
@@ -316,18 +383,6 @@ def main(argv: list[str] | None = None) -> int:
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return 0 if result.status == "succeeded" else 1
-        if a.cmd == "backfill":
-            import datetime as dt
-
-            if not _checked(a.pipeline):
-                return 2
-            spec = load(a.pipeline)
-            if spec.window is None:
-                print("agentl backfill needs a `window:` section in the pipeline", file=sys.stderr)
-                return 2
-            return _windowed(
-                a, spec, dt.date.fromisoformat(a.start), dt.date.fromisoformat(a.end), not a.no_resume
-            )
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -486,12 +541,46 @@ def main(argv: list[str] | None = None) -> int:
                 handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
                 serve_log.addHandler(handler)
                 serve_log.setLevel(logging.INFO)
-            specs = [load(p) for p in a.pipelines]
+            fixed = _params(a.param)
+            specs = [
+                load(p, params={k: v for k, v in fixed.items() if k in _declared(p)}) for p in a.pipelines
+            ]
             for spec in specs:
                 assist.check(spec)
             with open_store(a.db) as store:
                 Service(specs, store).serve(a.host, a.port)
             return 0
+        if a.cmd == "backfill":
+            from . import backfill as bfill
+
+            if a.start and not a.end:
+                raise ValueError("--from needs --to")
+            # One command, two modes: a pipeline with `window:` is backfilled chunk by chunk
+            # over [--from, --to] (both inclusive); otherwise one run per file or date, each
+            # passed as a run parameter.
+            if _has_window(a.pipeline):
+                return _window_backfill(a)
+            items = bfill.periods(a.start, a.end, a.every) if a.start else bfill.files(a.glob)
+            if not items:
+                print("backfill: nothing matches", file=sys.stderr)
+                return 0
+
+            def progress(item: str, status: str, err: str | None) -> None:
+                print(f"{status} {item}" + (f": {err}" if err else ""), file=sys.stderr)
+
+            outcome = bfill.backfill(
+                a.pipeline,
+                items,
+                param=a.param_name,
+                params=_params(a.param),
+                db=a.db,
+                concurrency=a.concurrency,
+                redo=a.redo,
+                kind="date" if a.start else "str",
+                on_done=progress,
+            )
+            print(json.dumps(outcome.to_dict(), indent=2) if a.json else outcome.text())
+            return 0 if outcome.ok else 1
         if a.cmd == "mcp":
             if a.action == "serve":
                 from .mcp_server import serve as serve_mcp

@@ -80,7 +80,7 @@ def test_live_run_rereads_lookback_tail(tmp_path):
 def test_backfill_resume_skips_done_and_lists_pending(tmp_path, capsys):
     yaml = _pipeline(tmp_path, fail_on="2026-01-05")
     db = ["--db", str(tmp_path / "db.sqlite")]
-    args = ["backfill", str(yaml), "--from", "2026-01-01", "--to", "2026-01-13", *db]
+    args = ["backfill", str(yaml), "--from", "2026-01-01", "--to", "2026-01-12", *db]
     assert main(args) == 1
     out = capsys.readouterr()
     assert "2 done, 0 skipped, 1 failed" in out.out
@@ -94,3 +94,11 @@ def test_backfill_resume_skips_done_and_lists_pending(tmp_path, capsys):
 
     assert main([*args, "--no-resume"]) == 1
     assert len(calls.read_text(encoding="utf-8").split()) == 4
+
+
+def test_backfill_window_mode_rejects_params_mode_flags(tmp_path, capsys):
+    yaml = _pipeline(tmp_path)
+    db = ["--db", str(tmp_path / "db.sqlite")]
+    args = ["backfill", str(yaml), "--from", "2026-01-01", "--to", "2026-01-12", "--concurrency", "2", *db]
+    assert main(args) == 2
+    assert "window:" in capsys.readouterr().err
