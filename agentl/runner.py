@@ -89,6 +89,30 @@ def _clip_record(record: Any) -> Any:
     return {k: _clip(v) for k, v in record.items()} if isinstance(record, dict) else _clip(record)
 
 
+def _write_counts(out: Any) -> tuple[int, dict[str, int]]:
+    """Rows a writer wrote (the sum of `written` over its summary records, one per file or table)
+    and, for upserts, how many were inserted, updated or left unchanged."""
+    written = 0
+    counts: dict[str, int] = {}
+    for r in out if isinstance(out, list) else []:
+        if not isinstance(r, dict):
+            continue
+        if isinstance(r.get("written"), int):
+            written += r["written"]
+        for k in UPSERT_COUNTS:
+            if isinstance(r.get(k), int):
+                counts[k] = counts.get(k, 0) + r[k]
+    return written, counts
+
+
+def _seen(out: Any) -> int:
+    """Records a step that returned `Rejects` looked at: a writer's rows written plus the ones it
+    rejected; any other step's output plus its rejects."""
+    rows = list(out)
+    is_writer = any(isinstance(r, dict) and "written" in r for r in rows)
+    return (_write_counts(rows)[0] if is_writer else len(rows)) + len(out.rejected)
+
+
 def _is_table(value: Any) -> bool:
     return hasattr(value, "num_rows") and hasattr(value, "to_pylist")
 
@@ -766,7 +790,7 @@ class Runner:
             registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
-            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+            self._rejects(run_id, step.id, out.rejected, _seen(out), result)
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
@@ -1068,21 +1092,15 @@ class Runner:
             raise
         result.outputs[step_id] = out
         self._sample(run_id, step_id, out)
-        # writers return one summary record per file; say how many records they wrote
-        written = sum(r.get("written", 0) for r in out) if isinstance(out, list) else 0
-        # upserts also say how many rows were inserted, updated or left unchanged
-        counts: dict[str, int] = {}
-        for r in out if isinstance(out, list) else []:
-            for k in UPSERT_COUNTS:
-                if isinstance(r, dict) and isinstance(r.get(k), int):
-                    counts[k] = counts.get(k, 0) + r[k]
+        written, counts = _write_counts(out)
         if counts:
             result.writes[step_id] = counts
         self._emit(
             run_id,
             "step.succeeded",
             step_id,
-            records=len(out),
+            # a writer returns one summary record per file or table: report the rows it wrote
+            records=written if written else len(out),
             **({"written": written} if written else {}),
             **counts,
             seconds=round(time.time() - t0, 3),
@@ -1222,10 +1240,13 @@ class Runner:
         try:
             if writer is not None:
                 try:
-                    out = list(writer(chunks, **last.with_) or [])
+                    wrote = writer(chunks, **last.with_)
                 except Exception:
                     failing.append(last.id)
                     raise
+                if isinstance(wrote, registry.Rejects) and wrote.rejected:
+                    self._rejects(run_id, last.id, wrote.rejected, _seen(wrote), result)
+                out = list(wrote or [])
                 counts[last.id] = len(out)
                 if last.schema_ is not None:
                     out = self._contract(run_id, last, out, result)
@@ -1253,12 +1274,20 @@ class Runner:
             raise
         result.outputs[last.id] = out
         seconds = round(time.time() - t0, 3)
+        wrote_n, upserts = _write_counts(out) if writer is not None else (0, {})
+        if upserts:
+            result.writes[last.id] = upserts
         for step in chain:
+            extra: dict[str, Any] = {}
+            if step is last and wrote_n:
+                counts[step.id] = wrote_n
+                extra = {"written": wrote_n, **upserts}
             self._emit(
                 run_id,
                 "step.succeeded",
                 step.id,
                 records=counts[step.id],
+                **extra,
                 seconds=seconds,
                 chunked=True,
                 **self._step_spend(step, result),

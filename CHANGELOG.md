@@ -81,6 +81,14 @@ They are always listed under **Changed** or **Removed**.
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
 
+### Fixed
+
+- Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
+  send a record whose key field is null or missing to the step's rejected records with the reason
+  (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index
+  on the key. A writer's `step.succeeded` event reports the rows written in `records` (it said 1,
+  the number of summary records), and chunked runs now report `written` and upsert counts too.
+
 ## [0.11.0] - 2026-10-17
 
 Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for

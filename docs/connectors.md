@@ -868,7 +868,12 @@ by `do_nothing`) in its result, in the `step.succeeded` event next to `written`,
 `unchanged` equal to the number of records, and leaves the table as it was. The options are
 checked before connecting: `on_conflict` or `update_columns` without `mode: upsert`, an unknown
 value, a key column in `update_columns` or a column the records do not have is an error.
-`sqlite.write` needs no unique index on `key`.
+`sqlite.write` needs no unique index on `key`; a table it creates gets one, and declared column
+types (`INTEGER`, `REAL`, `TEXT`, `BLOB`) where all values of a column in the first chunk share one
+type. A record with a null or missing key field cannot be matched to a row: `postgres.write`,
+`sqlite.write` and `sql.write` send it to the step's rejected records (`_error` names the key)
+instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
+`step.succeeded` event of a writer reports the rows written in `records` and `written`.
 
 ## Any SQL database
 
