@@ -250,6 +250,35 @@ A record goes to the next llm when its answer is still invalid after the retry, 
 way. Each call is priced with its own llm, and the step's spend says who answered:
 `"answered_by": {"cheap": 315, "strong": 35}`. Not with `mode: batch`.
 
+### Rules first, the agent for the rest
+
+Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
+record first; only the records they cannot handle are sent to the llm:
+
+```yaml
+- id: parse_address
+  input: customers
+  rules:
+    - compute:
+        zip: "regex(address, '\\d{5}$')"
+        state: "regex(address, '[A-Z]{2}(?= \\d{5}$)')"
+    - cast: {state: state}          # semantic type: "ZZ" is not a state
+  agent: Extract the zip code and the state from the address.
+  output: {zip: str, state: str}
+```
+
+- Each rule is `compute: {field: expression}`, `cast: {field: type}` or `fn: module:function`
+  (called with one record, returns a dict of fields). They run in order.
+- A record takes the rules path when every rule succeeds and every required `output:` field is
+  set and valid for its type. A rule that errors, a value that fails its `cast` type, an exception
+  in a `fn`, or a null field sends the original record to the agent, with cache, budget, cascade
+  and dedup as usual.
+- Output keeps the input order, has the same fields on both paths, and each record carries
+  `_path: rules` or `_path: agent`. The `hybrid.paths` event and `spend[step]["paths"]` in the run
+  summary count them: `{"rules": 9512, "agent": 488}`.
+- Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
+  `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
+
 ### Identical records are asked once
 
 Records that are exactly the same within a step are sent once and share the answer; the step logs
