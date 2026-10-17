@@ -125,7 +125,15 @@ def test_parse_and_overlap_helpers():
     assert drop_overlap([[1]], [[2]]) == [[2]]
 
 
-@pytest.mark.parametrize("extra", [{"records_per_call": 2}, {"mode": "batch"}, {"tools": ["http.get"]}])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"records_per_call": 2},
+        {"mode": "batch"},
+        {"tools": ["http.get"]},
+        {"rules": [{"cast": {"name": "str"}}]},
+    ],
+)
 def test_rows_mode_rejects_incompatible_options(extra):
     with pytest.raises((SpecError, ValueError), match="output_mode rows"):
         pipeline(**extra)
