@@ -53,6 +53,7 @@ RULES = {
     "AE007": "cycle between steps",
     "AE008": "environment variable not set",
     "AE009": "sql step reads a table that is not an input",
+    "AE010": "invalid or undeclared run parameter",
     "AL001": "agent steps without a run budget",
     "AL002": "delivery with no check before it",
     "AL003": "secret written in the pipeline",
@@ -513,6 +514,41 @@ def _env_errors(text: str, pos: _Positions, env: Any) -> list[Finding]:
     return out
 
 
+def _param_errors(flat: dict, pos: _Positions) -> list[Finding]:
+    """Declarations under `params:` (type, default of that type) and `${params.x}` references
+    to names that are not declared. Normalizes `flat["params"]` to the long form."""
+    from .spec import PARAM_REF, _param_spec
+
+    out: list[Finding] = []
+    declared = flat.get("params") or {}
+    if not isinstance(declared, dict):
+        return [Finding("AE010", "error", "params: expected a mapping of name -> type", *pos.of(("params",)))]
+    norm = {}
+    for name, raw in declared.items():
+        try:
+            norm[name] = _param_spec(name, raw).model_dump(exclude_none=True)
+        except SpecError as e:
+            out.append(Finding("AE010", "error", str(e), *pos.of(("params", name))))
+    flat["params"] = norm
+    for n, line_text in enumerate(pos.lines, 1):
+        if line_text.lstrip().startswith("#"):
+            continue
+        for m in PARAM_REF.finditer(line_text):
+            if m.group(1) not in declared:
+                out.append(
+                    Finding(
+                        "AE010",
+                        "error",
+                        f"{m.group(0)} is not declared under params:"
+                        + _did_you_mean(m.group(1), list(declared)),
+                        n,
+                        m.start() + 1,
+                        f"add `params: {{{m.group(1)}: str}}`",
+                    )
+                )
+    return out
+
+
 def _sql_errors(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
     """A `sql` step may read only its inputs. Needs DuckDB to parse; skipped without it."""
     from .connectors import duck
@@ -572,7 +608,7 @@ def check_text(
     if isinstance(flat.get("llm"), dict) and "provider" in flat["llm"]:
         flat["llm"] = {"default": flat["llm"]}
     lint_cfg = flat.pop("lint", None) or {}
-    findings = _structure_errors(flat, pos) + _env_errors(text, pos, env)
+    findings = _structure_errors(flat, pos) + _env_errors(text, pos, env) + _param_errors(flat, pos)
     spec, errs = _pydantic_errors(flat, pos, skip_refs=bool(findings))
     findings += errs
     if spec is not None and not findings:
