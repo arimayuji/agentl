@@ -18,6 +18,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +177,37 @@ def read_xml(p: Path, items: str | None = None, **_: Any) -> Records:
     return out
 
 
+class _Tables(HTMLParser):
+    """Streaming table reader: the fast path for plain tables (no spans, one header row)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tables: list[list[list[str]]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag == "table":
+            self.tables.append([])
+        elif tag == "tr" and self.tables:
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._cell is not None and self._row is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.tables[-1].append(self._row)
+            self._row = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+
 def read_html(p: Path, table: int | None = None, encoding: str = "utf-8", **opts: Any) -> Records:
     """Rows of the HTML tables; the first row of each table is the header."""
     return html_tables(p.read_text(encoding=encoding, errors="replace"), table, **opts)
@@ -188,6 +220,17 @@ def html_tables(
     are joined: 'Sales' over 'Q1' -> 'Sales Q1'); colspan and rowspan are repeated into every
     cell they cover. `select` is a CSS selector for the tables to read; `table` is the index
     among them."""
+    lowered = html.lower()
+    if header_rows == 1 and not select and "colspan" not in lowered and "rowspan" not in lowered:
+        parser = _Tables()  # no spans and one header row: the streaming reader is enough, and faster
+        parser.feed(html)
+        plain: Records = []
+        for i, rows in enumerate(parser.tables):
+            if (table is not None and i != table) or len(rows) < 2:
+                continue
+            head = [h or f"col_{j}" for j, h in enumerate(rows[0])]
+            plain.extend({"table": i, **dict(zip(head, r, strict=False))} for r in rows[1:])
+        return plain
     from .htmldom import grid, header_names, parse
 
     root = parse(html)
