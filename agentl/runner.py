@@ -33,7 +33,7 @@ Listener = Callable[[dict], None]
 @dataclass
 class RunResult:
     run_id: str
-    status: str
+    status: str  # running, succeeded, failed, or skipped (only with outcomes.on_transport_error)
     outputs: dict[str, Records] = field(default_factory=lambda: Outputs())
     rejected: dict[str, Records] = field(default_factory=dict)
     error: str | None = None
@@ -44,21 +44,32 @@ class RunResult:
     tool_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
-    # per upsert step: {"inserted": n, "updated": n, "unchanged": n}
+    # per upsert or scd2 step: {"inserted": n, "updated": n, "unchanged": n} (scd2: versioned, closed)
     writes: dict[str, dict[str, int]] = field(default_factory=dict)
+    # success, no_change, skipped, partial or failed (#188); see `outcome_status` for the mapping
+    outcome: str | None = None
+    reason: str | None = None  # why the run was skipped (or failed after too many skips)
+    # best-effort steps (`required: false`) that failed: {step_id: error}. The run still succeeds.
+    best_effort_failed: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def partial(self) -> bool:
+        """Succeeded, but at least one best-effort step failed."""
+        return self.status == "succeeded" and bool(self.best_effort_failed)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
         data = asdict(self)
         data["records"] = {k: len(v) for k, v in self.outputs.items()}
         data["rejected"] = {k: len(v) for k, v in self.rejected.items()}
+        data["partial"] = self.partial
         if not outputs:
             data.pop("outputs")
         return json.loads(json.dumps(data, default=str))
 
 
 SAMPLE_ROWS = 5
-UPSERT_COUNTS = ("inserted", "updated", "unchanged")
+UPSERT_COUNTS = ("inserted", "updated", "unchanged", "versioned", "closed")
 SAMPLE_CHARS = 200
 
 
@@ -193,6 +204,8 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     elif step.escalate:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
     # records_per_call is not part of the key: the answer per record is the same.
+    if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
+        return _hash("agent-rows", step.agent, step.output, llm_key, rec)
     if step.tools:  # tools can change the answer, so they are part of the key
         return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
     return _hash("agent", step.agent, step.output, llm_key, rec)
@@ -205,6 +218,30 @@ def _describe(e: BaseException) -> str:
 
         return describe(e)
     return text
+
+
+_TRANSPORT_NAMES = ("Timeout", "ConnectionError", "ConnectError", "ConnectTimeout", "ReadTimeout")
+
+
+def is_transport_error(e: BaseException) -> bool:
+    """A timeout or connection error anywhere in the exception chain. HTTP status errors
+    (4xx/5xx) and parsing errors are not: the source answered."""
+    import urllib.error
+
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, urllib.error.HTTPError) or "HTTPStatus" in type(cur).__name__:
+            return False
+        if isinstance(cur, (TimeoutError, ConnectionError)):
+            return True
+        if isinstance(cur, urllib.error.URLError) and isinstance(cur.reason, (OSError, TimeoutError)):
+            return True
+        if any(n in t.__name__ for t in type(cur).__mro__ for n in _TRANSPORT_NAMES):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _hash(*parts: Any) -> str:
@@ -244,8 +281,14 @@ class Runner:
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
+        self._source_records: dict[str, int] = {}  # records read by steps without inputs, this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
+        from . import lineage
+
+        lineage_cfg = lineage.from_env(spec.lineage)
+        if lineage_cfg is not None and not any(isinstance(x, lineage.OpenLineage) for x in self.listeners):
+            self.listeners.append(lineage.OpenLineage(spec, lineage_cfg))
 
     # events -------------------------------------------------------------
     def _emit(self, run_id: str, type: str, step: str | None = None, **data: Any) -> None:
@@ -257,6 +300,8 @@ class Runner:
             "step": step,
             "data": data,
         }
+        if type == "step.succeeded" and step is not None and not self.spec.step(step).inputs:
+            self._source_records[step] = int(data.get("records") or 0)
         with self._events:  # steps may run in parallel: one event at a time, store and listeners
             self.store.event(run_id, type, step, data)
             for listener in self.listeners:
@@ -484,10 +529,114 @@ class Runner:
         return out
 
     # steps --------------------------------------------------------------
+    def _run_rows(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """`output_mode: rows` (#215): one call per input record, answered as one JSON array per
+        line. A truncated answer is continued up to `max_continuations` times; rows the model
+        repeats at the seam are dropped. A row with the wrong shape is rejected on its own."""
+        columns = list(step.output or {})
+        schema = llm.schema_model(f"{step.id}_row", step.output or {})
+        prov = self._provider(step.llm)
+        if not hasattr(prov, "rows"):
+            provider = self.spec.llm[step.llm].provider
+            raise ValueError(f"step '{step.id}': llm provider '{provider}' does not support output_mode rows")
+        spec = self.spec.llm[step.llm]
+        cacheable = self.use_cache and step.cached
+        stats = {"continuations": 0, "array_chars": 0, "object_chars": 0, "output_tokens": 0}
+
+        def ask(rec: dict) -> tuple[list[list], Records]:
+            got: list[list] = []
+            bad: Records = []
+            previous: list[str] = []
+            while True:
+                self._check_budget(result)
+                try:
+                    chunk = prov.rows(step.agent or "", rec, columns, previous)
+                except (ValueError, RuntimeError) as e:
+                    self._charge(result, step, spec, e)
+                    raise
+                self._charge(result, step, spec, chunk)
+                with self._spend:
+                    stats["output_tokens"] += chunk.output_tokens
+                rows, lines, kept = parse_rows(chunk.text, chunk.truncated)
+                rows = drop_overlap(got, rows)
+                got.extend(rows)
+                bad.extend({"_row": line, "_error": "row is not a JSON array"} for line in lines)
+                if not chunk.truncated:
+                    return got, bad
+                if step.on_truncated == "fail":
+                    raise ValueError("answer truncated at the output token limit (on_truncated: fail)")
+                if len(previous) >= step.max_continuations:
+                    raise ValueError(f"answer still truncated after {step.max_continuations} continuations")
+                previous.append(kept)
+                with self._spend:
+                    stats["continuations"] += 1
+
+        ok: Records = []
+        bad: Records = []
+        for n, rec in enumerate(records):
+            k = agent_cache_key(self.spec, step, rec)
+            hit = self.store.cache_get(k) if cacheable else None
+            raw_rows: list[list]
+            raw_bad: Records
+            if hit is not None:
+                raw_rows, raw_bad = hit["rows"], []
+            else:
+                try:
+                    raw_rows, raw_bad = ask(rec)
+                except BudgetExceeded:
+                    raise
+                except (ValueError, RuntimeError) as e:
+                    bad.append({**rec, "_error": str(e)})
+                    continue
+                if cacheable:
+                    self.store.cache_set(k, {"rows": raw_rows})
+            for row_bad in raw_bad:
+                bad.append({**row_bad, "_source": n})
+            for row in raw_rows:
+                if len(row) != len(columns):
+                    bad.append(
+                        {
+                            "_row": row,
+                            "_source": n,
+                            "_error": f"row has {len(row)} values, expected {len(columns)}",
+                        }
+                    )
+                    continue
+                try:
+                    ok.append(schema.model_validate(dict(zip(columns, row, strict=True))).model_dump())
+                except ValidationError as e:
+                    bad.append({"_row": row, "_source": n, "_error": str(e)})
+                    continue
+                if hit is None:
+                    stats["array_chars"] += len(json.dumps(row, default=str))
+                    stats["object_chars"] += len(json.dumps(ok[-1], default=str))
+        saved = 0
+        if stats["array_chars"]:
+            per_char = stats["output_tokens"] / stats["array_chars"]
+            saved = round((stats["object_chars"] - stats["array_chars"]) * per_char)
+        with self._spend:
+            mine = result.spend[step.id]
+            mine["rows"] = len(ok)
+            mine["continuations"] = stats["continuations"]
+            mine["output_tokens_saved_est"] = max(0, saved)
+        self._emit(
+            run_id,
+            "agent.rows",
+            step.id,
+            rows=len(ok),
+            continuations=stats["continuations"],
+            output_tokens_saved_est=max(0, saved),
+        )
+        self._rejects(run_id, step.id, bad, len(ok) + len(bad), result)
+        return ok
+
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """An agent step. With `rules:` (#124) each record tries the rules first and only the
         records they cannot handle are sent to the llm; the output keeps the input order and each
-        record says which path produced it in `_path`."""
+        record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
+        (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        if step.output_mode == "rows":
+            return self._run_rows(run_id, step, records, result)
         if not step.rules:
             answered = self._agent_slots(run_id, step, records, result)
             return self._agent_finish(run_id, step, answered, len(records), result)
@@ -552,7 +701,7 @@ class Runner:
 
         def done(rec: dict, out: dict, by: str = step.llm) -> tuple[dict, None]:
             if cacheable:
-                self.store.cache_set(key(rec), out)
+                self.store.cache_set(key(rec), out, self._ttl(step))
             with self._spend:
                 answered = result.spend[step.id].setdefault("answered_by", {})
                 answered[by] = answered.get(by, 0) + 1
@@ -800,6 +949,14 @@ class Runner:
         if step.use == "trigger":
             return [dict(r) for r in self.trigger]
 
+        if step.use == "cache":
+            from .connectors.transforms import cache_step
+
+            with_ = dict(step.with_)
+            if isinstance(with_.get("key"), str):
+                with_["key"] = with_["key"].replace("{pipeline}", self.spec.name)
+            return cache_step(self.store, data, base_dir=self.spec.base_dir, **with_)
+
         if step.use == "sql":
             # Each input is a table named after its step; Arrow outputs are passed as they are.
             from .connectors import duck
@@ -822,17 +979,23 @@ class Runner:
             return hit
         token = registry._AFTER_RUN.set(self._after_run)
         state = registry._STEP_STATE.set(self._step_state(step.id))
+        seen = registry._SEEN.set(self._seen_keys())
         try:
             out = fn(data, **step.with_)
         finally:
+            registry._SEEN.reset(seen)
             registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
             self._rejects(run_id, step.id, out.rejected, _seen(out), result)
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
-            self.store.cache_set(key, out)
+            self.store.cache_set(key, out, self._ttl(step))
         return out
+
+    @staticmethod
+    def _ttl(step: StepSpec) -> float | None:
+        return None if step.cache_ttl is None else checks.parse_duration(step.cache_ttl)
 
     def _run_map_schema(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
         """Map columns with the mapping stored for this layout; infer it (by name, then one LLM
@@ -925,11 +1088,32 @@ class Runner:
         records = list(records)
         memory = _hash("check-profile", self.spec.name, step.id)
         previous = self.store.cache_get(memory)
+        history_key = _hash("check-history", self.spec.name, step.id)
+        history = self.store.cache_get(history_key) or [] if "vs_runs" in step.expect else []
         with self._spend:
             stats = {k: (v[0], v[1]) for k, v in self._reject_stats.items()}
         findings = checks.run_expectations(
-            records, step.expect, previous, rejected=stats, step=step.check or ""
+            records, step.expect, previous, rejected=stats, step=step.check or "", history=history
         )
+        rules = {k: "passed" for k in step.expect}
+        for f in findings:
+            f["severity"] = step.severity.get(f["check"], "fail")
+            rules[f["check"]] = f["severity"] if f["severity"] != "fail" else "failed"
+        rejecting = {f["check"] for f in findings if f["severity"] == "reject"}
+        if rejecting:
+            bad: dict[int, str] = {}
+            for key in step.expect:
+                if key in rejecting:
+                    for i, why in checks.failing_rows(records, key, step.expect[key]).items():
+                        bad.setdefault(i, why)
+            dropped = [{**records[i], "_error": bad[i]} for i in sorted(bad)]
+            total = len(records)
+            records = [r for i, r in enumerate(records) if i not in bad]
+            self._rejects(run_id, step.id, dropped, total, result)
+        warnings = [f for f in findings if f["severity"] == "warn"]
+        if warnings:
+            self._emit(run_id, "check.warned", step.id, rows=len(records), findings=warnings)
+        findings = [f for f in findings if f["severity"] == "fail"]
         prof = checks.profile(records)
         notes: list[str] = []
         if step.review:
@@ -950,11 +1134,25 @@ class Runner:
             verdict = res.value.model_dump()
             if verdict["passed"]:
                 notes = list(verdict["findings"])
+                rules["review"] = "passed"
             else:
-                findings += [{"check": "review", "detail": f} for f in verdict["findings"]] or [
+                found = [{"check": "review", "detail": f} for f in verdict["findings"]] or [
                     {"check": "review", "detail": "the reviewer rejected the data without a reason"}
                 ]
-        data = {"rows": len(records), "findings": findings, **({"notes": notes} if notes else {})}
+                level = step.severity.get("review", "fail")
+                for f in found:
+                    f["severity"] = level
+                rules["review"] = "failed" if level == "fail" else level
+                if level == "fail":
+                    findings += found
+                else:
+                    self._emit(run_id, "check.warned", step.id, rows=len(records), findings=found)
+        data = {
+            "rows": len(records),
+            "findings": findings,
+            "rules": rules,
+            **({"notes": notes} if notes else {}),
+        }
         if findings:
             self._emit(run_id, "check.failed", step.id, on_fail=step.on_fail, **data)
             if step.on_fail == "stop":
@@ -963,7 +1161,10 @@ class Runner:
                 raise CheckFailed(f"{len(findings)} problem(s): {first}{more}")
         else:
             self._emit(run_id, "check.passed", step.id, **data)
-            self.store.cache_set(memory, {k: v for k, v in prof.items() if k != "sample"})
+            kept = {k: v for k, v in prof.items() if k != "sample"}
+            self.store.cache_set(memory, kept)
+            if "vs_runs" in step.expect:
+                self.store.cache_set(history_key, [kept, *history][: checks.HISTORY])
         return records
 
     # waits ------------------------------------------------------------------
@@ -1101,6 +1302,9 @@ class Runner:
             self._write_rejected(step, result)
             if step.cursor:
                 self._track_cursor(step, out)
+        except registry.NoChange as e:
+            self._emit(run_id, "step.unchanged", step_id, reason=str(e))
+            raise
         except Exception as e:
             if isinstance(e, BudgetExceeded):
                 with self._spend:
@@ -1128,8 +1332,14 @@ class Runner:
                 "step.failed",
                 step_id,
                 error=_describe(e),
+                **({} if step.required else {"required": False}),
                 **self._step_spend(step, result),
             )
+            if not step.required and not isinstance(e, BudgetExceeded):
+                with self._spend:
+                    result.best_effort_failed[step_id] = _describe(e)
+                result.outputs[step_id] = []
+                return
             raise
         result.outputs[step_id] = out
         self._sample(run_id, step_id, out)
@@ -1197,12 +1407,12 @@ class Runner:
                 consumers[ref].append(s)
         chains = {}
         for head in self.spec.steps:
-            if not head.use or head.inputs or head.cursor or registry.streaming(head.use)[0] is None:
+            if not head.use or head.depends or head.cursor or registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.inputs != [cur.id]:
+                if nxt.depends != [cur.id] or not nxt.required:
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -1344,7 +1554,7 @@ class Runner:
         self._arrow_out = self._arrow_plan(chains)
         inside = {s.id for chain in chains.values() for s in chain[1:]}
         pending = [i for i in graph.order(self.spec) if i not in inside]
-        deps = {s.id: set(s.inputs) for s in self.spec.steps}
+        deps = {s.id: set(s.depends) for s in self.spec.steps}
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
         running: dict[Future, str] = {}
@@ -1374,35 +1584,123 @@ class Runner:
 
     def run(self) -> RunResult:
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        c = self.spec.concurrency
+        if c is None:
+            return self._run(run_id)
+        key = "run:" + c.key.replace("{pipeline}", self.spec.name)
+        lease, wait_s = checks.parse_duration(c.lease), checks.parse_duration(c.wait)
+        deadline = time.monotonic() + wait_s
+        pause = 0.05
+        while True:
+            with self.store.lease(key, lease, owner=run_id) as held:
+                if held:
+                    return self._run(run_id)
+            if c.on_overlap != "queue" or time.monotonic() > deadline:
+                break
+            time.sleep(pause)
+            pause = min(pause * 2, 5.0)
+        holder = self.store.lock_holder(key)
+        other = holder["owner"] if holder else "another run"
+        if c.on_overlap == "skip":
+            return self._not_run(run_id, "skipped", f"{other} holds concurrency key {key[4:]!r}")
+        why = f"{other} holds concurrency key {key[4:]!r}"
+        if c.on_overlap == "queue":
+            why += f" after waiting {wait_s:.0f}s"
+        return self._not_run(run_id, "failed", why)
+
+    def _not_run(self, run_id: str, status: str, reason: str) -> RunResult:
+        """A run that did not start because another one holds its concurrency key."""
+        result = RunResult(run_id=run_id, status=status, error=reason)
+        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
+        self.store.finish_run(run_id, status, reason)
+        self._emit(run_id, f"run.{status}", seconds=0.0, reason=reason)
+        return result
+
+    def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
+        self._source_records = {}
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()
+        failure: BaseException | None = None
         try:
             self._run_graph(run_id, result)
             result.status = "succeeded"
+        except registry.NoChange as e:
+            result.status = "no_change"
+            result.error = None
+            self._emit(run_id, "source.unchanged", reason=str(e))
         except Exception as e:
             result.status = "failed"
             result.error = _describe(e)
+            failure = e
         finally:
             if self._toolbox is not None:  # MCP servers started for this run
                 self._toolbox.close()
                 self._toolbox = None
+        skip = self.spec.outcomes.on_transport_error == "skipped_upstream"
+        if failure is not None and skip and is_transport_error(failure):
+            result.status = "skipped"
+            result.reason = f"source unreachable: {result.error}"
         self._finish_after_run(run_id, result)
         self._save_cursors(run_id, result)
-        self.store.finish_run(run_id, result.status, result.error)
+        partial: dict[str, Any] = {}
+        if result.partial:
+            partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
+        self._classify(result)
+        self.store.finish_run(run_id, result.status, result.error, result.outcome)
+        # before the final event, so run.<status> stays the last event of a run
+        if result.outcome in self.spec.outcomes.alert_on:
+            extra = {"error": result.error} if result.error else {}
+            self._emit(run_id, "run.alert", outcome=result.outcome, **extra)
         self._emit(
             run_id,
             f"run.{result.status}",
+            outcome=result.outcome,
             seconds=round(time.time() - started, 3),
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cost_usd=round(result.cost_usd, 6),
             rejected=sum(len(v) for v in result.rejected.values()),
+            **partial,
+            **({"reason": result.reason} if result.reason else {}),
             **({"error": result.error} if result.error else {}),
         )
         return result
+
+    def _classify(self, result: RunResult) -> None:
+        """Set `result.outcome` from the status and the `outcomes` policy. Too many skipped runs in
+        a row fail the run, so an unreachable source does not go unnoticed forever."""
+        policy = self.spec.outcomes
+        if result.status == "failed":
+            result.outcome = "failed"
+        elif result.status == "no_change":  # a source raised NoChange
+            result.outcome = "no_change"
+        elif result.status == "skipped":
+            result.outcome = "skipped"
+            if policy.max_skipped is not None and self._skipped_streak() + 1 >= policy.max_skipped:
+                result.status, result.outcome = "failed", "failed"
+                result.error = f"{policy.max_skipped} skipped runs in a row; last: {result.reason}"
+        elif result.best_effort_failed or (policy.on_rejected == "partial" and any(result.rejected.values())):
+            result.outcome = "partial"
+        elif (
+            policy.on_empty == "no_change" and self._source_records and not any(self._source_records.values())
+        ):
+            result.outcome = "no_change"
+        else:
+            result.outcome = "success"
+
+    def _skipped_streak(self) -> int:
+        """Skipped runs of this pipeline right before the current one."""
+        n = 0
+        for run in self.store.recent_runs(self.spec.name, (self.spec.outcomes.max_skipped or 1) + 1):
+            if run["id"] == self._run_id or run["status"] == "running":
+                continue
+            if run["status"] != "skipped":
+                break
+            n += 1
+        return n
 
     # incremental loading -------------------------------------------------
     def _with_cursor(self, step: StepSpec) -> StepSpec:
@@ -1463,13 +1761,21 @@ class Runner:
 
         return registry.StepState(lambda: self.store.state_get(self.spec.name, step_id), put)
 
+    def _seen_keys(self) -> registry.SeenKeys:
+        """Keys `skip_seen` let through, kept per scope in the run store."""
+        return registry.SeenKeys(
+            self.spec.name,
+            self.store.seen_filter,
+            lambda scope, keys: self.store.seen_add(scope, keys, self._run_id or ""),
+        )
+
     def _finish_after_run(self, run_id: str, result: RunResult) -> None:
         """Acknowledge (on success) or release (on failure) what queue consumers read. A failed
         acknowledgement fails the run: the messages will be delivered again."""
         hooks, self._after_run = self._after_run, []
         for on_success, on_failure in hooks:
             try:
-                if result.status == "succeeded":
+                if result.status in ("succeeded", "no_change"):
                     on_success()
                 elif on_failure is not None:
                     on_failure()
@@ -1478,6 +1784,36 @@ class Runner:
                 if result.status == "succeeded":
                     result.status = "failed"
                     result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"
+
+
+def parse_rows(text: str, truncated: bool = False) -> tuple[list[list], list[str], str]:
+    """(rows, lines that are not JSON arrays, the text of the complete lines). When the answer
+    was truncated, a last line that does not parse is the cut row: dropped, not rejected."""
+    lines = [ln.strip() for ln in text.strip().strip("`").splitlines()]
+    lines = [ln for ln in lines if ln and ln not in ("json", "```")]
+    rows: list[list] = []
+    bad: list[str] = []
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        try:
+            value = json.loads(line.rstrip(","))
+        except ValueError:
+            value = None
+        if isinstance(value, list):
+            rows.append(value)
+            kept.append(line)
+        elif not (truncated and i == len(lines) - 1):
+            bad.append(line)
+            kept.append(line)
+    return rows, bad, "\n".join(kept)
+
+
+def drop_overlap(got: list[list], new: list[list]) -> list[list]:
+    """Rows a continuation repeats from the end of what came before (the longest such run)."""
+    for k in range(min(len(got), len(new)), 0, -1):
+        if got[-k:] == new[:k]:
+            return new[k:]
+    return new
 
 
 def _apply_rules(
@@ -1645,6 +1981,6 @@ def run(
     else:
         with open_store(db) as store:
             result = Runner(spec, store=store, **kwargs).run()
-    if raise_on_failure and result.status != "succeeded":
+    if raise_on_failure and result.status == "failed":
         raise PipelineFailed(result)
     return result

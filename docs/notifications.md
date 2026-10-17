@@ -89,7 +89,8 @@ A channel's type defaults to its name. Set `type:` to give channels custom names
 
 ## Rules
 
-- `on`: an event type, a list of them, or `"*"`.
+- `on`: an event type, a list of them, or `"*"`. Use `run.alert` to be told only about the
+  [outcomes](concepts.md#run-outcomes) in `outcomes.alert_on` (`failed` and `partial` by default).
 - `when`: a simple comparison on the event data, such as `rate > 0.05` or `count >= 10`.
 - `summary: agent`: the default LLM writes a three-line explanation of the run.
 

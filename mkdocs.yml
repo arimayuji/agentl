@@ -55,6 +55,7 @@ nav:
       - Getting started: getting-started.md
       - Concepts: concepts.md
       - Connectors: connectors.md
+      - NF-e invoices: nfe.md
       - Integrations: integrations.md
       - Cloud: cloud.md
       - Agent steps: agents.md
