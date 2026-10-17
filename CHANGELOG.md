@@ -11,6 +11,14 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
+  int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
+  Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
+  --param` and the Celery, Temporal and Airflow (`run_params=`) integrations; unknown, missing and
+  mistyped values fail before the run starts, and `agentl lint` checks declarations and references
+  (AE010). `agentl backfill PIPELINE --glob 'reports/**/*.xlsx' | --from DATE --to DATE [--every
+  day|week|month] [--concurrency N]` runs once per file or period, records what finished in the
+  run store and skips it when started again, and prints a final report.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

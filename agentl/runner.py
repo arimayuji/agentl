@@ -1298,6 +1298,7 @@ def run(
     pipeline: PipelineSpec | str | os.PathLike,
     *,
     vars: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
     db: str | os.PathLike | None = None,
     raise_on_failure: bool = False,
     **kwargs: Any,
@@ -1305,13 +1306,17 @@ def run(
     """Run a pipeline from a spec or a YAML path. The stable entry point for schedulers
     and orchestrators (cron, Celery, Temporal, Airflow, Prefect, Lambda).
 
-    `vars` override environment variables for `${VAR}` interpolation. `db` is the run
+    `vars` override environment variables for `${VAR}` interpolation. `params` are the run
+    parameters declared under `params:` (used as `${params.x}`); unknown, missing or mistyped
+    values raise `SpecError` before anything runs. `db` is the run
     store path (default `.agentl/agentl.db`). With `raise_on_failure`, a failed run raises
     `PipelineFailed`, which is what most orchestrators need to trigger their retries."""
     if isinstance(pipeline, PipelineSpec):
+        if params:
+            raise ValueError("params= needs a pipeline path; a PipelineSpec is already resolved")
         spec = pipeline
     else:
-        spec = load(Path(pipeline), {**os.environ, **(vars or {})})
+        spec = load(Path(pipeline), {**os.environ, **(vars or {})}, params)
     if "store" in kwargs:
         result = Runner(spec, **kwargs).run()
     else:
