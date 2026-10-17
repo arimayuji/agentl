@@ -12,6 +12,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+# ${params.name} (or ${param.name}): a run parameter declared under `params:`.
+PARAM_REF = re.compile(r"\$\{params?\.([A-Za-z_][A-Za-z0-9_]*)\}")
+PARAM_TYPES = ("str", "int", "float", "bool", "date")
 
 
 class SpecError(ValueError):
@@ -182,6 +185,10 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
+    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
+    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
+    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
@@ -229,6 +236,26 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.rules and not self.agent:
+            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
+        for rule in self.rules:
+            if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
+            kind, body = next(iter(rule.items()))
+            if kind == "fn" and not (isinstance(body, str) and ":" in body):
+                raise ValueError(f"step '{self.id}': rule fn must look like 'module:function'")
+            if kind != "fn" and not (isinstance(body, dict) and body):
+                raise ValueError(f"step '{self.id}': rule {kind} maps fields to expressions or types")
+            if kind == "compute":
+                from . import expr
+
+                for text in body.values():
+                    try:
+                        expr.compile_expr(str(text))
+                    except expr.ExprError as e:
+                        raise ValueError(f"step '{self.id}': rule compute: {e}") from None
         if self.tools and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take tools")
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
@@ -357,8 +384,129 @@ class LineageSpec(BaseModel):
     endpoint: str = "api/v1/lineage"
 
 
+class ParamSpec(BaseModel):
+    """A run parameter: `agentl run --param name=value`, `agentl.run(..., params={...})`."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["str", "int", "float", "bool", "date"] = "str"
+    default: Any = None
+    required: bool | None = None  # default: required when there is no default
+    help: str | None = None
+
+    @model_validator(mode="after")
+    def _default_type(self) -> ParamSpec:
+        if self.default is not None:
+            self.default = coerce_param("default", self.type, self.default)
+        return self
+
+    @property
+    def is_required(self) -> bool:
+        return self.default is None if self.required is None else self.required
+
+
+def coerce_param(name: str, type_: str, value: Any) -> Any:
+    """Convert a CLI string (or a Python value) to the declared type; raise SpecError if it is not one."""
+    import datetime as _dt
+
+    try:
+        if type_ == "str":
+            if isinstance(value, (dict, list)):
+                raise ValueError
+            return str(value)
+        if type_ == "bool":
+            if isinstance(value, bool):
+                return value
+            low = str(value).strip().lower()
+            if low in ("true", "1", "yes"):
+                return True
+            if low in ("false", "0", "no"):
+                return False
+            raise ValueError
+        if type_ == "int":
+            if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+                raise ValueError
+            return int(value)
+        if type_ == "float":
+            if isinstance(value, bool):
+                raise ValueError
+            return float(value)
+        if type_ == "date":
+            if isinstance(value, _dt.date):
+                return value.isoformat()[:10]
+            return _dt.date.fromisoformat(str(value).strip()).isoformat()
+    except (TypeError, ValueError):
+        pass
+    raise SpecError(f"param '{name}': expected {type_}, got {value!r}")
+
+
+def resolve_params(declared: Mapping[str, Any], given: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Validate run parameters against their declarations: unknown, missing and mistyped
+    values raise SpecError before anything runs."""
+    specs = {k: v if isinstance(v, ParamSpec) else _param_spec(k, v) for k, v in declared.items()}
+    given = dict(given or {})
+    unknown = sorted(set(given) - set(specs))
+    if unknown:
+        known = ", ".join(sorted(specs)) or "none declared"
+        raise SpecError(f"unknown param(s) {unknown} (declared: {known})")
+    out: dict[str, Any] = {}
+    missing = []
+    for name, p in specs.items():
+        if name in given and given[name] is not None:
+            out[name] = coerce_param(name, p.type, given[name])
+        elif p.default is not None:
+            out[name] = p.default
+        elif p.is_required:
+            missing.append(name)
+        else:
+            out[name] = None
+    if missing:
+        raise SpecError(f"missing required param(s) {missing}: pass --param {missing[0]}=...")
+    return out
+
+
+def _param_spec(name: str, raw: Any) -> ParamSpec:
+    if isinstance(raw, str) and raw in PARAM_TYPES:
+        raw = {"type": raw}
+    elif not isinstance(raw, dict):
+        raw = {"default": raw, "type": _infer_type(raw)}
+    try:
+        return ParamSpec.model_validate(raw)
+    except SpecError:
+        raise
+    except ValueError as e:
+        raise SpecError(f"param '{name}': {e}") from e
+
+
+def _infer_type(value: Any) -> str:
+    return {bool: "bool", int: "int", float: "float"}.get(type(value), "str")
+
+
+def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
+    """Replace ${params.x} recursively. A string that is exactly one reference keeps the
+    parameter's type (an int stays an int); inside a longer string it is formatted as text."""
+    if isinstance(value, str):
+        whole = PARAM_REF.fullmatch(value)
+        if whole and whole.group(1) in params:
+            return params[whole.group(1)]
+
+        def sub(m: re.Match) -> str:
+            if m.group(1) not in params:
+                raise SpecError(f"{m.group(0)} is not declared under params:")
+            v = params[m.group(1)]
+            return "" if v is None else str(v).lower() if isinstance(v, bool) else str(v)
+
+        return PARAM_REF.sub(sub, value)
+    if isinstance(value, list):
+        return [substitute_params(v, params) for v in value]
+    if isinstance(value, dict):
+        return {k: substitute_params(v, params) for k, v in value.items()}
+    return value
+
+
 class PipelineSpec(BaseModel):
     name: str
+    # Run parameters, used as ${params.name}. Values come from --param, params= or serve.
+    params: dict[str, ParamSpec] = Field(default_factory=dict)
     # Under `agentl serve`: what starts a run. A `use: trigger` step gets what started it.
     trigger: list[TriggerSpec] = Field(default_factory=list)
     llm: dict[str, LLMSpec] = Field(default_factory=lambda: {"default": LLMSpec()})
@@ -490,8 +638,19 @@ def _flatten_sections(raw: dict) -> dict:
     return raw
 
 
-def parse(raw: dict, env: dict[str, str] | None = None) -> PipelineSpec:
-    raw = interpolate(dict(raw), env)
+def parse(
+    raw: dict, env: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None
+) -> PipelineSpec:
+    """Validate a pipeline mapping. `params` are checked against `params:` (unknown, missing
+    and mistyped values raise SpecError) and substituted for ${params.x}."""
+    raw = dict(raw)
+    declared = raw.pop("params", None) or {}
+    if not isinstance(declared, dict):
+        raise SpecError("params: expected a mapping of name -> type or {type, default}")
+    specs = {k: _param_spec(k, v) for k, v in interpolate(declared, env).items()}
+    values = resolve_params(specs, params)
+    raw = substitute_params(interpolate(raw, env), values)
+    raw["params"] = {k: v.model_dump(exclude_none=True) for k, v in specs.items()}
     raw = _flatten_sections(raw)
     if isinstance(raw.get("llm"), dict) and "provider" in raw["llm"]:
         raw["llm"] = {"default": raw["llm"]}
@@ -501,7 +660,9 @@ def parse(raw: dict, env: dict[str, str] | None = None) -> PipelineSpec:
         raise SpecError(str(e)) from e
 
 
-def load(path: str | Path, env: dict[str, str] | None = None) -> PipelineSpec:
+def load(
+    path: str | Path, env: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None
+) -> PipelineSpec:
     text = Path(path).read_text(encoding="utf-8")
     try:
         raw = yaml.load(text, Loader=_Loader)
@@ -512,6 +673,6 @@ def load(path: str | Path, env: dict[str, str] | None = None) -> PipelineSpec:
         raise SpecError(f"{path}: invalid YAML: {e}{hint}") from None
     if not isinstance(raw, dict):
         raise SpecError(f"{path}: expected a mapping at the top level")
-    spec = parse(raw, env)
+    spec = parse(raw, env, params)
     spec.base_dir = str(Path(path).resolve().parent)
     return spec
