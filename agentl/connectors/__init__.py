@@ -17,5 +17,6 @@ from . import (  # noqa: F401  (registers connectors)
     queues,
     saas,
     sql,
+    timeconv,
     transforms,
 )

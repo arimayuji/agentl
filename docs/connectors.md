@@ -363,6 +363,40 @@ Rules, so nothing is guessed silently:
 - Your own formats: `agentl.types.register_type("sku", parse)`, where `parse(value)` returns the
   clean value or raises `ValueError` with the reason.
 
+### Interval labels to instants: `time.normalize`
+
+Energy, telemetry and market data often label a value with an hour number instead of an instant:
+hours 1 to 24, a label that marks the end of the interval, a total accumulated since 06:00.
+`time.normalize` turns those labels into ISO instants with an offset, and refuses to guess around
+daylight saving time.
+
+```yaml
+- id: ts
+  use: time.normalize
+  input: rows
+  with:
+    from: { column: hour, kind: hour_ending, base: 1, date_column: date, tz: America/Sao_Paulo }
+    to: { column: ref_ts, convention: interval_start, tz: UTC }
+    on_ambiguous: fail     # fail | reject | first | last (DST overlap)
+    on_missing: fail       # fail | reject | shift (DST gap)
+```
+
+| Option | Meaning |
+|---|---|
+| `from.kind` | `hour_ending` (label 1 is 00:00 to 01:00, 24 ends at next midnight), `hour_beginning` (label 0 starts at 00:00), `accumulated` (window from `since` to the label) |
+| `from.base` | first label number: 1 for `hour_ending`, 0 otherwise |
+| `from.interval` | minutes per label, 60 by default; 30 for half hours (labels 1 to 48) |
+| `from.date_column` | the day; without it the label holds both, as `2026-03-08 24:00` |
+| `from.clock` | `wall` (labels are local clock times) or `elapsed` (labels count real time since local midnight, so a 23-hour day has labels 1 to 23 and a 25-hour day 1 to 25) |
+| `from.since` | `accumulated` only: window start, `00:00` by default |
+| `to.convention` | `interval_start` or `interval_end` goes in `to.column`; `to.end_column` gets the other edge |
+| `to.tz` | output zone, `UTC` by default |
+
+Labels are numbers (fractions such as `13.5` allowed) or clock times (`13:30`, `24:00`). With
+`clock: wall`, a local time that does not exist (spring forward) or happens twice (fall back)
+stops the run by default; `reject` sends the record to the rejected records, `shift` moves a
+missing time forward, `first`/`last` pick the earlier or later of the two instants.
+
 ### Protect sensitive fields: `protect`
 
 Encrypt, hash, mask or drop fields before records reach a destination, for data protection laws
