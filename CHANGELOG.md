@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Agent `attempts:` (#198): per-attempt llm and validation, the validator's structured errors
+  (field, rule, value) fed back to the next attempt, and a lenient last attempt that drops invalid
+  values to the quarantine. Attempts and tokens per attempt show in events and in the step's spend.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

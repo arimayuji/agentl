@@ -256,7 +256,7 @@ def _tokens(step: StepSpec, records: list[dict]) -> tuple[int, int]:
 def _cost(
     spec: PipelineSpec, step: StepSpec, records: list[dict], tokens: tuple[int, int]
 ) -> tuple[float, float] | None:
-    names = [step.llm, *step.escalate]
+    names = step.llms
     prices = [spec.llm[n] for n in names]
     if any(p.price is None for p in prices):
         free = all(p.provider in ("echo", "ollama") for p in prices)
