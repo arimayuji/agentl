@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` (#236): slowly changing
+  dimensions type 2 with `valid_from`, `valid_to` and `is_current`. A record whose `track` columns
+  (default: all but `key`) changed closes the current version and inserts a new one; unchanged
+  rows are left alone; `on_missing: close` closes keys absent from the input. `as_of` (default
+  now) needs a time zone and is stored in UTC. Reports `inserted`, `versioned`, `unchanged` and
+  `closed`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
