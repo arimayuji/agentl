@@ -33,6 +33,31 @@ from one). Unsupported files are skipped with a warning, or fail the step with
 `on_unsupported: error`. Archives are extracted safely: paths escaping the archive are rejected and
 the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 
+### Archive members and encodings: `archive.read`
+
+```yaml
+- id: members
+  use: archive.read                  # zip, tar (also .tar.gz, .tgz) or gz, detected
+  with: { path: data.zip, pattern: "(?i)report\\d+\\.csv$", password: "${ZIP_PASS}" }
+- id: rows
+  use: csv.read
+  input: members
+  with: { encoding: [utf-8, latin-1] }   # a list of attempts, or auto
+```
+
+`archive.read` extracts only the members whose path matches `pattern` (a regex, searched in the
+member path) and gives one record per member: `path` (the extracted file, so any reader can take it
+as input), `member`, `archive` and `size`. Members are streamed to disk, never loaded whole. A
+pattern that matches nothing fails the step listing the members available. Safety: paths escaping
+the archive are rejected, links inside tars are ignored, and the step fails above `max_members`
+(10,000) members or `max_extract_bytes` (1 GiB) of real expanded bytes. `password` opens
+traditional (ZipCrypto) encrypted zips; AES-encrypted zips are not supported by Python's `zipfile`.
+
+`csv.read`, `json.read`, `txt.read` and `file.read` take `encoding` as a name, a list of attempts or
+`auto` (UTF-8, then Latin-1). Each file is decoded in chunks with each attempt in turn; the first
+that decodes the whole file wins and is recorded in each record as `_encoding`. A single name keeps
+the old behavior and adds no field.
+
 ### Support matrix
 
 | Format | Connector | Record shape | Extra |
@@ -51,6 +76,7 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
 | ZIP, GZ | `file.read` | records of the inner files | |
+| ZIP, TAR, GZ members | `archive.read` (`pattern`, `password`) | `path`, `member`, `archive`, `size` | |
 
 Writers: `csv.write`, `json.write` (`.json` or `.jsonl`), `parquet.write` (`compression`, needs
 `agentl-etl[parquet]`) and `excel.write` (needs `agentl-etl[excel]`). All of them take
@@ -162,7 +188,7 @@ Other databases will ship as plugins.
 
 | Connector | Parameters | What it does |
 |---|---|---|
-| `select` | `fields` (name or list), `rename` (map) | Keep and rename fields |
+| `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
@@ -179,6 +205,56 @@ Other databases will ship as plugins.
 | `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
 | `sql` | `query` or `file`, `params`, `allow_files` (false) | SQL over the previous steps, each one a table (below) |
+| `map_schema` | `target` (field: type), `header_rows`, `synonyms`, `mapping`, `review`, `on_drift`, `sample_rows` (30), `locale`, `on_bad` | Map messy columns onto fields: inferred once per layout, then free (below) |
+
+### Map messy columns once: `map_schema`
+
+Weekly reports from other teams rarely keep their headers: two or three header rows, merged cells,
+names that change from `Região` to `Region`. `map_schema` works out which column holds each target
+field once per layout, keeps that mapping in the run store, and applies it on every later run with
+no model call.
+
+Given an Excel sheet whose header spans two rows (the reader's header plus one more row, with
+`Sales` merged over two columns):
+
+| Report date | Região | Sales | |
+|---|---|---|---|
+| | | Units | Revenue |
+| 02/01/2026 | North | 1.200 | 10,5 |
+
+```yaml
+- id: sheet
+  use: file.read
+  with: { path: data/weekly.xlsx }
+- id: mapped
+  use: map_schema
+  input: sheet
+  with:
+    header_rows: 1                       # one more header row under the reader's own
+    target: { report_date: date, region: str, value: float }
+    synonyms: { region: [regiao, area] } # matched by name, no LLM
+    review: required                     # or auto (default)
+```
+
+1. The header rows become one name per column, joined with ` / `, and a merged cell carries its
+   value to the right: `Report date`, `Região`, `Sales / Units`, `Sales / Revenue`.
+2. Fields are matched by name first: the field or a synonym equals a column, or the last part of a
+   joined name, without case, accents or punctuation. `report_date` and `region` match here.
+3. Only the fields still unmatched go to the step's `llm`, in one structured call with the column
+   names and `sample_rows` rows. An answer that is not one of the columns is ignored.
+4. The mapping is stored by the layout's signature (a hash of the column names). The next run on
+   the same layout makes no model call. Blank rows are dropped and the fields are typed with the
+   [`cast`](#clean-types-cast) types (`str` is `text`), bad values going to the rejected records.
+
+Nothing is mapped silently:
+
+- With `review: required`, the first run stops with the proposed mapping until
+  `agentl mappings approve <pipeline> <step>`.
+- A new layout (columns added, removed or reordered) fails the run with the difference. Pin
+  `mapping:`, set `on_drift: infer` to infer a mapping for it, or `agentl mappings forget` the old one.
+- `agentl mappings show` prints each stored mapping as YAML. Paste it under `with:` as `mapping:`
+  (`field: column`) to version it with the pipeline; a pinned mapping skips the store and the LLM,
+  and fails if a column it names is missing.
 
 ### SQL over previous steps: `sql`
 
@@ -248,6 +324,45 @@ the transform is naturally a join, several group-bys or window functions over da
 memory. When the data already lives in a warehouse, run the SQL there (a `sql.read` query) instead
 of moving it out to transform it.
 
+### Match names to a reference table: `resolve`
+
+Maps messy values ("SÃO PAULO", "S. Paulo", "SP") to one id of a reference table. Each value is
+normalised (lower case, accents and punctuation removed, suffixes such as Ltda, Inc or LLC
+dropped), then matched exactly against the reference names and ids, then by similarity. Only
+values whose best similarity is below `threshold` and at least `min_score` go to the model, with
+the closest `candidates`; the model can only answer one of those ids or null.
+
+```yaml
+- id: regions
+  use: resolve
+  input: [rows, region_table]       # the reference can be one of the inputs
+  with:
+    field: region
+    reference: region_table         # or {file: regions.csv} or {values: [{id: SP, name: Sao Paulo}]}
+    key: id                         # reference column with the id (default id)
+    name: name                      # reference column with the name (default name)
+    threshold: 0.9                  # similarity accepted without the model (0 to 1)
+    min_score: 0.5                  # below this, unresolved without asking the model
+    on_unresolved: reject           # reject (default), keep (match null) or drop
+```
+
+Each record gets `<field>_match` (the id; rename with `into`), `<field>_match_score` and
+`<field>_match_method` (`exact`, `fuzzy`, `model` or `unresolved`). Unresolved records are
+rejected, so they never reach the destination; list and retry them with `agentl rejected`.
+`model: false` turns the model off; `llm:` on the step picks which one to use.
+
+Similarity uses the standard library's `difflib`; install `agentl-etl[fuzzy]` to use
+`rapidfuzz`, which is much faster on large reference tables (scores differ slightly).
+
+The model's decisions are stored per pipeline and step, so a value never costs twice. A
+`resolve.counts` event reports how many rows took each path, plus how many model decisions came
+from the store (`cached`). Export them for review, fix them, and import them back:
+
+```bash
+agentl resolve export my-pipeline regions decisions.json
+agentl resolve import my-pipeline regions decisions.json
+```
+
 ### Time windows: `aggregate` with `window`
 
 `window: {field: ts, every: 1m}` puts each record in a tumbling window of `every` (`30s`, `5m`,
@@ -304,6 +419,22 @@ gives null, division by zero gives null, and a value that is not a number where 
 the record to the rejected records with the reason. Text in quotes is taken as written, so a regex
 keeps its backslashes. For more than this, use a `fn:` step.
 
+### Keep and rename: `select`
+
+```yaml
+- use: select
+  with:
+    rename: { Customer ID: customer_id }
+    fields: [customer_id, total]        # output names; input names (Customer ID) also work
+```
+
+- `rename` maps an input name to an output name; `fields` keeps those fields, in that order.
+  A name in `fields` can be the output name (after `rename`) or the input name; when it is both,
+  the renamed field wins.
+- A record that lacks a listed field gets null for it, but a listed field that **no** record has
+  fails the step with the fields it did see, so a typo does not become a column of nulls.
+- Without `fields`, every field is kept and only `rename` applies.
+
 ### Clean types: `cast`
 
 Most transform work is dirty data in known formats. `cast` turns it into clean values and moves
@@ -349,6 +480,11 @@ instead of letting them crash a later step or reach the database.
 Rules, so nothing is guessed silently:
 
 - **Empty is null**, not an error (a blank CPF is null, not a rejection).
+- **`on_bad: fail` also stops on a missing or null field**, unless its type is optional:
+  `int?` (quote it inside `{ }`), or `{ type: int, optional: true }` (`nullable: true` is the
+  same). With `reject` and `keep`, a missing field stays null as before.
+- **The locale defaults to pt-BR.** For English data set `locale: en-US`; `agentl lint` warns
+  (AL010) when a `cast` without `locale` reads a local CSV whose numbers look en-US.
 - **Dates are read in one order per column.** A value like `25/02` means the column is day first,
   `02/25` month first; a column with both fails. When nothing tells (`01/02`), the locale decides
   (pt-BR day first, en-US month first), or `strict: true` stops instead.
@@ -363,6 +499,40 @@ Rules, so nothing is guessed silently:
   `AGENTL_SAMPLES=0` for such pipelines.
 - Your own formats: `agentl.types.register_type("sku", parse)`, where `parse(value)` returns the
   clean value or raises `ValueError` with the reason.
+
+### Interval labels to instants: `time.normalize`
+
+Energy, telemetry and market data often label a value with an hour number instead of an instant:
+hours 1 to 24, a label that marks the end of the interval, a total accumulated since 06:00.
+`time.normalize` turns those labels into ISO instants with an offset, and refuses to guess around
+daylight saving time.
+
+```yaml
+- id: ts
+  use: time.normalize
+  input: rows
+  with:
+    from: { column: hour, kind: hour_ending, base: 1, date_column: date, tz: America/Sao_Paulo }
+    to: { column: ref_ts, convention: interval_start, tz: UTC }
+    on_ambiguous: fail     # fail | reject | first | last (DST overlap)
+    on_missing: fail       # fail | reject | shift (DST gap)
+```
+
+| Option | Meaning |
+|---|---|
+| `from.kind` | `hour_ending` (label 1 is 00:00 to 01:00, 24 ends at next midnight), `hour_beginning` (label 0 starts at 00:00), `accumulated` (window from `since` to the label) |
+| `from.base` | first label number: 1 for `hour_ending`, 0 otherwise |
+| `from.interval` | minutes per label, 60 by default; 30 for half hours (labels 1 to 48) |
+| `from.date_column` | the day; without it the label holds both, as `2026-03-08 24:00` |
+| `from.clock` | `wall` (labels are local clock times) or `elapsed` (labels count real time since local midnight, so a 23-hour day has labels 1 to 23 and a 25-hour day 1 to 25) |
+| `from.since` | `accumulated` only: window start, `00:00` by default |
+| `to.convention` | `interval_start` or `interval_end` goes in `to.column`; `to.end_column` gets the other edge |
+| `to.tz` | output zone, `UTC` by default |
+
+Labels are numbers (fractions such as `13.5` allowed) or clock times (`13:30`, `24:00`). With
+`clock: wall`, a local time that does not exist (spring forward) or happens twice (fall back)
+stops the run by default; `reject` sends the record to the rejected records, `shift` moves a
+missing time forward, `first`/`last` pick the earlier or later of the two instants.
 
 ### Protect sensitive fields: `protect`
 
@@ -578,8 +748,8 @@ with commas. XPath is not supported.
 **Good conduct.** `crawl` makes one request at a time, `delay` seconds apart (1 by default), with
 a `User-Agent` that names agentl (`user_agent` changes it), follows only links on the start
 host (`same_host: false` to leave it), and goes through the same private-network guard as every
-other connector (see [HTTP](#http)). It does not read `robots.txt` yet: check the
-site's terms before crawling it.
+other connector (see [HTTP](#http)). It does not read `robots.txt`: to cover a whole site, use
+[`web.crawl`](#crawling-a-whole-site), and check the site's terms before crawling it.
 
 **When the site changes.** A selector that matches nothing is how a scraper breaks. With
 `on_selector_miss: fail_with_snapshot` (default) the step fails with an error that names the
@@ -589,6 +759,51 @@ selector and the URL, saves the HTML it received under `.agentl/evidence/<date>/
 page (or the item, for a field) and logs a warning; `empty` keeps the item with `null` in the
 field. A missing `next_page` link is the end of the list, not a miss. A future mode will hand the
 snapshot to an agent step as the fallback when a selector fails (#195).
+
+
+## Crawling a whole site
+
+`web.crawl` walks a site breadth first from `start` URLs (or the `url` field of upstream
+records) and the pages listed in `sitemap` (sitemap indexes and `.gz` sitemaps are followed),
+and outputs one record per page: `url`, `status`, `depth`, `referrer`, `links` (absolute,
+normalised) and `html` (`format: markdown` or `both` adds `markdown`, which needs the `web`
+extra). Feed it to `html.select`, `html.read` or an agent step.
+
+```yaml
+- id: docs_site
+  use: web.crawl
+  with:
+    start: https://example.org/docs/
+    sitemap: https://example.org/sitemap.xml
+    max_depth: 3          # 0 reads only the start and sitemap pages
+    max_pages: 500
+    allowed_domains: [example.org]   # default: the start hosts; subdomains included
+    include: ["/docs/"]              # regexes; a URL must match one (when set)
+    exclude: ["\\.pdf$", "/login"]  # and none of these
+    delay: 1                         # seconds between requests to the same host
+    incremental: true
+    proxy: ${CRAWL_PROXY}            # or {example.org: ..., "*": ...}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_depth`, `max_pages` | 2, 100 | link depth from the start pages, pages fetched per run |
+| `allowed_domains`, `include`, `exclude` | start hosts | scope of the links followed (start URLs are always read) |
+| `delay` | 1 | per host; a larger `Crawl-delay` in robots.txt wins |
+| `obey_robots` | `true` | `false` skips robots.txt and logs a warning: an explicit, visible override |
+| `user_agent`, `headers` | `agentl/<version> (+https://agentl.com.br)` | identify yourself |
+| `proxy` | none | one proxy URL, or host to proxy URL (`"*"` for the rest); pass it from a secret |
+| `incremental` | `false` | skip pages unchanged since the last successful run |
+| `retries`, `timeout` | 2, 30 | 429 and 5xx are retried after `Retry-After` (seconds or a date), else with backoff |
+
+URLs are normalised before dedupe (lowercase scheme and host, no default port, no fragment,
+sorted query), so `/a`, `/a#top` and `HTTP://Example.org:80/a` are one page. With `incremental: true`
+each page's ETag, Last-Modified and content hash are kept in the run store (`agentl state`) and
+move only when the run succeeds; the next run sends `If-None-Match` / `If-Modified-Since`, and a
+`304` or an identical body is not output again (its links are still followed). Pages that error
+(4xx, 5xx after retries) come out with their `status` and empty `html`. Requests go one at a
+time through the private-network guard. Sitemaps that declare a DTD or entities are refused.
+`web.crawl` does not try to get past CAPTCHAs or bot protection.
 
 ## Email (IMAP)
 
@@ -698,7 +913,12 @@ by `do_nothing`) in its result, in the `step.succeeded` event next to `written`,
 `unchanged` equal to the number of records, and leaves the table as it was. The options are
 checked before connecting: `on_conflict` or `update_columns` without `mode: upsert`, an unknown
 value, a key column in `update_columns` or a column the records do not have is an error.
-`sqlite.write` needs no unique index on `key`.
+`sqlite.write` needs no unique index on `key`; a table it creates gets one, and declared column
+types (`INTEGER`, `REAL`, `TEXT`, `BLOB`) where all values of a column in the first chunk share one
+type. A record with a null or missing key field cannot be matched to a row: `postgres.write`,
+`sqlite.write` and `sql.write` send it to the step's rejected records (`_error` names the key)
+instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
+`step.succeeded` event of a writer reports the rows written in `records` and `written`.
 
 ## Any SQL database
 
