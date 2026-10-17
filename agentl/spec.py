@@ -462,6 +462,20 @@ class ActionSpec(BaseModel):
         return self
 
 
+class LineageSpec(BaseModel):
+    """`lineage:` in the YAML. `url` is the OpenLineage HTTP endpoint base (e.g. Marquez at
+    http://localhost:5000); events go to `<url>/api/v1/lineage`. `file` appends one JSON event per
+    line. `api_key` is sent as a Bearer token; use `${VAR}` for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = None
+    file: str | None = None
+    namespace: str = "agentl"
+    api_key: str | None = None
+    endpoint: str = "api/v1/lineage"
+
+
 class ParamSpec(BaseModel):
     """A run parameter: `agentl run --param name=value`, `agentl.run(..., params={...})`."""
 
@@ -595,6 +609,8 @@ class PipelineSpec(BaseModel):
     on_failure: list[ActionSpec] = Field(default_factory=list)
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
+    # OpenLineage events for data catalogs; see agentl.lineage.
+    lineage: LineageSpec | None = None
     # Independent steps run together, up to this many; 1 = one at a time.
     max_parallel_steps: int = Field(default=4, ge=1, le=64)
     # Stream linear chains (reader -> row-wise steps -> writer) this many records at a time.

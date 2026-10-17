@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- OpenLineage events (#238): `lineage:` in the YAML (or `OPENLINEAGE_URL` / `OPENLINEAGE_FILE`)
+  sends START / COMPLETE / FAIL RunEvents for the run and each step to an HTTP endpoint such as
+  Marquez, or to a JSON lines file, with input and output datasets taken from connector
+  parameters. Stdlib only; a catalog that is down never fails the run. See Observability.
 - `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
   LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
   with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
