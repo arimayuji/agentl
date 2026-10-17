@@ -14,7 +14,8 @@ from typing import Any
 
 Records = list[dict[str, Any]]
 
-EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run")
+EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run", "rejected_rate")
+_RATE = re.compile(r"^(<=?)?\s*(\d+(?:\.\d+)?)\s*(%?)$")
 
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhdw])$")
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -35,6 +36,20 @@ def parse_percent(value: str | int | float) -> float:
     if isinstance(value, str) and value.strip().endswith("%"):
         return float(value.strip()[:-1]) / 100
     return float(value)
+
+
+def rejected_limits(rule: Any, default_step: str) -> dict[str, tuple[str, float]]:
+    """`rejected_rate: "< 1%"` (the checked step) or `{orders: "< 1%", users: "<= 0.5%"}` ->
+    {step: (operator, rate)}. A bare limit ("1%", 0.01) means at most."""
+    rules = rule if isinstance(rule, dict) else {default_step: rule}
+    out: dict[str, tuple[str, float]] = {}
+    for step, limit in rules.items():
+        m = _RATE.match(str(limit).strip())
+        if not m or isinstance(limit, bool):
+            raise ValueError(f"rejected_rate {limit!r}: use a limit like '< 1%', '<= 0.5%' or 0.01")
+        rate = float(m.group(2)) / (100 if m.group(3) else 1)
+        out[str(step)] = (m.group(1) or "<=", rate)
+    return out
 
 
 def _number(v: Any) -> float | None:
@@ -95,9 +110,16 @@ def profile(records: Records, sample: int = 15) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- expectations
 def run_expectations(
-    records: Records, expect: dict[str, Any], previous: dict[str, Any] | None, now: _dt.datetime | None = None
+    records: Records,
+    expect: dict[str, Any],
+    previous: dict[str, Any] | None,
+    now: _dt.datetime | None = None,
+    rejected: dict[str, tuple[int, int]] | None = None,
+    step: str = "",
 ) -> list[dict[str, str]]:
-    """Failed expectations as [{check, detail}]. `previous` is the profile of the last passing run."""
+    """Failed expectations as [{check, detail}]. `previous` is the profile of the last passing run;
+    `rejected` maps a step to (rejected records, records it saw) in this run; `step` is the
+    checked step, for `rejected_rate` given as a single limit."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     fails: list[dict[str, str]] = []
 
@@ -162,6 +184,16 @@ def run_expectations(
                 after = sum(x for x in (_number(r.get(c)) for r in records) if x is not None)
                 if before is not None:
                     _change(fail, f"sum of {c}", before, after, parse_percent(limit))
+        elif key == "rejected_rate":
+            for name, (op, limit) in rejected_limits(rule, step).items():
+                n_bad, total = (rejected or {}).get(name, (0, 0))
+                rate = n_bad / total if total else 0.0
+                if rate >= limit if op == "<" else rate > limit:
+                    fail(
+                        "rejected_rate",
+                        f"{name}: {n_bad} of {total} records rejected ({rate:.2%}), "
+                        f"expected {op} {limit:.2%}",
+                    )
         else:
             raise ValueError(f"unknown expectation '{key}'. Use {', '.join(EXPECTATIONS)}")
     return fails

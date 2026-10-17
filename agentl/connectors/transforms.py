@@ -248,7 +248,7 @@ def trigger(input: Any = None) -> list[dict]:
     return []
 
 
-def _cast_spec(spec: Any) -> tuple[str, dict]:
+def _cast_spec(spec: Any, label: str = "cast") -> tuple[str, dict]:
     """`date` | `{money: BRL}` | `{enum: [a, b], synonyms: {...}}` | `{type: date, ...}` ->
     (type name, options)."""
     from .. import types
@@ -260,10 +260,14 @@ def _cast_spec(spec: Any) -> tuple[str, dict]:
     elif isinstance(spec, dict) and spec:
         name, first = next(iter(spec.items()))
         rest = {k: v for k, v in spec.items() if k != name}
-        main = {"money": "currency", "datetime": "tz", "phone": "country", "enum": "values"}.get(name)
+        main = {"money": "currency", "datetime": "tz", "phone": "country", "enum": "values"}.get(
+            str(name).rstrip("?")
+        )
         opts = {**({main: first} if main else {}), **rest}
     else:
-        raise ValueError(f"cast: cannot read the type {spec!r}")
+        raise ValueError(f"{label}: cannot read the type {spec!r}")
+    if not isinstance(name, str):
+        raise ValueError(f"{label}: cannot read the type {spec!r}")
     optional = name.endswith("?")
     name = name.rstrip("?")
     if name not in types.TYPES:
@@ -271,7 +275,7 @@ def _cast_spec(spec: Any) -> tuple[str, dict]:
 
         close = difflib.get_close_matches(name, list(types.TYPES), n=1)
         hint = f"; did you mean {close[0]!r}?" if close else ""
-        raise ValueError(f"cast: unknown type {name!r}{hint} Types: {', '.join(sorted(types.TYPES))}")
+        raise ValueError(f"{label}: unknown type {name!r}{hint} Types: {', '.join(sorted(types.TYPES))}")
     return name, {**opts, "_optional": optional}
 
 
