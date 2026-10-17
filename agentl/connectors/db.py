@@ -8,8 +8,8 @@ import datetime as _dt
 import decimal
 from typing import Any
 
-from ..registry import connector, require
-from ._util import single
+from ..registry import Rejects, connector, require
+from ._util import null_keys, single
 
 MODES = ("append", "replace", "upsert")
 
@@ -108,6 +108,9 @@ def sql_write(
         raise ValueError("mode 'upsert' needs 'key'")
     sa = require("sqlalchemy", "sql")
     rows = single(input)
+    rejected: list[dict] = []
+    if mode == "upsert":
+        rows, rejected = null_keys("sql.write", rows, keys)
     cols: list[str] = []
     for r in rows:
         cols.extend(k for k in r if k not in cols)
@@ -158,4 +161,5 @@ def sql_write(
                     conn.execute(tbl.insert(), batch)
     finally:
         engine.dispose()
-    return [{"table": table, "written": len(rows), "mode": mode}]
+    out = [{"table": table, "written": len(rows), "mode": mode}]
+    return Rejects(out, rejected) if rejected else out

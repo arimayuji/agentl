@@ -53,6 +53,7 @@ def _call(
         data = json.dumps(body).encode()
         hdrs.setdefault("Content-Type", "application/json")
     for attempt in range(retries + 1):
+        wait = float(2**attempt)
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
             with netguard.urlopen(req, timeout=timeout) as resp:
@@ -64,10 +65,13 @@ def _call(
             if (e.code < 500 and e.code != 429) or attempt == retries:
                 detail = e.read().decode(errors="replace")[:500]
                 raise RuntimeError(f"{method} {url.split('?')[0]}: HTTP {e.code} {detail}") from e
+            after = e.headers.get("Retry-After") if e.headers else None
+            if after and after.strip().isdigit():  # Graph throttling says how long to wait
+                wait = min(float(after), 120.0)
         except urllib.error.URLError:
             if attempt == retries:
                 raise
-        time.sleep(2**attempt)
+        time.sleep(wait)
     raise AssertionError("unreachable")
 
 
