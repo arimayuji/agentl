@@ -47,6 +47,7 @@ the expanded size is capped by `max_extract_bytes` (1 GiB by default).
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
+| NF-e, NFC-e | `nfe.read` (`level: item`) | one record per invoice or item, see [NF-e invoices](nfe.md) | |
 | HTML tables | `html.read` (`table: 0`) | one record per row, `table` index | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
 | ZIP, GZ | `file.read` | records of the inner files | |

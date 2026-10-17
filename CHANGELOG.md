@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
+  (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
+  storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
+  broken files go to the rejected records, and `validate: true` checks the `chave` check digit and
+  orphan events.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
