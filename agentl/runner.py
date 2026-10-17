@@ -620,6 +620,15 @@ class Runner:
         if step.use == "trigger":
             return [dict(r) for r in self.trigger]
 
+        if step.use == "sql":
+            # Each input is a table named after its step; Arrow outputs are passed as they are.
+            from .connectors import duck
+
+            if step.id in self.replay:
+                tables = data if isinstance(data, dict) else {(refs or ["input"])[0]: data}
+            else:
+                tables = {r: raw(r) for r in refs}
+            return duck.run(step.id, tables, base_dir=self.spec.base_dir, **step.with_)
         if step.id in self._arrow_out or _is_table(data):
             return self._run_arrow(step, data)
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
@@ -754,6 +763,8 @@ class Runner:
             return bool(getattr(registry.resolve_fn(step.fn, self.spec.base_dir), "agentl_dataframe", False))
 
         def takes(step: StepSpec, src: str) -> bool:
+            if step.use == "sql":  # DuckDB scans a Table in place, with any number of inputs
+                return not step.cached and step.id not in chunked
             if step.inputs != [src] or step.cached or step.id in chunked:
                 return False
             if step.use:

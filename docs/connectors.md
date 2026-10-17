@@ -177,6 +177,75 @@ Other databases will ship as plugins.
 | `limit` | `n`, `offset` | The first `n` records |
 | `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
+| `sql` | `query` or `file`, `params`, `allow_files` (false) | SQL over the previous steps, each one a table (below) |
+
+### SQL over previous steps: `sql`
+
+`pip install 'agentl-etl[duckdb]'` (DuckDB is a large wheel, so it is an optional extra). Each
+input step is a table named after its step id, queried in an in-process, in-memory DuckDB. Steps on
+the Arrow fast path are scanned in place, without a copy; records become an Arrow table first. The
+output is records.
+
+Join two sources:
+
+```yaml
+- id: report
+  input: [orders, customers]
+  sql: |
+    select c.region, sum(o.total) as total, count(*) as orders
+    from orders o join customers c using (customer_id)
+    group by c.region
+```
+
+Window functions:
+
+```yaml
+- id: running
+  input: orders
+  sql: |
+    select order_id, customer_id, total,
+           sum(total) over (partition by customer_id order by order_id) as running_total,
+           row_number() over (partition by customer_id order by total desc) as rank
+    from orders
+```
+
+Aggregate from a file, with parameters:
+
+```yaml
+- id: daily
+  use: sql
+  input: orders
+  with:
+    file: sql/daily.sql          # next to the pipeline
+    params: { min_total: 100 }   # $min_total in the query
+```
+
+```sql
+-- sql/daily.sql
+select day, count(*) as orders, sum(total) as total
+from orders
+where total >= $min_total
+group by day
+order by day
+```
+
+- `sql:` on a step is short for `use: sql` with `with: {query: ...}`.
+- `params` are bound as values (`$name`), never pasted into the SQL text.
+- **Sandbox.** By default the query cannot read or write files, reach the network, `ATTACH` a
+  database, `COPY ... TO`, `INSTALL` or load extensions, and cannot change those settings. Set
+  `allow_files: true` on the step only when the SQL itself must read files such as
+  `read_parquet('data/*.parquet')`.
+- Errors name the step and keep DuckDB's `LINE n` pointer; a table that is not an input suggests
+  the closest step id. `agentl validate` reports the same (AE009) when DuckDB is installed.
+- An input with no records has no columns: `count(*)` gives 0 and a query that names its columns
+  returns no records.
+- With `chunk_size`, a `sql` step is a boundary: it collects its inputs before it runs.
+
+When to use which: `compute`, `aggregate`, `cast` and the other transforms above need no extra and
+stream with `chunk_size`; use them for per-record expressions and simple group-bys. Use `sql` when
+the transform is naturally a join, several group-bys or window functions over data that fits in
+memory. When the data already lives in a warehouse, run the SQL there (a `sql.read` query) instead
+of moving it out to transform it.
 
 ### Time windows: `aggregate` with `window`
 
