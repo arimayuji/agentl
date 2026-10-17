@@ -87,3 +87,56 @@ def test_cli_and_mcp(tmp_path, capsys):
         }
     )
     assert res["result"]["isError"] is False and '"pipeline": "sales"' in res["result"]["content"][0]["text"]
+
+
+def test_agent_cost_per_record_accepted_and_cache_hit(tmp_path, capsys):
+    """#156: per agent step and model, cost per record, per accepted answer and per cache hit."""
+    from agentl import parse
+    from agentl.runner import Runner
+    from tests import test_budget  # noqa: F401  (registers the `metered` fake provider)
+
+    spec = parse(
+        {
+            "name": "tagging",
+            "llm": {
+                "default": {"provider": "metered", "model": "m1", "price": {"input": 3.0, "output": 15.0}}
+            },
+            "steps": [
+                {"id": "src", "fn": "tests.test_budget:rows", "with": {"n": 4}},
+                {"id": "ask", "agent": "Check.", "input": "src", "output": {"ok": "bool"}},
+            ],
+        }
+    )
+    db = tmp_path / "s.db"
+    with Store(db) as store:
+        Runner(spec, store=store).run()  # 4 calls at 0.0105 USD
+        Runner(spec, store=store).run()  # 4 cache hits, no calls
+        report = stats.compute(store, 0)
+    [row] = report["pipelines"][0]["agents"]
+    assert (row["step"], row["model"], row["runs"], row["records"], row["accepted"]) == ("ask", "m1", 2, 8, 8)
+    assert (row["answered"], row["cache_hits"]) == (4, 4)
+    assert row["cost_usd"] == 0.042
+    assert row["cost_per_record"] == 0.00525 and row["cost_per_accepted"] == 0.00525
+    assert row["cost_per_answer"] == 0.0105 and row["cache_saved_usd"] == 0.042
+    assert main(["stats", "--since", "3650d", "--db", str(db)]) == 0
+    assert "[ask] m1: 0.005250/record, 0.005250/accepted (8 of 8), 4 cache hits" in capsys.readouterr().out
+
+
+def test_agent_cost_counts_rejected_records():
+    done = [
+        {
+            "run_id": "r1",
+            "step": "ask",
+            "data": {
+                "records": 3,
+                "llm_calls": 5,
+                "cost_usd": 0.5,
+                "model": "m",
+                "answered_by": {"default": 5},
+            },
+        }
+    ]
+    [row] = stats._agent_costs(done, {("r1", "ask"): 2}, {"r1": "p"})["p"]
+    assert (row["records"], row["accepted"], row["rejected"]) == (5, 3, 2)
+    assert row["cost_per_record"] == 0.1 and row["cost_per_accepted"] == 0.166667
+    assert row["cache_saved_usd"] == 0.0

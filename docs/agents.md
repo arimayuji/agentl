@@ -192,6 +192,35 @@ record back. The fixed part of the prompt is paid once per call instead of once 
   10 to 20, and lower it if items come back wrong. The output schema cannot have a field named
   `index`.
 
+### Many rows from one record
+
+To extract hundreds of rows from one document, asking for one JSON object per row spends output
+tokens on repeated field names and can hit the output limit. `output_mode: rows` asks for one JSON
+array per line, in the column order of `output`, and agentl builds the records:
+
+```yaml
+- id: items
+  input: doc
+  agent: List every line item of the invoice.
+  output_mode: rows
+  output: {date: str, category: str, item: str, value: float, unit: str?}
+  on_truncated: continue   # default; `fail` rejects the record instead
+  max_continuations: 4     # default
+```
+
+- One call per input record; the step outputs one record per row.
+- When the provider stops at `max_tokens`, the cut row is dropped and the model is asked to go on
+  after the last complete row. Rows it repeats at the seam are dropped, so two identical rows that
+  fall exactly on the seam count once.
+- A row with the wrong number of values, a wrong type or a line that is not a JSON array is
+  rejected on its own (with `_row`, `_source` and `_error`) and goes to the quarantine; the other
+  rows are kept.
+- The step's spend reports `rows`, `continuations` and `output_tokens_saved_est`, an estimate of
+  the output tokens saved against one JSON object per row.
+- Providers: `anthropic` and `echo`. Not with `records_per_call`, `mode: batch`, tools, a list
+  of llms or `rules:` (hybrid rules map one record to one output; rows mode makes many). Not
+  with `attempts:` either: rows mode retries by continuation and rejects a bad row on its own.
+
 ### Batch mode
 
 For jobs that can wait, send the whole step through the provider's batch API. It answers within
@@ -249,6 +278,42 @@ A record goes to the next llm when its answer is still invalid after the retry, 
 `escalate_below`, when its `confidence` is lower than that. The last llm's answer is kept either
 way. Each call is priced with its own llm, and the step's spend says who answered:
 `"answered_by": {"cheap": 315, "strong": 35}`. Not with `mode: batch`.
+
+### Attempts with validator feedback
+
+`attempts:` spells out each try a record gets, in order, instead of the default two tries per llm:
+
+```yaml
+- id: lines
+  input: invoices
+  agent: Extract the amount and the line item codes.
+  output: { amount: float, codes: "list[int]", note: str? }
+  attempts:
+    - { llm: small, validate: strict }
+    - { llm: small, validate: strict, feedback: true }   # the validator's errors go into the prompt
+    - { llm: large, validate: lenient }
+```
+
+- `llm`: the llm of that attempt (default: the step's `llm`), so escalation to a stronger model
+  is just a later attempt.
+- `feedback: true`: the instruction gets the previous attempt's errors as `field`, `rule` and a
+  clipped `value` (never the record or the whole answer) plus a stricter reminder.
+- `validate: lenient` (last attempt only): invalid items of list fields and invalid optional fields
+  are dropped and the record goes on. Each dropped value goes to the quarantine (`agentl rejected`) with its
+  reason (`_error`, `_value`) and an `item.dropped` event is logged. A required field that is still
+  invalid rejects the record, as `strict` does.
+
+    !!! warning "Retrying a dropped item writes the record again"
+        A dropped item's quarantine entry belongs to a record that was already written. `agentl
+        rejected retry` on it re-runs the whole record, so a destination without a key (append,
+        CSV, JSON) gets a second copy. Retry dropped-item entries only into a keyed `upsert`
+        destination.
+
+A record that fails every attempt is rejected to the quarantine with the last error. Each failed
+attempt logs an `agent.attempt` event (attempt, llm, tokens, errors), and the step's spend counts
+calls, failures and tokens per attempt next to `answered_by`:
+`"attempts": {"1": {"llm": "small", "calls": 40, "failed": 6, "input_tokens": ..., "output_tokens": ...}}`.
+One record per call: not with `mode: batch`, `records_per_call` or `llm: [a, b]`.
 
 ### Rules first, the agent for the rest
 
