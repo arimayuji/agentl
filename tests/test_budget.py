@@ -107,6 +107,9 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
     with Store(tmp_path / "db.sqlite") as store:
         result = Runner(spec, store=store, use_cache=False).run()
         detail = run_detail(store, result.run_id)
+    models = result.spend["a"].pop("models")
+    assert list(models) == ["m"] and models["m"]["llm_calls"] == 2
+    assert models["m"]["cost_usd"] == pytest.approx(0.021)
     assert result.spend["a"] == {
         "input_tokens": 2000,
         "output_tokens": 1000,

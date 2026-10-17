@@ -198,7 +198,15 @@ def main(argv: list[str] | None = None) -> int:
     d = cmd("diagram", "print the pipeline as a Mermaid diagram")
     d.add_argument("pipeline")
 
-    cmd("runs", "list recent runs")
+    ru = cmd("runs", "list recent runs, or show what one run did (rows, changes, LLM cost)")
+    ru.add_argument("action", nargs="?", choices=["list", "show"], default="list")
+    ru.add_argument("run_id", nargs="?", help="show: the run id")
+    ru.add_argument("--json", action="store_true", help="show: print the ledger as JSON")
+
+    ct = cmd("cost", "LLM calls, tokens and cost over recent runs, grouped by pipeline, step, model or day")
+    ct.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
+    ct.add_argument("--by", default="pipeline,model", help="comma list of pipeline, step, model, day")
+    ct.add_argument("--json", action="store_true")
     co = cmd("connectors", "list installed connectors, or show one connector's parameters")
     co.add_argument("name", nargs="?", help="a connector, e.g. http.get: prints its `with:` parameters")
 
@@ -345,6 +353,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "diagram":
             print(graph.mermaid(load(a.pipeline)))
+            return 0
+        if a.cmd == "runs" and a.action == "show":
+            from . import ledger
+
+            if not a.run_id:
+                print("agentl runs show needs a run id", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                report = ledger.show(store, a.run_id)
+            if report is None:
+                print(f"error: no run {a.run_id} in this store", file=sys.stderr)
+                return 2
+            print(json.dumps(report, indent=2, default=str) if a.json else ledger.show_text(report))
+            return 0
+        if a.cmd == "cost":
+            from . import ledger
+            from .checks import parse_duration
+
+            by = [k.strip() for k in a.by.split(",") if k.strip()]
+            with open_store(a.db) as store:
+                report = ledger.cost(store, time.time() - parse_duration(a.since), by)
+            print(json.dumps(report, indent=2, default=str) if a.json else ledger.cost_text(report))
             return 0
         if a.cmd == "runs":
             with open_store(a.db) as store:

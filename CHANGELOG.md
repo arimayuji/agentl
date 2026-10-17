@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Run ledger (#209, first part): `agentl runs show RUN_ID` prints records per step, rows changed,
+  rejected records, LLM calls, tokens, cost, duration and outcome of one run; `agentl cost --since
+  30d --by pipeline,model` groups LLM spend by pipeline, step, model or day. Step events now carry
+  `models`: calls, tokens and cost per model, so fallbacks show which model was paid for.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

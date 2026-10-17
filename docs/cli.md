@@ -10,7 +10,8 @@ agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl keygen                                   # a key for protect / unprotect
 agentl diagram PIPELINE
-agentl runs
+agentl runs [show RUN_ID [--json]]
+agentl cost [--since 30d] [--by pipeline,model] [--json]
 agentl connectors [NAME]
 agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
@@ -25,6 +26,24 @@ agentl dashboard [--host 127.0.0.1] [--port 7070]
 
 Every command accepts `--db` to choose the run store: a SQLite path or a `postgresql://` URL
 (default: `$AGENTL_DB`, then `.agentl/agentl.db`).
+
+## Run ledger and LLM cost
+
+`agentl runs show RUN_ID` prints what one run did: records per step, rows changed (`inserted` plus
+`updated` from upserts), rejected records, LLM calls, tokens and cost per step with the models that
+were paid for, duration and outcome. `--json` prints the same as JSON.
+
+`agentl cost` groups LLM calls, tokens and cost over the runs of a period. `--by` takes any of
+`pipeline`, `step`, `model` and `day` (default `pipeline,model`):
+
+```text
+$ agentl cost --since 7d --by pipeline,model
+tickets  claude-haiku-4-5  420 calls in 7 runs, 210000 in / 21000 out tokens, $0.3150
+total $0.3150
+```
+
+Both read the runs and events the store already keeps. Steps recorded before per-model spend
+existed count under model `?`.
 
 ## Validate and lint
 

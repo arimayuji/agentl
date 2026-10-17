@@ -265,7 +265,12 @@ class Runner:
             if spend is None:
                 return {}
             spend["cost_usd"] = round(spend["cost_usd"], 6)
-            return dict(spend)
+            out = dict(spend)
+            if "models" in spend:
+                out["models"] = {
+                    k: {**v, "cost_usd": round(v["cost_usd"], 6)} for k, v in spend["models"].items()
+                }
+            return out
 
     # budget -------------------------------------------------------------
     def _charge(
@@ -291,6 +296,14 @@ class Runner:
             mine["cache_read_tokens"] += read
             mine["llm_calls"] += 1
             mine["cost_usd"] += cost
+            # per model, so fallbacks and `agentl cost --by model` see which model was paid for
+            m = mine.setdefault("models", {}).setdefault(
+                spec.model, {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+            )
+            m["llm_calls"] += 1
+            m["input_tokens"] += tin
+            m["output_tokens"] += tout
+            m["cost_usd"] += cost
 
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
