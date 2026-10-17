@@ -1,5 +1,7 @@
 """skip_seen (#184): files already handled by a successful run are not emitted again."""
 
+from pathlib import Path
+
 from agentl import parse
 from agentl.cli import main
 from agentl.connectors.seen import skip_seen
@@ -50,12 +52,12 @@ def test_second_run_emits_nothing_and_failed_run_marks_nothing(tmp_path):
         assert store.seen_list() == []
         r1 = Runner(spec(folder), store=store).run()
         assert r1.status == "succeeded"
-        assert [p.rsplit("/", 1)[1] for p in (r["path"] for r in r1.outputs["new"])] == ["a.csv", "b.csv"]
+        assert [Path(r["path"]).name for r in r1.outputs["new"]] == ["a.csv", "b.csv"]
         assert Runner(spec(folder), store=store).run().outputs["new"] == []
         (folder / "c.csv").write_text("3")
-        assert [
-            r["path"].rsplit("/", 1)[1] for r in Runner(spec(folder), store=store).run().outputs["new"]
-        ] == ["c.csv"]
+        assert [Path(r["path"]).name for r in Runner(spec(folder), store=store).run().outputs["new"]] == [
+            "c.csv"
+        ]
         # another scope keeps its own keys
         assert len(Runner(spec(folder, key="path", scope="other"), store=store).run().outputs["new"]) == 4
 
