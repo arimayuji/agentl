@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl snapshot` (#211, first part): runs a pipeline and compares step outputs with saved
+  snapshots by key, not by order, with a per-field diff; `--update-snapshots` shows the diff and
+  asks before accepting (`--yes` for CI). `agentl.snapshots` also has `redact_headers` and
+  `redact_url` to hide credentials in anything recorded.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
