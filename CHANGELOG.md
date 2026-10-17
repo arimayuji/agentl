@@ -15,6 +15,13 @@ They are always listed under **Changed** or **Removed**.
   drop sensitive fields before they reach a destination. `agentl keygen` makes a key, the
   `crypto` extra installs `cryptography`, and `lint` warns (AL008) when an agent step sees the fields
   before `protect`. Decrypted values stay out of the run store's samples.
+- `mqtt.subscribe` and `mqtt.publish` (#226), with the new `mqtt` extra (`paho-mqtt>=2.0`).
+  Micro-batches with `max_records` / `max_seconds`, TLS with `mqtts://`, `+` and `#` wildcards.
+  With a `client_id` the session is persistent and QoS 1/2 messages are acked only when the run
+  succeeds, so the broker delivers them again after a failure.
+- `aggregate` takes `window: {field, every, end}` (#226): tumbling time windows (`30s`, `5m`,
+  `1h`, `1d`) aligned to the epoch, combined with `group_by`, with `window_start` and optional
+  `window_end`. Records with an unreadable timestamp are rejected with `_error`.
 
 ## [0.11.0] - 2026-10-17
 

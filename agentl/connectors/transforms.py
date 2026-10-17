@@ -415,13 +415,66 @@ def _agg_value(fn: str, values: list) -> Any:
     return total / len(nums)
 
 
+_EVERY = re.compile(r"^\s*(\d+)\s*([smhd])\s*$")
+_UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _window(window: dict) -> tuple[str, int, bool]:
+    if not isinstance(window, dict) or not window.get("field") or not window.get("every"):
+        raise ValueError("aggregate: window needs field and every, e.g. {field: ts, every: 1m}")
+    m = _EVERY.match(str(window["every"]))
+    if not m or int(m.group(1)) <= 0:
+        raise ValueError(
+            f"aggregate: window every {window['every']!r} is not a duration; use e.g. 30s, 5m, 1h, 1d"
+        )
+    unknown = set(window) - {"field", "every", "end"}
+    if unknown:
+        raise ValueError(f"aggregate: unknown window option(s) {sorted(unknown)}; use field, every, end")
+    return str(window["field"]), int(m.group(1)) * _UNIT[m.group(2)], bool(window.get("end", False))
+
+
+def _window_start(value: Any, secs: int) -> Any:
+    import datetime as dt
+
+    from .. import types
+
+    if isinstance(value, str) and re.fullmatch(r"\s*\d+(\.\d+)?\s*", value):
+        value = float(value)  # epoch seconds or milliseconds written as text
+    ts = types.to_datetime(value)
+    if ts is None:
+        raise ValueError("empty timestamp")
+    if ts.tzinfo is None:
+        epoch = (ts - dt.datetime(1970, 1, 1)).total_seconds()
+        return dt.datetime(1970, 1, 1) + dt.timedelta(seconds=epoch // secs * secs)
+    return dt.datetime.fromtimestamp(ts.timestamp() // secs * secs, ts.tzinfo)
+
+
+def _order(v: Any) -> tuple:
+    if v is None:
+        return (2, "")
+    return (0, v, "") if isinstance(v, (int, float)) and not isinstance(v, bool) else (1, str(v))
+
+
 @connector("aggregate")
-def aggregate(input: Any, metrics: dict[str, str], group_by: str | list[str] | None = None) -> list[dict]:
+def aggregate(
+    input: Any,
+    metrics: dict[str, str],
+    group_by: str | list[str] | None = None,
+    window: dict | None = None,
+) -> list[dict]:
     """Group records and summarise each group (#120): `group_by: [region]`, `metrics: {total:
     "sum(amount)", orders: "count()", customers: "count_distinct(customer)", avg_ticket:
     "avg(amount)"}`. Functions: sum, count, avg, min, max, count_distinct, first, last, list. Empty
-    values are skipped. Groups come out in the order they first appear; no group_by = one record."""
+    values are skipped. Groups come out in the order they first appear; no group_by = one record.
+
+    Time windows: `window: {field: ts, every: 1m}` puts each record in a tumbling window of
+    `every` (`30s`, `5m`, `1h`, `1d`) aligned to the Unix epoch (UTC), combined with `group_by`.
+    The timestamp is ISO text, a datetime or epoch seconds/milliseconds. Each output record gets
+    `window_start` (ISO 8601, keeping the input's offset; naive input stays naive) and, with
+    `end: true`, `window_end`. Output is sorted by window, then group. A record whose timestamp
+    cannot be read goes to the step's rejected records with `_error`."""
     keys = _names(group_by)
+    win = _window(window) if window is not None else None
     parsed = {}
     for name, spec in metrics.items():
         m = _AGG.match(str(spec))
@@ -432,17 +485,44 @@ def aggregate(input: Any, metrics: dict[str, str], group_by: str | list[str] | N
             raise ValueError(f"aggregate: {fn}() needs a field")
         parsed[name] = (fn, field)
     groups: dict[tuple, list[dict]] = {}
+    bad: list[dict] = []
     for r in single(input):
-        groups.setdefault(tuple(r.get(k) for k in keys), []).append(r)
-    out = []
-    for key, rows in groups.items():
-        row = dict(zip(keys, key, strict=True))
+        if win is None:
+            groups.setdefault(tuple(r.get(k) for k in keys), []).append(r)
+            continue
+        try:
+            start = _window_start(r.get(win[0]), win[1])
+        except Exception as e:  # unreadable timestamp: reject the record, keep the rest
+            bad.append({**r, "_error": f"{win[0]}: cannot read timestamp {r.get(win[0])!r} ({e})"})
+            continue
+        groups.setdefault((start, *(r.get(k) for k in keys)), []).append(r)
+
+    def summary(group: dict, rows: list[dict]) -> dict:
         for name, (fn, field) in parsed.items():
-            row[name] = (
+            group[name] = (
                 len(rows) if fn == "count" and not field else _agg_value(fn, [r.get(field) for r in rows])
             )
-        out.append(row)
-    return out
+        return group
+
+    if win is None:
+        return [summary(dict(zip(keys, key, strict=True)), rows) for key, rows in groups.items()]
+    import datetime as dt
+
+    from ..registry import Rejects
+
+    def order(item: tuple) -> tuple:
+        start = item[0][0]
+        epoch = start.timestamp() if start.tzinfo else (start - dt.datetime(1970, 1, 1)).total_seconds()
+        return (epoch, *(_order(v) for v in item[0][1:]))
+
+    out = []
+    for key, rows in sorted(groups.items(), key=order):
+        row: dict = {"window_start": key[0].isoformat()}
+        if win[2]:
+            row["window_end"] = (key[0] + dt.timedelta(seconds=win[1])).isoformat()
+        row.update(zip(keys, key[1:], strict=True))
+        out.append(summary(row, rows))
+    return Rejects(out, bad)
 
 
 def _sort_keys(by: str | list[Any] | dict[str, str]) -> list[tuple[str, bool]]:
