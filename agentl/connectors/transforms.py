@@ -575,3 +575,19 @@ def fill(input: Any, values: dict[str, Any]) -> list[dict]:
     """Defaults for empty fields (#120): `values: {country: BR, discount: 0}`. A field that is
     missing, null or blank text gets the default; anything else is kept."""
     return [{**r, **{k: v for k, v in values.items() if _blank(r.get(k))}} for r in single(input)]
+
+
+@connector("resolve")
+def resolve_(input: Any, field: str, reference: Any, **opts: Any) -> Any:
+    """Match `field` to a reference table: exact, then fuzzy. Called directly (outside a run)
+    there is no model and no stored decisions; in a pipeline the runner adds both."""
+    from .. import resolve as res
+
+    inputs = input if isinstance(input, dict) else {"input": single(input)}
+    rows = [r for k, v in inputs.items() if k != _ref_id(reference) for r in v]
+    out, _, _ = res.resolve(rows, res.reference_rows(reference, inputs), field, **opts)
+    return out
+
+
+def _ref_id(reference: Any) -> Any:
+    return reference if isinstance(reference, str) else (reference or {}).get("step")

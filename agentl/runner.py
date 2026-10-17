@@ -161,7 +161,11 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     """The per-record cache key of an agent step (also used by `agentl plan` to count hits)."""
     # Without a cascade the key stays what it was, so existing caches keep their hits.
     llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
-    if step.escalate:
+    if step.attempts:
+        llm_key = [
+            [spec.llm[a.llm or step.llm].model_dump(exclude={"price"}), a.validate_] for a in step.attempts
+        ]
+    elif step.escalate:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
     # records_per_call is not part of the key: the answer per record is the same.
     if step.tools:  # tools can change the answer, so they are part of the key
@@ -265,7 +269,12 @@ class Runner:
             if spend is None:
                 return {}
             spend["cost_usd"] = round(spend["cost_usd"], 6)
-            return dict(spend)
+            out = dict(spend)
+            if "models" in spend:
+                out["models"] = {
+                    k: {**v, "cost_usd": round(v["cost_usd"], 6)} for k, v in spend["models"].items()
+                }
+            return out
 
     # budget -------------------------------------------------------------
     def _charge(
@@ -291,6 +300,14 @@ class Runner:
             mine["cache_read_tokens"] += read
             mine["llm_calls"] += 1
             mine["cost_usd"] += cost
+            # per model, so fallbacks and `agentl cost --by model` see which model was paid for
+            m = mine.setdefault("models", {}).setdefault(
+                spec.model, {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+            )
+            m["llm_calls"] += 1
+            m["input_tokens"] += tin
+            m["output_tokens"] += tout
+            m["cost_usd"] += cost
 
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
@@ -412,6 +429,53 @@ class Runner:
 
     # steps --------------------------------------------------------------
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """An agent step. With `rules:` (#124) each record tries the rules first and only the
+        records they cannot handle are sent to the llm; the output keeps the input order and each
+        record says which path produced it in `_path`."""
+        if not step.rules:
+            answered = self._agent_slots(run_id, step, records, result)
+            return self._agent_finish(run_id, step, answered, len(records), result)
+        records = list(records)
+        schema = llm.schema_model(f"{step.id}_output", step.output or {})
+        by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
+        rest = [i for i, out in enumerate(by_rules) if out is None]
+        asked = self._agent_slots(run_id, step, [records[i] for i in rest], result) if rest else []
+        slots: list[tuple[dict | None, dict | None]] = []
+        answers = iter(asked)
+        for rec, out in zip(records, by_rules, strict=True):
+            if out is not None:
+                slots.append(({**rec, **out, "_path": "rules"}, None))
+                continue
+            good, bad = next(answers)
+            slots.append(({**good, "_path": "agent"} if good is not None else None, bad))
+        paths = {"rules": len(records) - len(rest), "agent": len(rest)}
+        with self._spend:
+            result.spend[step.id]["paths"] = paths
+        self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
+        return self._agent_finish(run_id, step, slots, len(records), result)
+
+    def _agent_finish(
+        self,
+        run_id: str,
+        step: StepSpec,
+        slots: list[tuple[dict | None, dict | None]],
+        total: int,
+        result: RunResult,
+    ) -> Records:
+        ok: Records = []
+        bad: Records = []
+        for good, rejected in slots:
+            if good is not None:
+                ok.append(good)
+            elif rejected is not None:
+                bad.append(rejected)
+        self._rejects(run_id, step.id, bad, total, result)
+        return ok
+
+    def _agent_slots(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> list[tuple[dict | None, dict | None]]:
+        """Asks the llm about each record: (answered record, None) or (None, rejected record)."""
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         prov = self._provider(step.llm)
         llm_spec = self.spec.llm[step.llm]
@@ -446,32 +510,85 @@ class Runner:
                 and conf < step.escalate_below
             )
 
+        # The tries a record gets: `attempts:` when set, else two per llm of the cascade.
+        plan: list[tuple[str, str, bool]] = (
+            [(a.llm or step.llm, a.validate_, a.feedback) for a in step.attempts]
+            if step.attempts
+            else [(name, "strict", False) for name in chain for _ in range(2)]
+        )
+        loose = llm.lenient_schema(schema) if any(v == "lenient" for _, v, _ in plan) else schema
+
+        def count_attempt(n: int, name: str, usage: Any, ok: bool) -> None:
+            if not step.attempts:
+                return
+            with self._spend:
+                per = result.spend[step.id].setdefault("attempts", {})
+                a = per.setdefault(
+                    str(n + 1), {"llm": name, "calls": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0}
+                )
+                a["calls"] += 1
+                a["failed"] += 0 if ok else 1
+                a["input_tokens"] += getattr(usage, "input_tokens", 0)
+                a["output_tokens"] += getattr(usage, "output_tokens", 0)
+
         def one(rec: dict) -> tuple[dict | None, dict | None]:
             last: Exception | None = None
-            for n, name in enumerate(chain):
+            errors: list[dict] = []
+            n = 0
+            while n < len(plan):
+                name, validate, feedback = plan[n]
                 p, spec = self._provider(name), self.spec.llm[name]
-                for _ in range(2):  # one retry on invalid output
-                    self._check_budget(result)
-                    try:
-                        if call_tool is not None:
-                            res = p.structured_tools(  # type: ignore[attr-defined]
-                                step.agent or "", rec, schema, tool_defs, call_tool, step.max_tool_calls
-                            )
-                        else:
-                            res = p.structured(step.agent or "", rec, schema)
-                    except BudgetExceeded:
-                        raise
-                    except (ValidationError, ValueError, RuntimeError) as e:
-                        # Invalid answers still cost tokens: count them for budget and spend.
-                        self._charge(result, step, spec, e)
-                        last = e
-                        continue
-                    self._charge(result, step, spec, res)
-                    out = res.value.model_dump()
-                    if n + 1 < len(chain) and unsure(out):
-                        last = ValueError(f"confidence {out['confidence']} below {step.escalate_below}")
-                        break  # the next llm answers this record
-                    return done(rec, out, name)
+                instruction = step.agent or ""
+                if feedback and errors:
+                    instruction = llm.feedback_instruction(instruction, errors)
+                asked = loose if validate == "lenient" else schema
+                self._check_budget(result)
+                res: llm.Result | None = None
+                try:
+                    if call_tool is not None:
+                        res = p.structured_tools(  # type: ignore[attr-defined]
+                            instruction, rec, asked, tool_defs, call_tool, step.max_tool_calls
+                        )
+                    else:
+                        res = p.structured(instruction, rec, asked)
+                    dropped: list[dict] = []
+                    if validate == "lenient":
+                        out, dropped = llm.lenient_check(schema, res.value.model_dump())
+                    else:
+                        out = res.value.model_dump()
+                except BudgetExceeded:
+                    raise
+                except (ValidationError, ValueError, RuntimeError) as e:
+                    usage: Any = e if res is None else res  # lenient: the answer came, then failed
+                    # Invalid answers still cost tokens: count them for budget and spend.
+                    self._charge(result, step, spec, usage)
+                    count_attempt(n, name, usage, False)
+                    last, errors = e, llm.validation_errors(e)
+                    if step.attempts:
+                        self._emit(
+                            run_id,
+                            "agent.attempt",
+                            step.id,
+                            attempt=n + 1,
+                            llm=name,
+                            ok=False,
+                            input_tokens=getattr(usage, "input_tokens", 0),
+                            output_tokens=getattr(usage, "output_tokens", 0),
+                            errors=errors[:10],
+                        )
+                    n += 1
+                    continue
+                assert res is not None
+                self._charge(result, step, spec, res)
+                count_attempt(n, name, res, True)
+                nxt = next((j for j in range(n + 1, len(plan)) if plan[j][0] != name), None)
+                if nxt is not None and unsure(out):
+                    last = ValueError(f"confidence {out['confidence']} below {step.escalate_below}")
+                    n = nxt  # the next llm answers this record
+                    continue
+                if dropped:
+                    self._dropped(run_id, step.id, rec, dropped)
+                return done(rec, out, name)
             return None, {**rec, "_error": str(last)}
 
         batch_schema = _batch_schema(step.id, schema)
@@ -544,17 +661,18 @@ class Runner:
             slots[i] = slots[src]
         if copies:
             self._emit(run_id, "agent.deduplicated", step.id, records=len(copies))
-        ok: Records = []
-        bad: Records = []
-        for slot in slots:
-            assert slot is not None
-            good, rejected = slot
-            if good is not None:
-                ok.append(good)
-            elif rejected is not None:
-                bad.append(rejected)
-        self._rejects(run_id, step.id, bad, len(records), result)
-        return ok
+        assert all(slot is not None for slot in slots)
+        return slots  # type: ignore[return-value]
+
+    def _dropped(self, run_id: str, step_id: str, rec: dict, dropped: list[dict]) -> None:
+        """A lenient attempt kept the record but dropped invalid values: each goes to the
+        quarantine with its reason (field, rule, value), and an `item.dropped` event says so."""
+        rows = [
+            {**rec, "_error": f"dropped {d['field']}: {d['rule']}", "_dropped": True, "_value": d["value"]}
+            for d in dropped
+        ]
+        self._quarantine(run_id, step_id, rows)
+        self._emit(run_id, "item.dropped", step_id, count=len(rows), error=rows[0]["_error"])
 
     def _rejects(self, run_id: str, step_id: str, bad: Records, total: int, result: RunResult) -> None:
         """Rejected records of a step: kept on the result and in the quarantine, counted for
@@ -635,6 +753,11 @@ class Runner:
             else:
                 tables = {r: raw(r) for r in refs}
             return duck.run(step.id, tables, base_dir=self.spec.base_dir, **step.with_)
+        if step.use == "map_schema":
+            return self._run_map_schema(run_id, step, data, result)
+
+        if step.use == "resolve":
+            return self._run_resolve(run_id, step, refs, outputs, data, result)
         if step.id in self._arrow_out or _is_table(data):
             return self._run_arrow(step, data)
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
@@ -654,6 +777,88 @@ class Runner:
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
         return out
+
+    def _run_map_schema(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
+        """Map columns with the mapping stored for this layout; infer it (by name, then one LLM
+        call) only for a layout not seen yet. See agentl/mapping.py."""
+        from . import mapping
+
+        if isinstance(data, dict):
+            raise ValueError("map_schema steps take a single input")
+        llm_spec = self.spec.llm[step.llm]
+
+        def ask(instruction: str, record: dict, schema: type) -> Any:
+            self._check_budget(result)
+            try:
+                res = self._provider(step.llm).structured(instruction, record, schema)
+            except (ValidationError, ValueError, RuntimeError) as e:
+                self._charge(result, step, llm_spec, e)
+                raise RuntimeError(f"map_schema: the LLM did not answer with a mapping: {e}") from e
+            self._charge(result, step, llm_spec, res)
+            return res.value
+
+        name = self.spec.name
+        out, new = mapping.run(
+            list(data or []),
+            load=lambda: self.store.mapping_get(name, step.id),
+            save=lambda value: self.store.mapping_set(name, step.id, value),
+            ask=ask,
+            where=f"{name} {step.id}",
+            **step.with_,
+        )
+        if new is not None:
+            self._emit(
+                run_id,
+                "mapping.inferred",
+                step.id,
+                signature=new["signature"],
+                columns=new["columns"],
+                by_llm=new["by_llm"],
+                approved=new["approved"],
+            )
+        if out.rejected:
+            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+        return list(out)
+
+    def _run_resolve(
+        self, run_id: str, step: StepSpec, refs: list[str], outputs: dict, data: Any, result: RunResult
+    ) -> Records:
+        """Exact and fuzzy matches cost nothing; only ambiguous values go to the model, once each:
+        its decisions are stored per pipeline and step (`agentl resolve export|import`)."""
+        from . import resolve as res
+
+        opts = dict(step.with_)
+        field, reference = opts.pop("field"), opts.pop("reference")
+        use_model = opts.pop("model", True)
+        instruction = opts.pop("instruction", None) or res.INSTRUCTION
+        inputs = data if isinstance(data, dict) else {(refs or ["input"])[0]: list(data or [])}
+        ref_id = reference if isinstance(reference, str) else (reference or {}).get("step")
+        rows = [r for k, v in inputs.items() if k != ref_id for r in v]
+        table = res.reference_rows(reference, inputs, self.spec.base_dir)
+        memory = res.decisions_key(self.spec.name, step.id)
+        decisions = dict(self.store.cache_get(memory) or {}) if self.use_cache else {}
+        before = dict(decisions)
+
+        def ask(record: dict) -> tuple[str | None, Any]:
+            self._check_budget(result)
+            prov, spec = self._provider(step.llm), self.spec.llm[step.llm]
+            try:
+                out = prov.structured(instruction, record, res.Choice)
+            except llm.InvalidOutput as e:
+                self._charge(result, step, spec, e)
+                return None, e
+            self._charge(result, step, spec, out)
+            return getattr(out.value, "match", None), out
+
+        out, counts, reused = res.resolve(
+            rows, table, field, ask=ask if use_model else None, decisions=decisions, **opts
+        )
+        if self.use_cache and decisions != before:
+            self.store.cache_set(memory, decisions)
+        self._emit(run_id, "resolve.counts", step.id, **counts, cached=reused)
+        if out.rejected:
+            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+        return list(out)
 
     # checks ---------------------------------------------------------------
     def _run_check(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
@@ -821,7 +1026,7 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind == "agent" or step.review:
+        if step.kind == "agent" or step.review or step.use in ("map_schema", "resolve"):
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
@@ -1211,6 +1416,45 @@ class Runner:
                     result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"
 
 
+def _apply_rules(
+    step: StepSpec, records: Records, schema: type[BaseModel], base_dir: Any
+) -> list[dict | None]:
+    """The `rules:` of a hybrid agent step on each record, in order. Returns the `output:` fields
+    for each record the rules handled, or None when a rule failed (an expression error, a value
+    that is not of its semantic type, an exception in a fn) or an output field is missing, null
+    or invalid. Those records go to the agent."""
+    from .connectors.transforms import cast, compute
+
+    tag = "\x00agentl_row"
+    current: list[dict] = [{**r, tag: i} for i, r in enumerate(records)]
+    for rule in step.rules:
+        kind, body = next(iter(rule.items()))
+        if kind == "fn":
+            fn = registry.resolve_fn(body, base_dir)
+            nxt = []
+            for r in current:
+                with contextlib.suppress(Exception):
+                    out = fn({k: v for k, v in r.items() if k != tag})
+                    if isinstance(out, dict):
+                        nxt.append({**r, **out, tag: r[tag]})
+            current = nxt
+        elif kind == "compute":
+            current = list(compute(current, fields=body))
+        else:
+            current = list(cast(current, fields=body))
+    found: list[dict | None] = [None] * len(records)
+    required = [f for f, t in (step.output or {}).items() if not t.endswith("?")]
+    for r in current:
+        if any(r.get(f) is None or r.get(f) == "" for f in required):
+            continue
+        try:
+            value = schema.model_validate({f: r.get(f) for f in step.output or {}})
+        except ValidationError:
+            continue
+        found[r[tag]] = value.model_dump()
+    return found
+
+
 def _review_instruction(review: str) -> str:
     return (
         f"{review}\n\nYou are checking data before it is delivered to the people who use it. The "
@@ -1281,7 +1525,7 @@ def retry_rejected(
     step_id = steps[0]
     if step_id not in {s.id for s in spec.steps}:
         raise ValueError(f"step '{step_id}' is not in pipeline '{spec.name}'")
-    hidden = {"_error", "_raw"}
+    hidden = {"_error", "_raw", "_dropped", "_value"}
     records = [{k: v for k, v in r["record"].items() if k not in hidden} for r in rows]
     picked = [
         s.model_copy(update={"input": None}) if s.id == step_id else s for s in _downstream(spec, step_id)
