@@ -54,6 +54,35 @@ class InvalidOutput(ValueError):
         self.cost_usd: float | None = None
 
 
+@dataclass
+class RowsChunk:
+    """One answer of a rows-mode call (#215): raw text, one JSON array per line, and whether the
+    provider stopped at the output token limit."""
+
+    text: str
+    truncated: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float | None = None
+
+
+ROWS_SYSTEM = (
+    " Answer only with rows, one JSON array per line, values in the given column order, no "
+    "header, no prose and no code fences. Use null for a value that is not present."
+)
+
+CONTINUE_NOTE = (
+    "Your answer was cut by the output limit. Continue with the next row after the last complete "
+    "one, in the same format. Do not repeat rows already sent."
+)
+
+
+def rows_instruction(instruction: str, columns: list[str]) -> str:
+    return f"{instruction}\n\nColumns, in this order: {json.dumps(columns)}"
+
+
 def validation_errors(e: BaseException) -> list[dict[str, Any]]:
     """Structured errors of a rejected answer: field, rule and the (clipped) value, never the
     record. Used as feedback for the next attempt (#198)."""
@@ -272,6 +301,28 @@ class AnthropicProvider:
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": out, "is_error": err})
             messages.append({"role": "user", "content": results})
 
+    def rows(self, instruction: str, record: dict, columns: list[str], previous: list[str]) -> RowsChunk:
+        """Rows mode (#215). `previous` holds the earlier, truncated answers for this record; each
+        is replayed as an assistant turn followed by a request to continue."""
+        messages: list[dict] = [
+            {"role": "user", "content": self._content(rows_instruction(instruction, columns), record)}
+        ]
+        for text in previous:
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": CONTINUE_NOTE})
+        resp = self.client.messages.create(
+            model=self.spec.model,
+            max_tokens=self.spec.max_tokens,
+            system=SYSTEM + ROWS_SYSTEM,
+            messages=messages,
+            **self.options,
+        )
+        tin, tout, read, write = self._usage(resp.usage)
+        if resp.stop_reason == "refusal":
+            raise InvalidOutput("model refused this record", tin, tout)
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        return RowsChunk(text, resp.stop_reason == "max_tokens", tin, tout, read, write)
+
     # Message Batches: same request per record, answered within 24 h at a lower price.
     def submit_batch(self, instruction: str, records: dict[str, dict], schema: type[BaseModel]) -> str:
         fmt = {"type": "json_schema", "schema": _strict_schema(schema)}
@@ -332,6 +383,13 @@ class EchoProvider:
 
     def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
         return Result(schema.model_validate({k: record.get(k) for k in schema.model_fields}))
+
+    def rows(self, instruction: str, record: dict, columns: list[str], previous: list[str]) -> RowsChunk:
+        """A record's `rows` list (lists of values) as-is, else one row of its matching fields."""
+        rows = record.get("rows")
+        if not isinstance(rows, list):
+            rows = [[record.get(c) for c in columns]]
+        return RowsChunk("\n".join(json.dumps(r, default=str) for r in rows))
 
     def text(self, instruction: str, content: str) -> str:
         return content[:500]

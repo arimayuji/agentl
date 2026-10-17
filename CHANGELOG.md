@@ -15,6 +15,63 @@ They are always listed under **Changed** or **Removed**.
   step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,
   `partial` on the result, its summary and `run.succeeded`) without failing the run. `after:`
   orders steps without passing data, e.g. the legacy write after the new one.
+- Run outcomes (#188): every run gets an `outcome` (`success`, `no_change`, `skipped`, `partial`,
+  `failed`) next to its unchanged `status`, set by an `outcomes:` policy (`on_transport_error:
+  skipped_upstream`, `on_empty`, `on_rejected`, `alert_on`, `max_skipped`, `exit_codes`). Skipped
+  runs end with `run.skipped` (status `skipped`), outcomes in `alert_on` emit `run.alert`, too many
+  skipped runs in a row fail, and `agentl runs`, `agentl stats` and the dashboard show the outcome.
+
+- Concurrency control and single-flight cache (#204): `concurrency: {key, on_overlap: skip | queue
+  | fail}` allows one run per key across workers sharing the run store (`skip` ends as `skipped`,
+  not an error); the `cache` step keeps the result of its `do` steps for a `ttl` and computes it
+  once for concurrent callers; `cache_ttl` on cached steps; `agentl cache clear <key>`. Locks are
+  leases renewed while held, so they lapse if the process dies. SQLite on one host, Postgres across
+  hosts (table `agentl_locks`).
+- `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` (#236): slowly changing
+  dimensions type 2 with `valid_from`, `valid_to` and `is_current`. A record whose `track` columns
+  (default: all but `key`) changed closes the current version and inserts a new one; unchanged
+  rows are left alone; `on_missing: close` closes keys absent from the input. `as_of` (default
+  now) needs a time zone and is stored in UTC. Reports `inserted`, `versioned`, `unchanged` and
+  `closed`. Records with a null key are rejected, as in upsert (#281).
+- `skip_seen` step (#184): drops files or records an earlier successful run already handled, keyed
+  by `sha256` of the file at `path`, by `path` or by any field. Keys live in the run store per
+  `scope` (default: the pipeline name) and are marked only when the run succeeds. `agentl seen
+  list|forget [--scope S]` shows and clears them.
+- Checks (#185): `vs_runs: { last: 5, rows: 30% }` compares with the median of the last N passing
+  runs, and `severity:` sets `fail`, `warn` or `reject` (drop the failing rows) per rule. Check
+  events carry the result of each rule in `rules`.
+
+- OpenLineage events (#238): `lineage:` in the YAML (or `OPENLINEAGE_URL` / `OPENLINEAGE_FILE`)
+  sends START / COMPLETE / FAIL RunEvents for the run and each step to an HTTP endpoint such as
+  Marquez, or to a JSON lines file, with input and output datasets taken from connector
+  parameters. Stdlib only; a catalog that is down never fails the run. See Observability.
+- `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
+  LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
+  with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
+  Exits 1 with a per-field row diff on a mismatch, for CI.
+- Pipeline chaining under `agentl serve` (#203): `on_success` / `on_failure` / `after` actions
+  start another pipeline with parameters (`${outputs.<step>}`, `${trigger.<field>}`) or emit an
+  event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
+  `rows_changed`, `outcome`); an `after: <pipeline>` trigger; parent and child runs are linked;
+  cycles are rejected at start.
+- `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
+  page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
+  finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
+  `on_unchanged: stop` ends the run with the new status `no_change`; `continue_empty` returns no
+  records.
+- Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
+  CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
+  and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
+- `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
+  (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
+  storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
+  broken files go to the rejected records, and `validate: true` checks the `chave` check digit and
+  orphan events.
+- Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
+  in the column order of `output` and builds the records, so one record can give many rows. A
+  truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without
+  duplicate rows (`on_truncated: continue | fail`); a bad row is rejected on its own; the step's
+  spend reports `output_tokens_saved_est`. Providers: `anthropic` and `echo`.
 - `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
   Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
   an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters

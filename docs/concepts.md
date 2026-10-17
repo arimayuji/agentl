@@ -174,8 +174,43 @@ Agent steps cache each record's result in `.agentl/agentl.db`, keyed by the inst
 the model and the record. Re-running a pipeline only pays for records that changed or failed.
 Set `cache: true` on other steps to cache them too, or run with `--no-cache` to ignore the cache.
 
+## Run outcomes
+
+Success or failure alone hides what happened: most polling runs find nothing new, and a source that
+was unreachable for one run is not a defect. Each run gets an `outcome` next to its `status`:
+
+| outcome | when | `status` | default exit code |
+|---|---|---|---|
+| `success` | the run finished and read data | `succeeded` | 0 |
+| `no_change` | every step without inputs read 0 records | `succeeded` | 0 |
+| `partial` | the run finished but records went to the quarantine | `succeeded` | 0 |
+| `skipped` | a timeout or connection error, with `on_transport_error: skipped_upstream` | `skipped` | 0 |
+| `failed` | any other error, or too many skipped runs in a row | `failed` | 1 |
+
+`status` keeps its values (`succeeded`, `failed`), so code, orchestrators and notification rules
+written before outcomes behave as before; the only new status is `skipped`, which appears only when
+you opt in. The run ends with the event `run.succeeded`, `run.failed` or `run.skipped`, whose data
+carries `outcome` (and `reason` for skips). When the outcome is in `alert_on`, a `run.alert` event
+comes right before it: point notification rules at it to be alerted only for what needs a person.
+
+```yaml
+outcomes:
+  on_transport_error: skipped_upstream  # default: failed. HTTP 4xx/5xx and parsing stay failed
+  on_empty: no_change                   # or success
+  on_rejected: partial                  # or success
+  alert_on: [failed, partial]           # the default
+  max_skipped: 3                        # 3 skipped runs in a row fail (null: never)
+  exit_codes: {partial: 2, no_change: 0}
+```
+
+A skipped run does not move cursors and releases what queue readers took, like a failed run. The
+`max_skipped`-th skipped run in a row is recorded as `failed` (and alerts), so an unreachable source
+is not ignored forever. `agentl run` exits with `exit_codes[outcome]` (default 1 for `failed`, 0
+otherwise); `run(..., raise_on_failure=True)` raises only for `failed`. `agentl runs`, `agentl
+stats` and the dashboard show the outcome.
+
 ## Events
 
 Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
-`wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded` and `run.failed`. They feed the run store, the dashboard and
+`wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded`, `run.failed`, `run.skipped` and `run.alert` (see [run outcomes](#run-outcomes)). They feed the run store, the dashboard and
 [notifications](notifications.md).

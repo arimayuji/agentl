@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 FAILURE_EVENTS = ("step.failed", "check.failed", "budget.exceeded")
-END_EVENTS = ("run.succeeded", "run.failed")
+END_EVENTS = ("run.succeeded", "run.failed", "run.skipped")
 STEP_EVENTS = ("step.succeeded", "item.rejected")
 
 _NOISE = [
@@ -75,7 +75,9 @@ def compute(
                 "runs": 0,
                 "succeeded": 0,
                 "failed": 0,
+                "skipped": 0,
                 "other": 0,
+                "outcomes": {},
                 "_secs": [],
                 "cost_usd": 0.0,
                 "_reasons": {},
@@ -83,14 +85,16 @@ def compute(
             },
         )
         p["runs"] += 1
-        status = r["status"] if r["status"] in ("succeeded", "failed") else "other"
+        status = r["status"] if r["status"] in ("succeeded", "failed", "skipped") else "other"
         p[status] += 1
+        outcome = r.get("outcome") or {"succeeded": "success"}.get(r["status"], r["status"])
+        p["outcomes"][outcome] = p["outcomes"].get(outcome, 0) + 1
         if r["finished"]:
             p["_secs"].append(r["finished"] - r["started"])
         p["cost_usd"] += cost.get(r["id"], 0.0)
         day = _dt.datetime.fromtimestamp(r["started"]).date().isoformat()
         d = p["_days"].setdefault(day, {"date": day, "succeeded": 0, "failed": 0})
-        if status != "other":
+        if status in ("succeeded", "failed"):
             d[status] += 1
         p["last_run"], p["last_status"], p["last_started"] = r["id"], r["status"], r["started"]
         if status == "failed":
@@ -191,6 +195,9 @@ def text(report: dict, top: int = 5) -> str:
             f"{p['pipeline']}: {p['runs']} runs, {p['succeeded']} succeeded, {p['failed']} failed"
             f" ({rate} success)"
         )
+        named = {k: v for k, v in p["outcomes"].items() if k not in ("success", "failed")}
+        if named or p["skipped"]:
+            lines.append("  outcomes: " + ", ".join(f"{k} {v}" for k, v in sorted(p["outcomes"].items())))
         if p["median_s"] is not None:
             lines.append(f"  duration: median {p['median_s']:.1f}s, p95 {p['p95_s']:.1f}s")
         if p["cost_usd"]:

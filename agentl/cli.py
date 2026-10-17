@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import assist, graph, registry
 from .runner import Runner
@@ -149,7 +150,14 @@ def _rejected(a: argparse.Namespace) -> int:
     if result is None:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
-    return 0 if result.status == "succeeded" else 1
+    return _exit_code(spec, result)
+
+
+def _exit_code(spec: Any, result: Any) -> int:
+    """Per outcome, from `outcomes.exit_codes` (default: 1 for failed, 0 otherwise)."""
+    if result.outcome is None:
+        return 0 if result.status in ("succeeded", "skipped", "no_change") else 1
+    return int(spec.outcomes.exit_code(result.outcome))
 
 
 def _mappings(a: argparse.Namespace) -> int:
@@ -273,6 +281,26 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd("keygen", "print a new random key for the protect and unprotect steps")
 
+    te = cmd("test", "run a pipeline on fixture files (echo LLM, no writes) and compare with a golden file")
+    te.add_argument("pipeline")
+    te.add_argument(
+        "--fixture",
+        action="append",
+        default=[],
+        metavar="[STEP=]PATH",
+        help="file a source step reads instead (STEP= may be left out with one source step)",
+    )
+    te.add_argument("--expect", required=True, help="golden JSON: [records] or {writer step: [records]}")
+    te.add_argument("--key", help="match rows by this field instead of by position")
+    te.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="FIELD",
+        help="leave this field out of the comparison",
+    )
+    te.add_argument("--update", action="store_true", help="write the golden file from this run")
+
     pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
     pv.add_argument("pipeline")
     pv.add_argument("step")
@@ -323,6 +351,16 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("action", choices=["show", "reset"])
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
+
+    ca = cmd("cache", "cached results in the run store: clear one key, a prefix (key*) or all")
+    ca.add_argument("action", choices=["clear"])
+    ca.add_argument("key", nargs="?", help="the key, or a prefix ending in * (e.g. 'catalog:*')")
+    ca.add_argument("--all", action="store_true", help="clear every cached result, agent answers included")
+
+    se = cmd("seen", "keys skip_seen already let through: list them, or forget them to reprocess")
+    se.add_argument("action", choices=["list", "forget"])
+    se.add_argument("key", nargs="?", help="forget: only this key (default: the whole scope)")
+    se.add_argument("--scope", help="only this scope (default scope: the pipeline name)")
 
     mp = cmd("mappings", "column mappings of map_schema steps: show, approve or forget them")
     mp.add_argument("action", choices=["show", "approve", "forget"])
@@ -405,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return _exit_code(spec, result)
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -438,6 +476,29 @@ def main(argv: list[str] | None = None) -> int:
                 planned = preflight.plan(load(a.pipeline), store)
             print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
             return 0
+        if a.cmd == "test":
+            from . import testing
+
+            fixtures: dict[str | None, str] = {}
+            for f in a.fixture:
+                sid, sep, path = f.partition("=")
+                if sep and sid and not Path(f).exists():
+                    fixtures[sid] = path
+                else:
+                    fixtures[None] = f
+            tested = testing.run_test(
+                load(a.pipeline),
+                fixtures,
+                a.expect,
+                key=a.key,
+                ignore=testing.IGNORED + tuple(a.ignore),
+                update=a.update,
+            )
+            if a.update:
+                print(f"wrote {a.expect} ({tested.status})")
+                return 0 if tested.status == "succeeded" else 1
+            print(tested.text(), file=sys.stdout if tested.ok else sys.stderr)
+            return 0 if tested.ok else 1
         if a.cmd == "preview":
             from . import preflight
 
@@ -495,7 +556,9 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 runs = store.runs()
             for run in runs:
-                print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
+                outcome = run.get("outcome") or "-"
+                status = f"{run['status']:<10} {outcome:<9}"
+                print(f"{run['id']}  {status} {run['pipeline']}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
             print(registry.describe(a.name) if a.name else "\n".join(registry.names()))
@@ -573,6 +636,32 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "cache":
+            if bool(a.key) == bool(a.all):
+                print("agentl cache clear needs a key or --all", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                count = store.cache_clear(None if a.all else a.key)
+            print(f"cleared {count} cached result(s)")
+            return 0
+
+        if a.cmd == "seen":
+            with open_store(a.db) as store:
+                if a.action == "list":
+                    seen = store.seen_list(a.scope)
+                    for row in seen:
+                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                        print(f"{row['scope']}  {row['key']}  (run {row['run_id']}, {when})")
+                    if not seen:
+                        print("no seen keys stored")
+                    return 0
+                if not a.scope:
+                    print("agentl seen forget needs --scope", file=sys.stderr)
+                    return 2
+                count = store.seen_forget(a.scope, a.key)
+                print(f"forgot {count} key(s) of {a.scope}; the next run handles them again")
+                return 0
+
         if a.cmd == "mappings":
             return _mappings(a)
         if a.cmd == "rejected":
