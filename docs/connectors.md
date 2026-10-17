@@ -172,11 +172,40 @@ Other databases will ship as plugins.
 | `concat` | | Append several inputs |
 | `cast` | `fields` (field: type), `locale`, `on_bad`, `strict` | Clean, typed values; bad rows rejected with the reason (below) |
 | `compute` | `fields` (field: expression), `on_error` (`reject`, `fail`, `null`) | New or replaced fields from safe expressions (below) |
-| `aggregate` | `group_by` (name or list), `metrics` (name: `sum(f)`, `count()`, `avg(f)`, `min(f)`, `max(f)`, `count_distinct(f)`, `first(f)`, `last(f)`, `list(f)`) | One record per group |
+| `aggregate` | `group_by` (name or list), `metrics` (name: `sum(f)`, `count()`, `avg(f)`, `min(f)`, `max(f)`, `count_distinct(f)`, `first(f)`, `last(f)`, `list(f)`), `window` (`{field, every, end}`) | One record per group, or per time window and group (below) |
 | `sort` | `by` (`[region, -total]` or `{total: desc}`) | Order records; empty values last |
 | `limit` | `n`, `offset` | The first `n` records |
 | `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
+
+### Time windows: `aggregate` with `window`
+
+`window: {field: ts, every: 1m}` puts each record in a tumbling window of `every` (`30s`, `5m`,
+`1h`, `1d`) and aggregates per window and `group_by` group:
+
+```yaml
+- id: per_minute
+  use: aggregate
+  input: readings
+  with:
+    group_by: device
+    window: { field: ts, every: 1m, end: true }
+    metrics: { avg_temp: "avg(temperature)", max_temp: "max(temperature)", readings: "count()" }
+```
+
+- Windows are aligned to the Unix epoch in UTC: `1m` windows start at :00 seconds, `1d` windows
+  at 00:00 UTC (21:00 the day before in `-03:00`).
+- The timestamp can be ISO text, a datetime or epoch seconds or milliseconds (also as text).
+- Each output record has `window_start` in ISO 8601, keeping the input's offset (`+00:00` for
+  `Z` and epoch numbers); naive input gives naive output. `end: true` adds `window_end`.
+- Output is sorted by window, then group.
+- A record whose timestamp is empty or cannot be read goes to the step's rejected records with
+  `_error`; the rest are aggregated.
+- `every` is checked before any record is read: `1x` or `0s` fail with a clear error.
+
+Each run aggregates only the records it got. When a window spans two micro-batches, both runs
+produce a row for it; load with an upsert on `window_start` and the group, and use metrics that
+can be recomputed (or read the whole window again) if partial rows matter.
 
 ### Expressions: `compute`
 
@@ -711,7 +740,7 @@ For alerts when a run fails, use the `discord` channel of [`notify:`](notificati
 
 ## Queues and streams
 
-Kafka, Amazon SQS, RabbitMQ and Google Pub/Sub, as micro-batches:
+Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub and MQTT, as micro-batches:
 
 ```yaml
 name: invoice-events
@@ -743,11 +772,85 @@ broker delivers the messages again (at-least-once). Make the load idempotent, as
 | `sqs.receive` (`queue_url`, `release_on_failure`) | `sqs.send` (10 per request; FIFO `group_id`, `dedup_field`) | `[aws]` | `body`, `message_id`, `attributes` |
 | `rabbitmq.consume` (`url`, `queue`; requeued on failure) | `rabbitmq.publish` (persistent, publisher confirms) | `[rabbitmq]` | `body`, `routing_key`, `headers` |
 | `pubsub.pull` (`subscription`; deadline reset on failure) | `pubsub.publish` (waits for message ids) | `[pubsub]` | `data`, `attributes`, `message_id`, `publish_time` |
+| `mqtt.subscribe` (`url`, `topic`, `qos`, `client_id`, `clean_session`) | `mqtt.publish` (`topic` or `topic_field`, `qos`, `retain`; waits for confirmation) | `[mqtt]` | `value`, `topic`, `qos`, `retain`, `timestamp` |
 
 Message bodies are parsed as JSON when they are JSON (`format: auto`); `format: json` fails on
 anything else, `format: text` keeps the text. Writers send each record as JSON, or one field of
-it (`value`, `body`, `data`). MQTT is not covered: its brokers acknowledge on receipt, which does
-not fit the ack-after-success model.
+it (`value`, `body`, `data`).
+
+### MQTT
+
+`mqtt.subscribe` connects to `mqtt://host:1883` or `mqtts://host:8883` (TLS), with credentials
+in the URL (`mqtt://user:pass@host`) or in `username` / `password`. `topic` is one filter or a
+list, with the `+` (one level) and `#` (the rest) wildcards. `timestamp` is when agentl received
+the message (MQTT 3.1.1 messages carry no time of their own); readings usually carry the
+device's time in the payload.
+
+MQTT has no consumer offsets. What survives between runs is the broker's session:
+
+- With a `client_id`, the session is persistent (`clean_session: false` by default). QoS 1 and 2
+  messages are acked only when the run succeeds; if it fails, or a message arrives after the
+  batch is full, it stays with the broker and is delivered again on the next run with that
+  `client_id` (at-least-once). Use one `client_id` per pipeline.
+- While no run is connected, the broker keeps QoS 1/2 messages for the session up to its own
+  queue limits and session expiry. Check them before running every few minutes.
+- Without a `client_id`, or with `clean_session: true`, the session ends on disconnect and what
+  was not read is gone.
+- QoS 0 messages are never stored or redelivered: they can be lost.
+- Retained messages arrive right after subscribing, with `retain: true`.
+
+`mqtt.publish` sends each record (or its `value` field) as JSON to `topic`, or to the topic in
+each record's `topic_field`, with `qos` and `retain`, and fails if any message is not confirmed
+within `timeout`.
+
+Sensor readings to Postgres, one row per device and minute:
+
+```yaml
+name: sensor-minutes
+trigger:
+  - every: 1m
+steps:
+  - id: readings
+    use: mqtt.subscribe
+    with:
+      url: "mqtts://${MQTT_USER}:${MQTT_PASSWORD}@${MQTT_HOST}:8883"
+      topic: sensors/+/telemetry
+      qos: 1
+      client_id: agentl-sensor-minutes
+      max_records: 20000
+      max_seconds: 20
+  - id: fields                      # payload {"device": "d1", "ts": "...", "temperature": 21.5}
+    use: flatten
+    input: readings
+    with: { fields: value }
+  - id: pick
+    use: select
+    input: fields
+    with:
+      fields: [value.device, value.ts, value.temperature]
+      rename: { value.device: device, value.ts: ts, value.temperature: temperature }
+  - id: typed
+    use: cast
+    input: pick
+    with: { fields: { ts: datetime, temperature: float } }
+  - id: per_minute
+    use: aggregate
+    input: typed
+    with:
+      group_by: device
+      window: { field: ts, every: 1m, end: true }
+      metrics: { avg_temp: "avg(temperature)", max_temp: "max(temperature)", readings: "count()" }
+  - id: save
+    use: postgres.write
+    input: per_minute
+    with: { dsn: "${PG_DSN}", table: sensor_minutes, mode: upsert, key: [device, window_start] }
+```
+
+!!! note "Batches, not millisecond streaming"
+    agentl runs batches and micro-batches, such as `agentl serve` running a pipeline every
+    minute. It is not a stream processor: latency is the trigger interval plus the run. Real-time
+    alarms (a temperature over a limit right now) belong in the broker's rules or a stream
+    processor; agentl fits the aggregation, enrichment and loading around them.
 
 ## Remote storage
 

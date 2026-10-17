@@ -1,4 +1,4 @@
-"""Queues and streams: Kafka, Amazon SQS, RabbitMQ and Google Pub/Sub.
+"""Queues and streams: Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub and MQTT.
 
 Consumers read a micro-batch (up to `max_records`, or until `max_seconds` pass) and acknowledge
 it only after the whole run succeeded: offsets are committed, messages deleted or acked. If the
@@ -6,11 +6,15 @@ run fails, nothing is acknowledged and the broker delivers the messages again (a
 make the load idempotent (upsert by a key). Run them on a schedule or back to back with
 `agentl serve` (`trigger: [{every: 30s}]`).
 
-Install the client you need: `agentl-etl[kafka]`, `[aws]` (SQS), `[rabbitmq]` or `[pubsub]`."""
+Install the client you need: `agentl-etl[kafka]`, `[aws]` (SQS), `[rabbitmq]`, `[pubsub]` or
+`[mqtt]`."""
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import queue
+import threading
 import time
 from typing import Any
 
@@ -392,3 +396,204 @@ def pubsub_publish(input: Any, topic: str = "", data: str | None = None, timeout
     futures = [client.publish(topic, _encode(r, data)) for r in rows]
     ids = [f.result(timeout=timeout) for f in futures]
     return [{"topic": topic, "published": len(ids)}]
+
+
+# ---------------------------------------------------------------- MQTT
+def _mqtt_client(
+    url: str,
+    client_id: str,
+    clean_session: bool,
+    username: str | None,
+    password: str | None,
+    keepalive: int,
+    timeout: float,
+    manual_ack: bool = False,
+) -> Any:
+    """A connected paho client with its network loop running."""
+    from urllib.parse import unquote, urlsplit
+
+    mqtt = require("paho.mqtt.client", "mqtt")
+    u = urlsplit(url)
+    if u.scheme not in ("mqtt", "mqtts") or not u.hostname:
+        raise ValueError("mqtt: url must be mqtt://host[:port] or mqtts://host[:port] (TLS)")
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id=client_id,
+        clean_session=clean_session,
+        manual_ack=manual_ack,
+    )
+    user = username if username is not None else (unquote(u.username) if u.username else None)
+    pwd = password if password is not None else (unquote(u.password) if u.password else None)
+    if user is not None:
+        client.username_pw_set(user, pwd)
+    if u.scheme == "mqtts":
+        client.tls_set()
+    connected = threading.Event()
+    result: list[Any] = []
+
+    def on_connect(c: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any) -> None:
+        result.append(reason_code)
+        connected.set()
+
+    client.on_connect = on_connect
+    client.connect(u.hostname, u.port or (8883 if u.scheme == "mqtts" else 1883), keepalive)
+    client.loop_start()
+    if not connected.wait(timeout) or getattr(result[0], "is_failure", result[0] != 0):
+        client.loop_stop()
+        why = result[0] if result else f"no answer in {timeout}s"
+        raise RuntimeError(f"mqtt: cannot connect to {u.hostname}: {why}")
+    return client
+
+
+def _mqtt_close(client: Any) -> None:
+    try:
+        client.disconnect()
+    finally:
+        client.loop_stop()
+
+
+@connector("mqtt.subscribe")
+def mqtt_subscribe(
+    input: Any = None,
+    url: str = "",
+    topic: str | list[str] = "",
+    qos: int = 1,
+    client_id: str = "",
+    clean_session: bool | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    max_records: int = 1000,
+    max_seconds: float = 10,
+    format: str = "auto",
+    keepalive: int = 60,
+    timeout: float = 30,
+) -> list[dict]:
+    """Messages from an MQTT broker (paho-mqtt 2.x): up to `max_records`, or what arrives in
+    `max_seconds`. `url` is mqtt://host:1883 or mqtts://host:8883 (TLS), with `user:pass@` or the
+    `username` / `password` params. `topic` is a filter or a list of them, wildcards `+` and `#`
+    allowed. Records: `value` (JSON parsed when it is JSON), `topic`, `qos`, `retain`,
+    `timestamp` (when agentl received it, ISO 8601 UTC).
+
+    Delivery: MQTT has no consumer offsets; the broker keeps what a session has not acked. With a
+    `client_id` the session is persistent (`clean_session: false` by default), and QoS 1/2
+    messages are acked only when the run succeeds: if it fails, or messages arrive after the batch
+    is full, they stay with the broker and come again on the next run (at-least-once, so load
+    with an upsert). While no run is connected, the broker queues QoS 1/2 messages for the
+    session only up to its own limits and expiry. Without a `client_id` (or with
+    `clean_session: true`) the session ends on disconnect and what was not read is gone. QoS 0
+    messages are never stored nor redelivered: they can be lost. Retained messages arrive on
+    subscribe with `retain: true`."""
+    _check(format)
+    if qos not in (0, 1, 2):
+        raise ValueError("mqtt: qos must be 0, 1 or 2")
+    topics = [topic] if isinstance(topic, str) else list(topic)
+    if not topics or not all(topics):
+        raise ValueError("mqtt: topic is required")
+    persistent = bool(client_id) if clean_session is None else not clean_session
+    if persistent and not client_id:
+        raise ValueError("mqtt: a persistent session (clean_session: false) needs a client_id")
+    inbox: queue.Queue = queue.Queue()
+    full = threading.Event()
+    subscribed = threading.Event()
+    granted: list[Any] = []
+    client = _mqtt_client(
+        url, client_id, not persistent, username, password, keepalive, timeout, manual_ack=True
+    )
+
+    def on_message(c: Any, userdata: Any, msg: Any) -> None:
+        if not full.is_set():  # past the batch: not acked, the broker keeps it (QoS 1/2)
+            inbox.put((msg, dt.datetime.now(dt.timezone.utc).isoformat()))
+
+    def on_subscribe(c: Any, userdata: Any, mid: Any, reason_codes: Any, properties: Any) -> None:
+        granted.extend(reason_codes)
+        subscribed.set()
+
+    client.on_message = on_message
+    client.on_subscribe = on_subscribe
+    out: list[dict] = []
+    acks: list[tuple[int, int]] = []
+    try:
+        client.subscribe([(t, qos) for t in topics])
+        if not subscribed.wait(timeout):
+            raise RuntimeError(f"mqtt: no answer to subscribe in {timeout}s")
+        refused = [str(g) for g in granted if getattr(g, "is_failure", False)]
+        if refused:
+            raise RuntimeError(f"mqtt: broker refused the subscription: {refused}")
+        deadline = time.monotonic() + max_seconds
+        while len(out) < max_records and (left := deadline - time.monotonic()) > 0:
+            try:
+                msg, received = inbox.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            out.append(
+                {
+                    "value": _decode(msg.payload, format),
+                    "topic": msg.topic,
+                    "qos": msg.qos,
+                    "retain": bool(msg.retain),
+                    "timestamp": received,
+                }
+            )
+            if msg.qos > 0:
+                acks.append((msg.mid, msg.qos))
+        full.set()
+    except Exception:
+        _mqtt_close(client)
+        raise
+
+    def ack() -> None:
+        try:
+            for mid, q in acks:
+                client.ack(mid, q)
+        finally:
+            _mqtt_close(client)
+
+    after_run(ack, lambda: _mqtt_close(client))
+    return out
+
+
+@connector("mqtt.publish")
+def mqtt_publish(
+    input: Any,
+    url: str = "",
+    topic: str = "",
+    topic_field: str | None = None,
+    value: str | None = None,
+    qos: int = 1,
+    retain: bool = False,
+    client_id: str = "",
+    username: str | None = None,
+    password: str | None = None,
+    keepalive: int = 60,
+    timeout: float = 30,
+) -> list[dict]:
+    """Publish each record (or its `value` field) as JSON to `topic`, or to the topic in each
+    record's `topic_field`. `qos` 0, 1 or 2 and `retain`. Waits for every message to be sent (QoS
+    0) or confirmed by the broker (QoS 1/2) within `timeout` and fails if any is not."""
+    if qos not in (0, 1, 2):
+        raise ValueError("mqtt: qos must be 0, 1 or 2")
+    if not topic and not topic_field:
+        raise ValueError("mqtt: topic or topic_field is required")
+    rows = single(input)
+    client = _mqtt_client(url, client_id, True, username, password, keepalive, timeout)
+    try:
+        sent = []
+        for r in rows:
+            t = str(r.get(topic_field) or "") if topic_field else topic
+            if not t:
+                raise ValueError(f"mqtt: record has no topic in {topic_field!r}")
+            sent.append(client.publish(t, _encode(r, value), qos=qos, retain=retain))
+        deadline = time.monotonic() + timeout
+        missing = 0
+        for info in sent:
+            try:  # paho raises when the message cannot be sent (e.g. connection lost)
+                info.wait_for_publish(max(0.0, deadline - time.monotonic()))
+                ok = info.is_published()
+            except (RuntimeError, ValueError):
+                ok = False
+            missing += not ok
+        if missing:
+            raise RuntimeError(f"mqtt: {missing} message(s) not confirmed in {timeout}s")
+    finally:
+        _mqtt_close(client)
+    return [{"topic": topic or f"{{{topic_field}}}", "published": len(rows)}]
