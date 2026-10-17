@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
+  page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
+  finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
+  `on_unchanged: stop` ends the run with the new status `no_change`; `continue_empty` returns no
+  records.
 - Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
   CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
   and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
