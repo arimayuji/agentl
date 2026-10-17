@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS rejected (
   error TEXT, record TEXT, retried_by TEXT
 );
 CREATE INDEX IF NOT EXISTS rejected_pipeline ON rejected(pipeline, step);
+CREATE TABLE IF NOT EXISTS seen (
+  scope TEXT, key TEXT, run_id TEXT, ts REAL, PRIMARY KEY (scope, key)
+);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -60,6 +63,8 @@ POSTGRES_SCHEMA = [
       id BIGSERIAL PRIMARY KEY, run_id TEXT, pipeline TEXT, step TEXT, ts DOUBLE PRECISION,
       error TEXT, record JSONB, retried_by TEXT)""",
     "CREATE INDEX IF NOT EXISTS agentl_rejected_pipeline ON agentl_rejected(pipeline, step)",
+    """CREATE TABLE IF NOT EXISTS agentl_seen (
+      scope TEXT, key TEXT, run_id TEXT, ts DOUBLE PRECISION, PRIMARY KEY (scope, key))""",
 ]
 
 
@@ -73,7 +78,9 @@ class Store:
         "state": "state",
         "samples": "samples",
         "rejected": "rejected",
+        "seen": "seen",
     }
+    INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts) VALUES (?, ?, ?)"
     UPSERT_STATE = "INSERT OR REPLACE INTO {state} (pipeline, step, value, run_id, ts) VALUES (?, ?, ?, ?, ?)"
     INSERT_REJECTED = (
@@ -164,6 +171,38 @@ class Store:
         else:
             self._exec("DELETE FROM {state} WHERE pipeline = ? AND step = ?", (pipeline, step))
         return n
+
+    # keys `skip_seen` already let through, per scope
+    def seen_filter(self, scope: str, keys: list[str]) -> set[str]:
+        """The subset of `keys` already marked seen in `scope`."""
+        found: set[str] = set()
+        for i in range(0, len(keys), 500):
+            chunk = keys[i : i + 500]
+            marks = ", ".join("?" * len(chunk))
+            rows = self._query(
+                f"SELECT key FROM {{seen}} WHERE scope = ? AND key IN ({marks})", (scope, *chunk)
+            )
+            found.update(r["key"] for r in rows)
+        return found
+
+    def seen_add(self, scope: str, keys: list[str], run_id: str) -> None:
+        now = time.time()
+        for key in keys:
+            self._exec(self.INSERT_SEEN, (scope, key, run_id, now))
+
+    def seen_list(self, scope: str | None = None) -> list[dict]:
+        where, params = (" WHERE scope = ?", (scope,)) if scope else ("", ())
+        return self._query(
+            f"SELECT scope, key, run_id, ts FROM {{seen}}{where} ORDER BY scope, ts, key", params
+        )
+
+    def seen_forget(self, scope: str | None = None, key: str | None = None) -> int:
+        """Forget one key, a whole scope, or everything; returns how many keys were removed."""
+        rows = [r for r in self.seen_list(scope) if key is None or r["key"] == key]
+        clauses = [c for c, v in (("scope = ?", scope), ("key = ?", key)) if v is not None]
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        self._exec(f"DELETE FROM {{seen}}{where}", tuple(v for v in (scope, key) if v is not None))
+        return len(rows)
 
     def runs(self, limit: int = 20) -> list[dict]:
         return self._query(
@@ -268,7 +307,11 @@ class PostgresStore(Store):
         "state": "agentl_state",
         "samples": "agentl_samples",
         "rejected": "agentl_rejected",
+        "seen": "agentl_seen",
     }
+    INSERT_SEEN = (
+        "INSERT INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING"
+    )
     UPSERT_CACHE = (
         "INSERT INTO {cache} (key, value, ts) VALUES (?, ?::jsonb, ?) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, ts = EXCLUDED.ts"

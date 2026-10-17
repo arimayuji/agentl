@@ -16,6 +16,7 @@ from . import (  # noqa: F401  (registers connectors)
     protect,
     queues,
     saas,
+    seen,
     sql,
     transforms,
 )
