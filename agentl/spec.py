@@ -343,6 +343,20 @@ class TriggerSpec(BaseModel):
         return "every"
 
 
+class LineageSpec(BaseModel):
+    """`lineage:` in the YAML. `url` is the OpenLineage HTTP endpoint base (e.g. Marquez at
+    http://localhost:5000); events go to `<url>/api/v1/lineage`. `file` appends one JSON event per
+    line. `api_key` is sent as a Bearer token; use `${VAR}` for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = None
+    file: str | None = None
+    namespace: str = "agentl"
+    api_key: str | None = None
+    endpoint: str = "api/v1/lineage"
+
+
 class PipelineSpec(BaseModel):
     name: str
     # Under `agentl serve`: what starts a run. A `use: trigger` step gets what started it.
@@ -351,6 +365,8 @@ class PipelineSpec(BaseModel):
     steps: list[StepSpec]
     notify: NotifySpec | None = None
     budget: BudgetSpec | None = None
+    # OpenLineage events for data catalogs; see agentl.lineage.
+    lineage: LineageSpec | None = None
     # Independent steps run together, up to this many; 1 = one at a time.
     max_parallel_steps: int = Field(default=4, ge=1, le=64)
     # Stream linear chains (reader -> row-wise steps -> writer) this many records at a time.

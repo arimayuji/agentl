@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- OpenLineage events (#238): `lineage:` in the YAML (or `OPENLINEAGE_URL` / `OPENLINEAGE_FILE`)
+  sends START / COMPLETE / FAIL RunEvents for the run and each step to an HTTP endpoint such as
+  Marquez, or to a JSON lines file, with input and output datasets taken from connector
+  parameters. Stdlib only; a catalog that is down never fails the run. See Observability.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

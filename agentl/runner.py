@@ -212,6 +212,11 @@ class Runner:
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
         self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
+        from . import lineage
+
+        lineage_cfg = lineage.from_env(spec.lineage)
+        if lineage_cfg is not None and not any(isinstance(x, lineage.OpenLineage) for x in self.listeners):
+            self.listeners.append(lineage.OpenLineage(spec, lineage_cfg))
 
     # events -------------------------------------------------------------
     def _emit(self, run_id: str, type: str, step: str | None = None, **data: Any) -> None:
