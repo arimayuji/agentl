@@ -8,9 +8,15 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 from ..registry import arrow_writer, connector, require, stream_reader, stream_writer
-from ._util import check_update_columns, single, upsert_options
+from ._util import (
+    check_scd2_columns,
+    check_update_columns,
+    scd2_options,
+    single,
+    upsert_options,
+)
 
-MODES = ("append", "replace", "upsert")
+MODES = ("append", "replace", "upsert", "scd2")
 
 
 def _pg_type(values: list[Any]) -> str:
@@ -84,17 +90,24 @@ def postgres_write_chunks(
     create: bool = True,
     on_conflict: str | None = None,
     update_columns: str | list[str] | None = None,
+    track: str | list[str] | None = None,
+    on_missing: str | None = None,
+    as_of: Any = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. The table is created from the first chunk with
-    records; columns that first appear later are added, typed from the chunk they appear in."""
+    records; columns that first appear later are added, typed from the chunk they appear in.
+    scd2 stages the input in a temp table and merges it once at the end (see `postgres_write`)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     keys = [key] if isinstance(key, str) else list(key or [])
     if mode == "upsert" and not keys:
         raise ValueError("mode 'upsert' needs 'key'")
     conflict, upd = upsert_options("postgres.write", mode, keys, on_conflict, update_columns)
+    tracked, missing_rows, when = scd2_options("postgres.write", mode, keys, track, on_missing, as_of)
     psycopg = require("psycopg", "postgres")
     sql = require("psycopg.sql", "postgres")
+    stage = sql.Identifier("_agentl_scd2")
+    staged = False
     jsonb = require("psycopg.types.json", "postgres").Jsonb
     tbl = _ident(table)
 
@@ -115,13 +128,27 @@ def postgres_write_chunks(
             missing = [k for k in keys if k not in cols and k not in new]
             if missing:
                 raise ValueError(f"key column(s) not in records: {missing}")
+            if new and mode == "scd2":
+                check_scd2_columns("postgres.write", None, new)
             if new and create:
                 types = {c: sql.SQL(_pg_type([r.get(c) for r in rows])) for c in new}
                 if not cols:
                     defs = sql.SQL(", ").join(
                         sql.SQL("{} {}").format(sql.Identifier(c), types[c]) for c in new
                     )
+                    if mode == "scd2":
+                        defs = sql.SQL(
+                            "{}, valid_from timestamptz NOT NULL, valid_to timestamptz, "
+                            "is_current boolean NOT NULL"
+                        ).format(defs)
                     conn.execute(sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(tbl, defs))
+                    if mode == "scd2":  # one current version per key
+                        idx = "uq_" + "_".join([table.replace(".", "_"), *keys])[:46] + "_current"
+                        conn.execute(
+                            sql.SQL(
+                                "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({}) WHERE is_current"
+                            ).format(sql.Identifier(idx), tbl, sql.SQL(", ").join(map(sql.Identifier, keys)))
+                        )
                     if mode == "upsert":
                         idx = "uq_" + "_".join([table.replace(".", "_"), *keys])[:55]
                         conn.execute(
@@ -136,7 +163,36 @@ def postgres_write_chunks(
                                 tbl, sql.Identifier(c), types[c]
                             )
                         )
+            if mode == "scd2":
+                if not staged:
+                    conn.execute(
+                        sql.SQL(
+                            "CREATE TEMP TABLE {} (LIKE {}, _ord bigint GENERATED ALWAYS AS IDENTITY, "
+                            "_st smallint) ON COMMIT DROP"
+                        ).format(stage, tbl)
+                    )
+                    conn.execute(  # LIKE copies NOT NULL; the stage never holds these columns
+                        sql.SQL(
+                            "ALTER TABLE {} ALTER valid_from DROP NOT NULL, ALTER is_current DROP NOT NULL"
+                        ).format(stage)
+                    )
+                    staged = True
+                else:
+                    for c in new:
+                        conn.execute(
+                            sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}").format(
+                                stage, sql.Identifier(c), sql.SQL(_pg_type([r.get(c) for r in rows]))
+                            )
+                        )
             cols.extend(new)
+            if mode == "scd2":
+                stmt = _insert(sql, stage, cols, [], conflict, None)
+                with conn.cursor() as cur:
+                    for i in range(0, len(rows), batch_size):
+                        cur.executemany(
+                            stmt, [[val(r.get(c)) for c in cols] for r in rows[i : i + batch_size]]
+                        )
+                continue
             if mode != "upsert":
                 stmt = _insert(sql, tbl, cols, [], conflict, None)
                 with conn.cursor() as cur:
@@ -165,10 +221,112 @@ def postgres_write_chunks(
                         if not cur.nextset():
                             break
             written += len(rows)
+        if mode == "scd2":
+            if not staged:  # an empty input changes nothing, even with on_missing: close
+                return [
+                    {
+                        "table": table,
+                        "written": 0,
+                        "mode": mode,
+                        "inserted": 0,
+                        "versioned": 0,
+                        "unchanged": 0,
+                    }
+                ]
+            counts = _pg_scd2(conn, sql, tbl, stage, cols, keys, tracked, missing_rows, when)
+            return [{"table": table, "written": counts.pop("written"), "mode": mode, **counts}]
     out: dict[str, Any] = {"table": table, "written": written, "mode": mode}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
     return [out]
+
+
+def _pg_scd2(
+    conn: Any,
+    sql: Any,
+    tbl: Any,
+    stage: Any,
+    cols: list[str],
+    keys: list[str],
+    track: list[str] | None,
+    on_missing: str,
+    when: Any,
+) -> dict[str, Any]:
+    """Merge the staged source into the versioned table with a fixed number of statements.
+    `_st` is NULL for a new key, 1 for unchanged, 2 for changed."""
+    check_scd2_columns("postgres.write", track, cols)
+    tracked = track if track is not None else [c for c in cols if c not in keys]
+    ident = sql.Identifier
+    k_ids = [ident(k) for k in keys]
+    null_key = sql.SQL(" OR ").join(sql.SQL("{} IS NULL").format(k) for k in k_ids)
+    if conn.execute(sql.SQL("SELECT 1 FROM {} WHERE {} LIMIT 1").format(stage, null_key)).fetchone():
+        raise ValueError(f"postgres.write: mode: scd2 needs a value in every key column {keys}")
+
+    def match(a: str, b: str) -> Any:
+        return sql.SQL(" AND ").join(sql.SQL("{}.{} = {}.{}").format(ident(a), k, ident(b), k) for k in k_ids)
+
+    conn.execute(  # last record per key wins
+        sql.SQL("DELETE FROM {0} AS a USING {0} AS b WHERE {1} AND a._ord < b._ord").format(
+            stage, match("a", "b")
+        )
+    )
+    differ = (
+        sql.SQL("({}) IS DISTINCT FROM ({})").format(
+            sql.SQL(", ").join(sql.SQL("t.{}").format(ident(c)) for c in tracked),
+            sql.SQL(", ").join(sql.SQL("s.{}").format(ident(c)) for c in tracked),
+        )
+        if tracked
+        else sql.SQL("false")
+    )
+    conn.execute(
+        sql.SQL(
+            "UPDATE {} AS s SET _st = CASE WHEN {} THEN 2 ELSE 1 END FROM {} AS t WHERE t.is_current AND {}"
+        ).format(stage, differ, tbl, match("t", "s"))
+    )
+    late = conn.execute(
+        sql.SQL(
+            "SELECT 1 FROM {} AS t JOIN {} AS s ON {} "
+            "WHERE t.is_current AND s._st = 2 AND t.valid_from > %s LIMIT 1"
+        ).format(tbl, stage, match("t", "s")),
+        [when],
+    ).fetchone()
+    if late:
+        raise ValueError(f"postgres.write: as_of {when.isoformat()} is before the start of a current version")
+    conn.execute(
+        sql.SQL(
+            "UPDATE {} AS t SET valid_to = %s, is_current = false FROM {} AS s "
+            "WHERE t.is_current AND s._st = 2 AND {}"
+        ).format(tbl, stage, match("t", "s")),
+        [when],
+    )
+    out: dict[str, Any] = {}
+    if on_missing == "close":
+        out["closed"] = conn.execute(
+            sql.SQL(
+                "UPDATE {} AS t SET valid_to = %s, is_current = false WHERE t.is_current "
+                "AND NOT EXISTS (SELECT 1 FROM {} AS s WHERE {})"
+            ).format(tbl, stage, match("t", "s")),
+            [when],
+        ).rowcount
+    names = sql.SQL(", ").join(map(ident, cols))
+    conn.execute(
+        sql.SQL(
+            "INSERT INTO {} ({}, valid_from, valid_to, is_current) "
+            "SELECT {}, %s, NULL, true FROM {} WHERE _st IS NULL OR _st = 2 ORDER BY _ord"
+        ).format(tbl, names, names, stage),
+        [when],
+    )
+    counts: dict[Any, int] = dict.fromkeys((None, 1, 2), 0)
+    counts.update(conn.execute(sql.SQL("SELECT _st, count(*) FROM {} GROUP BY _st").format(stage)).fetchall())
+    conn.execute(sql.SQL("DROP TABLE {}").format(stage))
+    return {
+        "written": sum(counts.values()),
+        "inserted": counts[None],
+        "versioned": counts[2],
+        "unchanged": counts[1],
+        **out,
+        "as_of": when.isoformat(),
+    }
 
 
 def _insert(
@@ -210,6 +368,9 @@ def postgres_write(
     create: bool = True,
     on_conflict: str | None = None,
     update_columns: str | list[str] | None = None,
+    track: str | list[str] | None = None,
+    on_missing: str | None = None,
+    as_of: Any = None,
 ) -> list[dict]:
     """Write records to `table` (optionally `schema.table`).
 
@@ -218,7 +379,12 @@ def postgres_write(
     Upsert only: on_conflict update (default; rows whose values did not change are left alone),
     do_nothing (keep the existing row) or error (fail on a duplicate key); update_columns limits
     the update to those columns. The result reports inserted, updated and unchanged.
-    All batches run in one transaction."""
+    scd2 keeps history (slowly changing dimension type 2) in `valid_from`, `valid_to` (NULL while
+    current) and `is_current`, with a unique index on `key` among current rows: a record whose
+    `track` columns (default: all but the key) changed closes the current version and adds a new
+    one; on_missing: close also closes keys absent from the input. `as_of` (default now, needs a
+    time zone) is stamped as timestamptz. The result reports inserted, versioned, unchanged
+    (and closed). All batches run in one transaction."""
     return postgres_write_chunks(
         [single(input)],
         dsn=dsn,
@@ -229,6 +395,9 @@ def postgres_write(
         create=create,
         on_conflict=on_conflict,
         update_columns=update_columns,
+        track=track,
+        on_missing=on_missing,
+        as_of=as_of,
     )
 
 

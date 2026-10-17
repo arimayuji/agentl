@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` (#236): slowly changing
+  dimensions type 2 with `valid_from`, `valid_to` and `is_current`. A record whose `track` columns
+  (default: all but `key`) changed closes the current version and inserts a new one; unchanged
+  rows are left alone; `on_missing: close` closes keys absent from the input. `as_of` (default
+  now) needs a time zone and is stored in UTC. Reports `inserted`, `versioned`, `unchanged` and
+  `closed`.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
