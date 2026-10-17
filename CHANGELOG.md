@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl stats` reports cost per record, per accepted answer and per LLM answer for each agent
+  step and model, plus the cache hits and what they saved (#156). `step.succeeded` events of agent
+  steps now carry `model` and `cache_hits`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

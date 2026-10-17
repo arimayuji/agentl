@@ -115,6 +115,8 @@ def test_spend_per_step_in_events_and_dashboard(tmp_path):
         "tool_calls": 0,
         "cost_usd": 0.021,
         "answered_by": {"default": 2},
+        "model": "m",
+        "cache_hits": 0,
     }
     assert set(result.spend) == {"a", "b"}  # only agent steps
     assert detail["spend"]["steps"]["b"]["cost_usd"] == pytest.approx(0.021)

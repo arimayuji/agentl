@@ -503,15 +503,21 @@ class Runner:
         todo: list[int] = []
         first: dict[str, int] = {}  # identical records are asked once per run
         copies: list[tuple[int, int]] = []
+        hits = 0
         for i, rec in enumerate(records):
             k = key(rec)
             if k in first:
                 copies.append((i, first[k]))
             elif cacheable and (hit := self.store.cache_get(k)) is not None:
                 slots[i] = ({**rec, **hit}, None)
+                hits += 1
             else:
                 first[k] = i
                 todo.append(i)
+        with self._spend:
+            mine = result.spend[step.id]
+            mine["model"] = llm_spec.model
+            mine["cache_hits"] = mine.get("cache_hits", 0) + hits
         size = step.records_per_call
         groups = [todo[n : n + size] for n in range(0, len(todo), size)]
         if step.mode == "batch" and todo:
