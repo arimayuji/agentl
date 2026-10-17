@@ -84,6 +84,12 @@ step's rejected records), `flag` keeps it and reports it (use it when two values
 is unclear which one is wrong), `fail` stops the step. An error inside a rule (a value that is not
 a number, say) never stops the pipeline: the row passes and the error is logged.
 
+`rules:` means something different by step kind. On a `check` step (this page) it lists per-row
+checks (`rule: not_null | between | accepted | matches | abs_diff_max`) that drop, flag or fail
+rows. On an `agent` step it lists [hybrid rules](agents.md#rules-first-the-agent-for-the-rest)
+(`compute`, `cast`, `fn`) that try to produce the `output:` fields before the llm is asked. A
+hybrid rule on a check step, or `rules:` on any other kind of step, is a validation error.
+
 ```yaml
 - id: verify
   check: transform

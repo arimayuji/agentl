@@ -178,6 +178,25 @@ class RowRuleSpec(BaseModel):
         return self
 
 
+def _row_rule(step: str, raw: Any) -> RowRuleSpec:
+    if (
+        isinstance(raw, dict)
+        and "rule" not in raw
+        and len(raw) == 1
+        and next(iter(raw))
+        in (
+            "compute",
+            "cast",
+            "fn",
+        )
+    ):
+        raise ValueError(
+            f"step '{step}': {next(iter(raw))}: is a hybrid rule of agent steps; a check step's "
+            "rules are per-row checks (rule: not_null | between | accepted | matches | abs_diff_max)"
+        )
+    return RowRuleSpec.model_validate(raw)
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -191,9 +210,14 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
-    # Per-row rules and the digest of their findings (#218). `identity` names the columns that
-    # identify a finding from one day to the next (default: the rule's column value).
-    rules: list[RowRuleSpec] = Field(default_factory=list)
+    # `rules:` depends on the step kind (validated in _one_kind):
+    # - on a `check` step (#218): per-row rules (RowRuleSpec), with `identity` naming the columns
+    #   that identify a finding from one day to the next (default: the rule's column value);
+    # - on an `agent` step (#124, #195, hybrid): rules tried in order on each record before the
+    #   agent; a record whose rules all succeed and give valid `output:` fields never reaches the
+    #   llm. Items are one-key dicts: {compute: {field: expr}}, {cast: {field: type}} or
+    #   {fn: "module:function"}.
+    rules: list[Any] = Field(default_factory=list)
     identity: list[str] = Field(default_factory=list)
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
     # `condition` holds, for at most `timeout`. See WaitSpec.
@@ -218,10 +242,6 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
-    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
-    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
-    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
-    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
@@ -256,8 +276,15 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
         if self.check and not (self.expect or self.review or self.rules):
             raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or 'rules'")
-        if (self.rules or self.identity) and not self.check:
-            raise ValueError(f"step '{self.id}': rules and identity belong to check steps")
+        if self.identity and not self.check:
+            raise ValueError(f"step '{self.id}': identity belongs to check steps (with per-row rules)")
+        if self.rules and not (self.check or self.agent):
+            raise ValueError(
+                f"step '{self.id}': rules go on an agent step (hybrid: rules first, the llm for the "
+                "rows they miss) or on a check step (per-row check rules)"
+            )
+        if self.check:
+            self.rules = [r if isinstance(r, RowRuleSpec) else _row_rule(self.id, r) for r in self.rules]
         unknown = [k for k in self.expect if k not in _EXPECTATIONS]
         if unknown:
             raise ValueError(
@@ -271,9 +298,11 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
-        if self.rules and not self.agent:
-            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
-        for rule in self.rules:
+        for rule in self.rules if self.agent else []:
+            if not isinstance(rule, dict):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
             if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
                 raise ValueError(
                     f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"

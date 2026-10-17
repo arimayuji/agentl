@@ -110,3 +110,24 @@ def test_same_day_runs_share_a_bucket(tmp_path):
     DATA["rows"] = [{"id": 2, "amount": -1}]
     _, events = run(tmp_path, s)
     assert events[0]["data"]["new"] == 2
+
+
+def test_rules_meaning_depends_on_the_step_kind():
+    from agentl import parse
+    from agentl.spec import RowRuleSpec
+
+    src = {"id": "src", "fn": "tests.test_checks:src"}
+    check = {"id": "c", "check": "src", "rules": [{"rule": "not_null", "column": "id"}]}
+    spec = parse({"name": "x", "steps": [src, check]})
+    assert isinstance(spec.steps[1].rules[0], RowRuleSpec)
+
+    agent = {"id": "a", "agent": "clean", "output": {"id": "str"}, "rules": [{"cast": {"id": "str"}}]}
+    spec = parse({"name": "x", "steps": [src, agent]})
+    assert spec.steps[1].rules == [{"cast": {"id": "str"}}]
+
+    with pytest.raises(ValueError, match="hybrid rule of agent steps"):
+        parse({"name": "x", "steps": [src, {**check, "rules": [{"cast": {"id": "str"}}]}]})
+    with pytest.raises(ValueError, match=r"rules go on an agent step .* or on a check step"):
+        parse({"name": "x", "steps": [{**src, "rules": [{"cast": {"id": "str"}}]}]})
+    with pytest.raises(ValueError, match="identity belongs to check steps"):
+        parse({"name": "x", "steps": [{**src, "identity": ["id"]}]})
