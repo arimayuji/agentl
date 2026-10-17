@@ -8,6 +8,7 @@ agentl preview PIPELINE STEP [-n 5]
 agentl skill install|show [--project]
 agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
+agentl keygen                                   # a key for protect / unprotect
 agentl diagram PIPELINE
 agentl runs
 agentl connectors [NAME]
@@ -54,6 +55,7 @@ set. Exit code 2 when there are errors.
 | AL005 | an `fn:` module is neither next to the pipeline nor installed |
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
+| AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
