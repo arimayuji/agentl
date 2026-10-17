@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import inspect
+import itertools
 import json
 import os
 import threading
@@ -206,6 +207,11 @@ class Runner:
         self._providers: dict[str, llm.Provider] = {}
         self._toolbox: ToolBox | None = None
         self._spend = threading.Lock()
+        # Calls that passed the budget check and have not been charged yet: ticket -> step id.
+        # The check counts them at the average cost of a call, so parallel workers cannot all
+        # slip past it. `_charge(ticket=...)` releases one; a step's leftovers go when it ends.
+        self._inflight: dict[int, str] = {}
+        self._tickets = itertools.count(1)
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
@@ -278,7 +284,13 @@ class Runner:
 
     # budget -------------------------------------------------------------
     def _charge(
-        self, result: RunResult, step: StepSpec, spec: LLMSpec, usage: Any, batch: bool = False
+        self,
+        result: RunResult,
+        step: StepSpec,
+        spec: LLMSpec,
+        usage: Any,
+        batch: bool = False,
+        ticket: int = 0,
     ) -> None:
         """`usage` is an `llm.Result` or an exception carrying the tokens of a failed call. Counted
         for the run and for the step, so spend per step stays right when steps run in parallel."""
@@ -289,6 +301,7 @@ class Runner:
         if batch and spec.price and known is None:
             cost *= spec.price.batch
         with self._spend:
+            self._inflight.pop(ticket, None)
             result.input_tokens += tin
             result.output_tokens += tout
             result.cache_read_tokens += read
@@ -309,19 +322,37 @@ class Runner:
             m["output_tokens"] += tout
             m["cost_usd"] += cost
 
-    def _check_budget(self, result: RunResult) -> None:
+    def _check_budget(self, result: RunResult, step_id: str = "", reserve: bool = True) -> int:
+        """Raise BudgetExceeded when the budget is spent, counting calls in flight. Returns a
+        ticket for the call about to be made (0 when nothing is reserved); pass it to `_charge`."""
         with self._spend:
-            reason = self._over_budget(result)
+            reason = self._over_budget(result, len(self._inflight))
+            ticket = 0
+            if not reason and reserve and self.spec.budget is not None:
+                ticket = next(self._tickets)
+                self._inflight[ticket] = step_id
         if reason:
             raise BudgetExceeded(reason)
+        return ticket
 
-    def _over_budget(self, result: RunResult) -> str | None:
+    def _release_step(self, step_id: str) -> None:
+        """Reservations a step left behind (a call that raised before it was charged)."""
+        with self._spend:
+            for t in [t for t, s in self._inflight.items() if s == step_id]:
+                del self._inflight[t]
+
+    def _over_budget(self, result: RunResult, inflight: int = 0) -> str | None:
         b = self.spec.budget
         if b is None:
             return None
-        if b.max_tokens is not None and result.input_tokens + result.output_tokens >= b.max_tokens:
+        # Calls already running are counted at the average cost of the calls charged so far.
+        calls = max(1, result.llm_calls)
+        tokens = result.input_tokens + result.output_tokens
+        tokens += inflight * tokens // calls if result.llm_calls else 0
+        usd = result.cost_usd + (inflight * result.cost_usd / calls if result.llm_calls else 0)
+        if b.max_tokens is not None and tokens >= b.max_tokens:
             return f"max_tokens {b.max_tokens} reached ({result.input_tokens + result.output_tokens} used)"
-        if b.max_usd is not None and result.cost_usd >= b.max_usd:
+        if b.max_usd is not None and usd >= b.max_usd:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
         if b.max_tool_calls is not None and result.tool_calls >= b.max_tool_calls:
             return f"max_tool_calls {b.max_tool_calls} reached"
@@ -346,7 +377,7 @@ class Runner:
             t = by_name.get(name)
             if t is None:
                 return f"error: unknown tool {name}"
-            self._check_budget(result)
+            self._check_budget(result, step.id, reserve=False)
             with self._spend:
                 result.tool_calls += 1
                 result.spend[step.id]["tool_calls"] += 1
@@ -394,11 +425,12 @@ class Runner:
         resume = self.use_cache and step.cached
         ticket = _hash("batch", [key(r) for r in recs])
         saved = self.store.cache_get(ticket) if resume else None
+        held = 0  # budget reservation of the submit, released by the first charge
         if saved:
             batch_id = saved["batch_id"]
             self._emit(run_id, "batch.resumed", step.id, batch_id=batch_id, requests=len(ids))
         else:
-            self._check_budget(result)
+            held = self._check_budget(result, step.id)
             batch_id = prov.submit_batch(step.agent or "", ids, schema)
             if resume:
                 self.store.cache_set(ticket, {"batch_id": batch_id})
@@ -413,7 +445,7 @@ class Runner:
             time.sleep(step.batch_poll_seconds)
         answers = prov.batch_results(batch_id, schema)
         for res in answers.values():
-            self._charge(result, step, llm_spec, res, batch=True)
+            self._charge(result, step, llm_spec, res, batch=True, ticket=held)
         out = [answers.get(cid, RuntimeError("missing from batch results")) for cid in ids]
         ok = sum(isinstance(r, llm.Result) for r in out)
         self._emit(
@@ -542,7 +574,7 @@ class Runner:
                 if feedback and errors:
                     instruction = llm.feedback_instruction(instruction, errors)
                 asked = loose if validate == "lenient" else schema
-                self._check_budget(result)
+                held = self._check_budget(result, step.id)
                 res: llm.Result | None = None
                 try:
                     if call_tool is not None:
@@ -561,7 +593,7 @@ class Runner:
                 except (ValidationError, ValueError, RuntimeError) as e:
                     usage: Any = e if res is None else res  # lenient: the answer came, then failed
                     # Invalid answers still cost tokens: count them for budget and spend.
-                    self._charge(result, step, spec, usage)
+                    self._charge(result, step, spec, usage, ticket=held)
                     count_attempt(n, name, usage, False)
                     last, errors = e, llm.validation_errors(e)
                     if step.attempts:
@@ -579,7 +611,7 @@ class Runner:
                     n += 1
                     continue
                 assert res is not None
-                self._charge(result, step, spec, res)
+                self._charge(result, step, spec, res, ticket=held)
                 count_attempt(n, name, res, True)
                 nxt = next((j for j in range(n + 1, len(plan)) if plan[j][0] != name), None)
                 if nxt is not None and unsure(out):
@@ -597,14 +629,14 @@ class Runner:
             """One call for the whole group. Items that come back missing, duplicated or invalid
             fall back to one call per record, so a bad item never drops its neighbours."""
             outs: dict[int, dict] = {}
-            self._check_budget(result)
+            held = self._check_budget(result, step.id)
             payload = {"records": [{"index": i, "record": r} for i, r in enumerate(group)]}
             try:
                 res = prov.structured(_batch_instruction(step.agent or "", len(group)), payload, batch_schema)
             except (ValidationError, ValueError, RuntimeError) as e:
-                self._charge(result, step, llm_spec, e)
+                self._charge(result, step, llm_spec, e, ticket=held)
             else:
-                self._charge(result, step, llm_spec, res)
+                self._charge(result, step, llm_spec, res, ticket=held)
                 seen: set[int] = set()
                 for item in res.value.model_dump()["items"]:
                     i = item.pop("index", None)
@@ -620,15 +652,21 @@ class Runner:
         todo: list[int] = []
         first: dict[str, int] = {}  # identical records are asked once per run
         copies: list[tuple[int, int]] = []
+        hits = 0
         for i, rec in enumerate(records):
             k = key(rec)
             if k in first:
                 copies.append((i, first[k]))
             elif cacheable and (hit := self.store.cache_get(k)) is not None:
                 slots[i] = ({**rec, **hit}, None)
+                hits += 1
             else:
                 first[k] = i
                 todo.append(i)
+        with self._spend:
+            mine = result.spend[step.id]
+            mine["model"] = llm_spec.model
+            mine["cache_hits"] = mine.get("cache_hits", 0) + hits
         size = step.records_per_call
         groups = [todo[n : n + size] for n in range(0, len(todo), size)]
         if step.mode == "batch" and todo:
@@ -782,13 +820,13 @@ class Runner:
         llm_spec = self.spec.llm[step.llm]
 
         def ask(instruction: str, record: dict, schema: type) -> Any:
-            self._check_budget(result)
+            held = self._check_budget(result, step.id)
             try:
                 res = self._provider(step.llm).structured(instruction, record, schema)
             except (ValidationError, ValueError, RuntimeError) as e:
-                self._charge(result, step, llm_spec, e)
+                self._charge(result, step, llm_spec, e, ticket=held)
                 raise RuntimeError(f"map_schema: the LLM did not answer with a mapping: {e}") from e
-            self._charge(result, step, llm_spec, res)
+            self._charge(result, step, llm_spec, res, ticket=held)
             return res.value
 
         name = self.spec.name
@@ -834,14 +872,14 @@ class Runner:
         before = dict(decisions)
 
         def ask(record: dict) -> tuple[str | None, Any]:
-            self._check_budget(result)
+            held = self._check_budget(result, step.id)
             prov, spec = self._provider(step.llm), self.spec.llm[step.llm]
             try:
                 out = prov.structured(instruction, record, res.Choice)
             except llm.InvalidOutput as e:
-                self._charge(result, step, spec, e)
+                self._charge(result, step, spec, e, ticket=held)
                 return None, e
-            self._charge(result, step, spec, out)
+            self._charge(result, step, spec, out, ticket=held)
             return getattr(out.value, "match", None), out
 
         out, counts, reused = res.resolve(
@@ -878,13 +916,13 @@ class Runner:
                 "last_delivered_run": previous,
                 "failed_fixed_checks": list(findings),
             }
-            self._check_budget(result)
+            held = self._check_budget(result, step.id)
             try:
                 res = self._provider(step.llm).structured(_review_instruction(step.review), payload, schema)
             except (ValidationError, ValueError, RuntimeError) as e:
-                self._charge(result, step, llm_spec, e)
+                self._charge(result, step, llm_spec, e, ticket=held)
                 raise RuntimeError(f"check review did not answer in the expected shape: {e}") from e
-            self._charge(result, step, llm_spec, res)
+            self._charge(result, step, llm_spec, res, ticket=held)
             verdict = res.value.model_dump()
             if verdict["passed"]:
                 notes = list(verdict["findings"])
@@ -1030,7 +1068,10 @@ class Runner:
         try:
             if step.cursor:
                 step = self._with_cursor(step)
-            out = self._run_step(run_id, step, result.outputs, result)
+            try:
+                out = self._run_step(run_id, step, result.outputs, result)
+            finally:
+                self._release_step(step_id)
             if step.schema_ is not None:
                 out = self._contract(run_id, step, out, result)
             self._write_rejected(step, result)
