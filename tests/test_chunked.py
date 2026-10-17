@@ -90,7 +90,7 @@ def test_chunked_chain_matches_the_normal_run(tmp_path):
     assert rows(tmp_path / "plain.db") == rows(tmp_path / "chunked.db")
     assert chunked.outputs == {"save": [{"table": "t", "written": 12}]}
     done = {e["step"]: e["data"] for e in events if e["type"] == "step.succeeded"}
-    assert {k: v["records"] for k, v in done.items()} == {"read": 25, "keep": 12, "slim": 12, "save": 1}
+    assert {k: v["records"] for k, v in done.items()} == {"read": 25, "keep": 12, "slim": 12, "save": 12}
     assert all(v["chunked"] for v in done.values())
 
 

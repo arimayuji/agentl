@@ -62,6 +62,17 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
 | `vs_last_run` | `{ rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, changed more than that since the last run that passed |
 | `rejected_rate` | `"< 1%"` or `{ orders: "<= 0.5%" }` | a step rejected a larger share of its records in this run (see [contracts](#schema-contracts)) |
+| `pii` | `true` or `{ allow: [customer_email] }` | a field looks like unprotected personal data (below); `allow` lists fields that may carry it |
+
+`pii` samples up to 200 records and flags a field when at least half of its values match one
+detector: CPF and CNPJ (check digits), US SSN (`123-45-6789`, format only), e-mail, phone (BR or US,
+written with separators or `+`), payment card (Luhn), IBAN (mod 97), IP address, and person names in
+fields named like `name`, `full_name` or `last_name`. Values already passed through
+[`protect`](connectors.md#protect-sensitive-fields-protect) no longer match. The failure names the
+field, the kind, a masked example (`*******4321`, never the full value) and the suggested `protect`
+action. From Python, `agentl.pii.scan(records)` returns the findings and
+`agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
+expect misses (free-text fields, unformatted phones) and some false positives.
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
