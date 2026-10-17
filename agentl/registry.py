@@ -281,3 +281,9 @@ def step_state() -> StepState | None:
     """The current step's stored state, or None outside a run (a connector called directly).
     Write it from an `after_run` success hook so it moves only when the run succeeded."""
     return _STEP_STATE.get()
+
+
+class NoChange(Exception):
+    """Raised by a source step that found its source unchanged since the last run (for example
+    `http.get` with `if_changed`). The runner ends the run as `no_change` instead of `failed`:
+    the steps after it do not run and the run is not an error."""

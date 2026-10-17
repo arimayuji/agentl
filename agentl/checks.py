@@ -24,6 +24,7 @@ EXPECTATIONS = (
     "vs_last_run",
     "vs_runs",
     "rejected_rate",
+    "pii",
 )
 # What a failing rule does (#185): `fail` stops the step (or warns, with `on_fail: warn`), `warn`
 # only emits an event, `reject` drops the failing rows (row rules only) into the quarantine.
@@ -228,6 +229,14 @@ def run_expectations(
                         f"{name}: {n_bad} of {total} records rejected ({rate:.2%}), "
                         f"expected {op} {limit:.2%}",
                     )
+        elif key == "pii":
+            from .pii import describe, scan
+
+            allow = set() if rule is True else set(_names((rule or {}).get("allow", [])))
+            if rule is not False:
+                for f in scan(records):
+                    if f["field"] not in allow:
+                        fail("pii", describe(f))
         else:
             raise ValueError(f"unknown expectation '{key}'. Use {', '.join(EXPECTATIONS)}")
     return fails

@@ -12,7 +12,8 @@ agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl keygen                                   # a key for protect / unprotect
 agentl diagram PIPELINE
-agentl runs
+agentl runs [show RUN_ID [--json]]
+agentl cost [--since 30d] [--by pipeline,model] [--json]
 agentl connectors [NAME]
 agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
@@ -30,6 +31,24 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
+
+## Run ledger and LLM cost
+
+`agentl runs show RUN_ID` prints what one run did: records per step, rows changed (`inserted` plus
+`updated` from upserts), rejected records, LLM calls, tokens and cost per step with the models that
+were paid for, duration and outcome. `--json` prints the same as JSON.
+
+`agentl cost` groups LLM calls, tokens and cost over the runs of a period. `--by` takes any of
+`pipeline`, `step`, `model` and `day` (default `pipeline,model`):
+
+```text
+$ agentl cost --since 7d --by pipeline,model
+tickets  claude-haiku-4-5  420 calls in 7 runs, 210000 in / 21000 out tokens, $0.3150
+total $0.3150
+```
+
+Both read the runs and events the store already keeps. Steps recorded before per-model spend
+existed count under model `?`.
 
 ## Validate and lint
 
@@ -61,6 +80,7 @@ set. Exit code 2 when there are errors.
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
+| AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
@@ -130,6 +150,55 @@ agentl schema > pipeline.schema.json
 name: tickets
 ```
 
+## Test against a golden file
+
+`agentl test` runs a pipeline on fixture files and compares what each writer would write with an
+expected JSON file. Nothing leaves the machine: source steps read the fixtures, every LLM uses the
+offline `echo` provider, writers (and `rejected_to`) become pass-through steps, notifications and
+budgets are off and the run uses a throwaway store.
+
+```bash
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json --update
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+- `--fixture PATH` when the pipeline has one source step, `--fixture STEP=PATH` otherwise (repeat
+  it). The file is read with `file.read`, so CSV, JSON, Excel, Parquet and the other formats work.
+  Sources that read local files may run without a fixture; any other source needs one.
+- The golden file is a list of records (one writer) or `{"writer_step": [records]}`. With no writer,
+  the last step is compared. `--update` writes it from the current run.
+- Rows are matched by position, or by a field with `--key id`. `_file` and `_archive` are left out;
+  `--ignore FIELD` leaves out more.
+- Exit code 0 when everything matches, 1 on a difference or a failed run, 2 on a usage error. The
+  diff names each changed field:
+
+```text
+FAIL save: expected 3 record(s), got 2
+  ~ row 1
+      amount: expected 31, got 30
+  - missing row 2: {"id": 9, "amount": 99}
+```
+
+In GitHub Actions:
+
+```yaml
+name: pipelines
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install agentl-etl
+      - run: agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+Agent steps get `echo` answers (fields copied from the record), so the golden file checks the
+pipeline's plumbing, not the model. A dry diff of inserts and updates against the destination
+(`agentl diff`) is planned.
+
 ## Run store
 
 The run store keeps run history, events and the per-record agent cache.
@@ -147,6 +216,17 @@ agentl dashboard                     # sees every run
 In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store.open_store(url)`.
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
+
+## Column mappings
+
+`map_schema` steps keep one column mapping per input layout in the run store
+([how](connectors.md#map-messy-columns-once-map_schema)).
+
+```bash
+agentl mappings show [pipeline]            # every stored mapping, as YAML ready to pin
+agentl mappings approve sales mapped       # unblock a step with review: required
+agentl mappings forget sales mapped        # infer again on the next run (--layout SIG for one)
+```
 
 ## Rejected records
 
@@ -220,6 +300,8 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
   duration: median 41.2s, p95 63.0s
   cost: 1.8400 USD
   last run: 20261014-090012-1a2b3c succeeded
+  agent cost (USD):
+    [classify] claude-haiku-4-5: 0.000410/record, 0.000432/accepted (9480 of 10000), 3100 cache hits, cache saved 1.8414
   failures by reason:
       3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
       1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
@@ -231,6 +313,13 @@ taken out (numbers, ids, paths, URLs), so the same timeout on different days cou
 reason. Pass the run id to `agentl doctor` for the details. The dashboard shows the same numbers
 for the last 30 days, and the MCP server has a `pipeline_stats` tool. Everything is computed from
 the run store; nothing extra is recorded.
+
+For each agent step and model, `agent cost` divides the step's spend by its records (output plus
+rejected), by its accepted answers (records not rejected) and by the records an LLM answered.
+`cache saved` prices the step's cache hits at that last number. In `--json` these are the
+`agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
+`cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
+their events and show up as model `unknown`.
 
 ## Diagram
 
