@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -333,6 +334,89 @@ class NotifySpec(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
 
 
+class ExpectSpec(BaseModel):
+    """When a publication is due: weekdays and a local time, with a holiday calendar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[str] = Field(default_factory=list)  # mon..sun
+    at: str = "00:00"  # "16:00", in the schedule's tz
+    calendar: str | None = None  # us_federal, br_national
+    exceptions: str | None = None  # file with one extra holiday (YYYY-MM-DD) per line
+    if_holiday: Literal["skip", "next_business_day", "previous_business_day", "run"] = "skip"
+
+    @model_validator(mode="after")
+    def _check(self) -> ExpectSpec:
+        import datetime as _dt
+
+        from .schedule import _DAYS, CALENDARS
+
+        self.days = [d.lower() for d in self.days]
+        bad = [d for d in self.days if d not in _DAYS]
+        if bad:
+            raise ValueError(f"expect.days: unknown day(s) {bad}; use mon, tue, wed, thu, fri, sat, sun")
+        try:
+            _dt.time.fromisoformat(self.at)
+        except ValueError as e:
+            raise ValueError(f"expect.at '{self.at}': use HH:MM") from e
+        if self.calendar and self.calendar not in CALENDARS:
+            raise ValueError(f"expect.calendar '{self.calendar}': use one of {sorted(CALENDARS)}")
+        return self
+
+
+class PollStage(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    for_: str = Field(alias="for")  # how long this stage lasts: "15m"
+    every: str  # how often it fires: "1m"
+
+    @model_validator(mode="after")
+    def _check(self) -> PollStage:
+        from .checks import parse_duration
+
+        if parse_duration(self.every) <= 0 or parse_duration(self.for_) <= 0:
+            raise ValueError("poll stages need positive `for` and `every`")
+        return self
+
+
+class PollSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cadence: list[PollStage] = Field(default_factory=list)
+    stop_when: Literal["success_in_cycle"] | None = None
+
+
+class ActiveSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    between: tuple[date, date]
+
+
+class ScheduleSpec(BaseModel):
+    """A schedule by publication cycle: expected days, holidays, staged polling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tz: str  # required: "America/New_York"
+    expect: ExpectSpec | None = None
+    poll: PollSpec | None = None
+    active: ActiveSpec | None = None
+    extra_dates: list[date] = Field(default_factory=list)  # cycles on top of `expect`
+    skip_dates: list[date] = Field(default_factory=list)  # expected days with no cycle
+
+    @model_validator(mode="after")
+    def _check(self) -> ScheduleSpec:
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(self.tz)
+        except Exception as e:
+            raise ValueError(f"schedule.tz '{self.tz}': not a known time zone (e.g. America/New_York)") from e
+        if not (self.expect and self.expect.days) and not self.extra_dates:
+            raise ValueError("a schedule needs `expect.days` or `extra_dates`")
+        return self
+
+
 class TriggerSpec(BaseModel):
     """What starts a run under `agentl serve`: a cron schedule, a webhook path or new files."""
 
@@ -340,6 +424,7 @@ class TriggerSpec(BaseModel):
 
     cron: str | None = None  # "0 7 * * 1-5", local time unless `timezone`
     timezone: str | None = None
+    schedule: ScheduleSpec | None = None  # publication cycles; see agentl/schedule.py
     webhook: str | None = None  # "/hooks/invoices"
     secret: str | None = None  # webhook: Bearer token or HMAC-SHA256 signature key
     files: str | None = None  # glob, local or remote: "inbox/*.csv", "s3://bucket/in/*.xlsx"
@@ -348,11 +433,11 @@ class TriggerSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
-        kinds = [k for k in ("cron", "webhook", "files") if getattr(self, k)]
+        kinds = [k for k in ("cron", "schedule", "webhook", "files") if getattr(self, k)]
         if not kinds and "every" in self.model_fields_set:
             kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, webhook, files or every")
+            raise ValueError("a trigger has exactly one of cron, schedule, webhook, files or every")
         if self.cron:
             from .triggers import Cron
 
@@ -365,8 +450,9 @@ class TriggerSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        if self.cron or self.webhook or self.files:
-            return "cron" if self.cron else "webhook" if self.webhook else "files"
+        for k in ("cron", "schedule", "webhook", "files"):
+            if getattr(self, k):
+                return k
         return "every"
 
 

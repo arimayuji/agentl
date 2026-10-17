@@ -62,6 +62,7 @@ RULES = {
     "AL006": "cursor never used",
     "AL007": "unknown top-level field (ignored when the pipeline runs)",
     "AL008": "agent step sees fields before they are protected",
+    "AL009": "cron trigger without a time zone",
 }
 
 
@@ -483,6 +484,20 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                     line,
                     col,
                     f"{best}:" if best else "remove it",
+                )
+            )
+    for i, t in enumerate(spec.trigger):
+        if t.cron and not t.timezone:
+            line, col = pos.of(("trigger", i, "cron"))
+            out.append(
+                Finding(
+                    "AL009",
+                    "error",
+                    f"cron trigger '{t.cron}' has no time zone; it follows the server clock and shifts "
+                    "with daylight saving",
+                    line,
+                    col,
+                    "add `timezone: America/New_York` (any IANA name) next to `cron:`",
                 )
             )
     return out
