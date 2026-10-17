@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
+  CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
+  and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
