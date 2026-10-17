@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `resolve` step (#179): match messy names to a reference table (inline values, a file or a
+  previous step). Values are normalised (case, accents, punctuation, suffixes such as Ltda or Inc),
+  matched exactly, then by similarity (`difflib`, or `rapidfuzz` with the `fuzzy` extra); only
+  values below `threshold` go to the model, once each. Each record gets the match, score and
+  method; unresolved ones are rejected. A `resolve.counts` event reports the rows per path, and
+  `agentl resolve export|import` round-trips the model decisions for review.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
