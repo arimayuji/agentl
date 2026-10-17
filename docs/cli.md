@@ -3,7 +3,7 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
-                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo] [--json]
+                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
 agentl preview PIPELINE STEP [-n 5]

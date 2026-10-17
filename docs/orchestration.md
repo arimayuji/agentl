@@ -144,6 +144,30 @@ check would pass `timeout`. With `on_timeout: fail` the run fails before the dat
 step; with `continue` it goes on with the last data it got. The run process stays alive while it
 waits, so give your scheduler's job timeout room for it.
 
+## Fetch windows: revisions and backfills
+
+Time-series APIs revise recent values and cap the range per call. A `window:` section handles both:
+
+```yaml
+window:
+  lookback: 10d            # every run re-reads the last 10 days (revisions)
+  max_span: 31d            # at most 31 days per chunk
+  align: calendar_month    # none | calendar_month | week
+  order: oldest_first      # or newest_first
+steps:
+  - id: series
+    use: http.get
+    with: { url: https://api.example.org/series, params: { from: "${window.start}", to: "${window.end}" } }
+```
+
+`${window.start}` and `${window.end}` are ISO dates; the end is exclusive. `agentl run` covers
+`[today - lookback, tomorrow)`. `agentl backfill p.yaml --from 2025-01-01 --to 2025-12-31` takes
+the same path with more chunks (`--to` is inclusive, as in the params-based backfill below). The pipeline runs once per chunk and each chunk's status is kept in
+the run store: running the same backfill again skips the chunks that succeeded (`--redo`, or
+its alias `--no-resume`, re-runs them), a failed chunk does not stop the others, and the report lists the pending ones.
+Durations are whole days or weeks (`10d`, `2w`). Writers should be idempotent (upsert) because the
+tail is re-read on every run.
+
 ## Overlapping runs and shared caches
 
 A job scheduled every minute must not overlap the previous run, and an expensive lookup should not
@@ -246,7 +270,8 @@ are not declared (AE010).
 ## Backfill
 
 `agentl backfill` reprocesses history: one run per file or per period, each passed as a run
-parameter.
+parameter. When the pipeline has a `window:` section the same command backfills by
+[fetch windows](#fetch-windows-revisions-and-backfills) instead: only `--from`/`--to` apply.
 
 ```bash
 # one run per file; s3://, gs://... globs need agentl-etl[remote]

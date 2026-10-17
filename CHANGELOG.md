@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Fetch windows (#190): a `window:` section (`lookback`, `max_span`, `align: none | calendar_month
+  | week`, `order`) fills `${window.start}` / `${window.end}` in steps. `agentl run` re-reads the
+  lookback tail; `agentl backfill --from X --to Y` runs the same chunked path over any range, keeps
+  a status per chunk, skips finished chunks on resume and lists the pending ones. It is the same `agentl backfill` command as the params-based one
+  (#250): a pipeline with `window:` is backfilled by chunk, any other by file or date; `--to` is
+  inclusive in both modes and `--no-resume` is an alias of `--redo`.
 - `agentl snapshot` (#211, first part): runs a pipeline and compares step outputs with saved
   snapshots by key, not by order, with a per-field diff; `--update-snapshots` shows the diff and
   asks before accepting (`--yes` for CI). `agentl.snapshots` also has `redact_headers` and
