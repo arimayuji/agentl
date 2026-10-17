@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
+  CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
+  and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
 - `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
   (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
   storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
