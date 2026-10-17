@@ -831,6 +831,9 @@ class Runner:
             self._write_rejected(step, result)
             if step.cursor:
                 self._track_cursor(step, out)
+        except registry.NoChange as e:
+            self._emit(run_id, "step.unchanged", step_id, reason=str(e))
+            raise
         except Exception as e:
             if isinstance(e, BudgetExceeded):
                 with self._spend:
@@ -1098,6 +1101,10 @@ class Runner:
         try:
             self._run_graph(run_id, result)
             result.status = "succeeded"
+        except registry.NoChange as e:
+            result.status = "no_change"
+            result.error = None
+            self._emit(run_id, "source.unchanged", reason=str(e))
         except Exception as e:
             result.status = "failed"
             result.error = _describe(e)
@@ -1185,7 +1192,7 @@ class Runner:
         hooks, self._after_run = self._after_run, []
         for on_success, on_failure in hooks:
             try:
-                if result.status == "succeeded":
+                if result.status in ("succeeded", "no_change"):
                     on_success()
                 elif on_failure is not None:
                     on_failure()
@@ -1317,6 +1324,6 @@ def run(
     else:
         with open_store(db) as store:
             result = Runner(spec, store=store, **kwargs).run()
-    if raise_on_failure and result.status != "succeeded":
+    if raise_on_failure and result.status not in ("succeeded", "no_change"):
         raise PipelineFailed(result)
     return result

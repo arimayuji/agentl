@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return 0 if result.status in ("succeeded", "no_change") else 1
         if a.cmd in ("validate", "lint"):
             from . import lint
 

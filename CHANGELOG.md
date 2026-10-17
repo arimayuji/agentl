@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
+  page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
+  finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
+  `on_unchanged: stop` ends the run with the new status `no_change`; `continue_empty` returns no
+  records.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
