@@ -432,7 +432,7 @@ class Runner:
 
         def done(rec: dict, out: dict, by: str = step.llm) -> tuple[dict, None]:
             if cacheable:
-                self.store.cache_set(key(rec), out)
+                self.store.cache_set(key(rec), out, self._ttl(step))
             with self._spend:
                 answered = result.spend[step.id].setdefault("answered_by", {})
                 answered[by] = answered.get(by, 0) + 1
@@ -620,6 +620,14 @@ class Runner:
         if step.use == "trigger":
             return [dict(r) for r in self.trigger]
 
+        if step.use == "cache":
+            from .connectors.transforms import cache_step
+
+            with_ = dict(step.with_)
+            if isinstance(with_.get("key"), str):
+                with_["key"] = with_["key"].replace("{pipeline}", self.spec.name)
+            return cache_step(self.store, data, base_dir=self.spec.base_dir, **with_)
+
         if step.use == "sql":
             # Each input is a table named after its step; Arrow outputs are passed as they are.
             from .connectors import duck
@@ -646,8 +654,12 @@ class Runner:
             self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
-            self.store.cache_set(key, out)
+            self.store.cache_set(key, out, self._ttl(step))
         return out
+
+    @staticmethod
+    def _ttl(step: StepSpec) -> float | None:
+        return None if step.cache_ttl is None else checks.parse_duration(step.cache_ttl)
 
     # checks ---------------------------------------------------------------
     def _run_check(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
@@ -1099,6 +1111,39 @@ class Runner:
 
     def run(self) -> RunResult:
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        c = self.spec.concurrency
+        if c is None:
+            return self._run(run_id)
+        key = "run:" + c.key.replace("{pipeline}", self.spec.name)
+        lease, wait_s = checks.parse_duration(c.lease), checks.parse_duration(c.wait)
+        deadline = time.monotonic() + wait_s
+        pause = 0.05
+        while True:
+            with self.store.lease(key, lease, owner=run_id) as held:
+                if held:
+                    return self._run(run_id)
+            if c.on_overlap != "queue" or time.monotonic() > deadline:
+                break
+            time.sleep(pause)
+            pause = min(pause * 2, 5.0)
+        holder = self.store.lock_holder(key)
+        other = holder["owner"] if holder else "another run"
+        if c.on_overlap == "skip":
+            return self._not_run(run_id, "skipped", f"{other} holds concurrency key {key[4:]!r}")
+        why = f"{other} holds concurrency key {key[4:]!r}"
+        if c.on_overlap == "queue":
+            why += f" after waiting {wait_s:.0f}s"
+        return self._not_run(run_id, "failed", why)
+
+    def _not_run(self, run_id: str, status: str, reason: str) -> RunResult:
+        """A run that did not start because another one holds its concurrency key."""
+        result = RunResult(run_id=run_id, status=status, error=reason)
+        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
+        self.store.finish_run(run_id, status, reason)
+        self._emit(run_id, f"run.{status}", seconds=0.0, reason=reason)
+        return result
+
+    def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
@@ -1326,6 +1371,6 @@ def run(
     else:
         with open_store(db) as store:
             result = Runner(spec, store=store, **kwargs).run()
-    if raise_on_failure and result.status != "succeeded":
+    if raise_on_failure and result.status not in ("succeeded", "skipped"):
         raise PipelineFailed(result)
     return result

@@ -143,6 +143,14 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+Cached results can be dropped by key, by prefix or all at once:
+
+```bash
+agentl cache clear catalog:north     # one key (a `cache` step's `key`)
+agentl cache clear 'catalog:*'       # every key starting with catalog:
+agentl cache clear --all             # everything, agent answers included
+```
+
 ## Rejected records
 
 Records a step rejects (an agent answer that does not match the `output` schema, a value `cast`

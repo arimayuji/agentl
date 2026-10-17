@@ -248,6 +248,87 @@ def trigger(input: Any = None) -> list[dict]:
     return []
 
 
+@connector("cache")
+def cache(
+    input: Any = None,
+    do: list[dict] | None = None,
+    key: str | None = None,
+    ttl: str | float | None = None,
+    single_flight: bool = True,
+    lease: str | float = "1m",
+    wait: str | float = "1h",
+) -> list[dict]:
+    """Run the `do` steps once and reuse their result until `ttl` passes:
+
+        - id: catalog
+          use: cache
+          with:
+            key: "catalog:${AREA}"
+            ttl: 1d
+            single_flight: true
+            do: [{use: http.get, with: {url: https://api.example.org/catalog}}]
+
+    `do` is a list of `{use: ..., with: ...}` (or `{fn: module:function}`), each fed the output of
+    the one before; the first gets this step's input. `key` names the entry (`{pipeline}` is the
+    pipeline name); without it, a hash of `do` and the input. `ttl`: 30m, 6h, 1d; default: never
+    expires. With `single_flight` (default), concurrent runs and workers sharing the run store
+    compute it once: one holds a lease (renewed while it works, lapsing after `lease` if the
+    process dies), the others wait up to `wait` for its result. `agentl cache clear <key>` drops it."""
+    from ..store import open_store
+
+    with open_store() as store:
+        return cache_step(
+            store, input, do=do, key=key, ttl=ttl, single_flight=single_flight, lease=lease, wait=wait
+        )
+
+
+def cache_step(
+    store: Any,
+    input: Any,
+    do: list[dict] | None = None,
+    key: str | None = None,
+    ttl: str | float | None = None,
+    single_flight: bool = True,
+    lease: str | float = "1m",
+    wait: str | float = "1h",
+    base_dir: str | None = None,
+) -> list[dict]:
+    """The `cache` step, on a given run store (the runner passes its own)."""
+    import hashlib
+    import json
+
+    from .. import registry
+    from ..checks import parse_duration
+
+    if not do or not isinstance(do, list) or not all(isinstance(d, dict) for d in do):
+        raise ValueError("cache: `do` must be a list of steps, e.g. [{use: http.get, with: {url: ...}}]")
+    for d in do:
+        if bool(d.get("use")) == bool(d.get("fn")) or set(d) - {"use", "fn", "with"}:
+            raise ValueError(f"cache: each `do` step takes `use` or `fn`, and `with`; got {sorted(d)}")
+    if key is None:
+        blob = json.dumps([do, input], sort_keys=True, default=str)
+        key = "cache:" + hashlib.sha256(blob.encode()).hexdigest()
+
+    def compute() -> list[dict]:
+        data = input
+        for d in do:
+            fn = registry.get(d["use"]) if d.get("use") else registry.resolve_fn(d["fn"], base_dir)
+            out = fn(data, **(d.get("with") or {}))
+            data = list(out) if out is not None else []
+        return data
+
+    return list(
+        store.cache_compute(
+            key,
+            compute,
+            ttl=None if ttl is None else parse_duration(ttl),
+            single_flight=single_flight,
+            lease=parse_duration(lease),
+            wait=parse_duration(wait),
+        )
+    )
+
+
 def _cast_spec(spec: Any, label: str = "cast") -> tuple[str, dict]:
     """`date` | `{money: BRL}` | `{enum: [a, b], synonyms: {...}}` | `{type: date, ...}` ->
     (type name, options)."""
