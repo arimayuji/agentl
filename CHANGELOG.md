@@ -16,6 +16,9 @@ They are always listed under **Changed** or **Removed**.
   becoming nulls; `cast` with `on_bad: fail` stops on a missing or null field unless its type is
   optional (`int?`, `optional: true` or `nullable: true`); lint AL010 warns when a `cast` without
   `locale` (pt-BR) reads a local CSV whose numbers look en-US.
+- `agentl stats` reports cost per record, per accepted answer and per LLM answer for each agent
+  step and model, plus the cache hits and what they saved (#156). `step.succeeded` events of agent
+  steps now carry `model` and `cache_hits`.
 - Agent `attempts:` (#198): per-attempt llm and validation, the validator's structured errors
   (field, rule, value) fed back to the next attempt, and a lenient last attempt that drops invalid
   values to the quarantine. Attempts and tokens per attempt show in events and in the step's spend.
@@ -85,6 +88,12 @@ They are always listed under **Changed** or **Removed**.
   rejected records through a writer, and checks take `rejected_rate: "< 1%"`. Unknown types fail
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
+
+### Fixed
+
+- `budget:` with parallel agent workers (`concurrency`): calls already running count against
+  `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
+  limit together and the run stops after the same number of calls every time.
 
 ## [0.11.0] - 2026-10-17
 

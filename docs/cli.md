@@ -251,6 +251,8 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
   duration: median 41.2s, p95 63.0s
   cost: 1.8400 USD
   last run: 20261014-090012-1a2b3c succeeded
+  agent cost (USD):
+    [classify] claude-haiku-4-5: 0.000410/record, 0.000432/accepted (9480 of 10000), 3100 cache hits, cache saved 1.8414
   failures by reason:
       3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
       1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
@@ -262,6 +264,13 @@ taken out (numbers, ids, paths, URLs), so the same timeout on different days cou
 reason. Pass the run id to `agentl doctor` for the details. The dashboard shows the same numbers
 for the last 30 days, and the MCP server has a `pipeline_stats` tool. Everything is computed from
 the run store; nothing extra is recorded.
+
+For each agent step and model, `agent cost` divides the step's spend by its records (output plus
+rejected), by its accepted answers (records not rejected) and by the records an LLM answered.
+`cache saved` prices the step's cache hits at that last number. In `--json` these are the
+`agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
+`cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
+their events and show up as model `unknown`.
 
 ## Diagram
 
