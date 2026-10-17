@@ -216,6 +216,10 @@ def _changeset(
             f"(SELECT max(rowid) FROM temp.{_STAGE} GROUP BY {klist})"
         )
         conn.execute(f"CREATE INDEX temp._agentl_changeset_k ON {_STAGE} ({klist})")
+        if parts:
+            conn.execute(
+                f"CREATE INDEX temp._agentl_changeset_p ON {_STAGE} ({', '.join(map(_quote, parts))})"
+            )
         total = conn.execute(f"SELECT count(*) FROM temp.{_STAGE}").fetchone()[0]
         rest = [c for c in cols if c not in keys]
         match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
@@ -231,11 +235,9 @@ def _changeset(
                 )
                 or "0"
             )
-            conn.execute(
-                f"UPDATE temp.{_STAGE} SET _hit = 1, _diff = d FROM "
-                f'(SELECT s.rowid AS rid, ({differs}) AS d FROM "{table}" AS t CROSS JOIN temp.{_STAGE} AS s '
-                f"WHERE {match}) AS m WHERE temp.{_STAGE}.rowid = m.rid"
-            )
+            scan = f'SELECT s.rowid FROM "{table}" AS t CROSS JOIN temp.{_STAGE} AS s WHERE {match}'
+            conn.execute(f"UPDATE temp.{_STAGE} SET _hit = 1 WHERE rowid IN ({scan})")
+            conn.execute(f"UPDATE temp.{_STAGE} SET _diff = 1 WHERE rowid IN ({scan} AND ({differs}))")
             updated = conn.execute(f"SELECT count(*) FROM temp.{_STAGE} WHERE _diff = 1").fetchone()[0]
             gone = _gone(table, keys, drop, parts)
             if gone:
@@ -261,9 +263,13 @@ def _changeset(
             if deleted:
                 conn.execute(f'DELETE FROM "{table}" AS t WHERE {gone}')
             if updated:
-                sets = ", ".join(f"{_quote(c)} = s.{_quote(c)}" for c in rest)
+                sets = ", ".join(
+                    f"{_quote(c)} = (SELECT s.{_quote(c)} FROM temp.{_STAGE} AS s WHERE {match})"
+                    for c in rest
+                )
                 conn.execute(
-                    f'UPDATE "{table}" AS t SET {sets} FROM temp.{_STAGE} AS s WHERE s._diff = 1 AND {match}'
+                    f'UPDATE "{table}" AS t SET {sets} '
+                    f"WHERE EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE s._diff = 1 AND {match})"
                 )
             if inserted:
                 conn.execute(
