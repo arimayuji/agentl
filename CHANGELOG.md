@@ -11,6 +11,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl gaps`: a top-level `expect:` block declares the partitions the destination should hold (daily or hourly, with `skip: weekends` or dates, and composite keys such as source x day); the command reads what is present with any reader (`sqlite.read`, `postgres.read`, `sql.read`) or a file glob, lists the missing periods as ranges, prints `agentl backfill` lines with `--commands`, and exits 1 with `--fail` for scheduled checks.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
