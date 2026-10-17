@@ -11,6 +11,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .gaps import ExpectSpec
+
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 # ${params.name} (or ${param.name}): a run parameter declared under `params:`.
 PARAM_REF = re.compile(r"\$\{params?\.([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -711,6 +713,8 @@ class PipelineSpec(BaseModel):
     # Pass pyarrow Tables between steps that can take them. None: when pyarrow is installed.
     arrow: bool | None = None
     mcp: dict[str, MCPServerSpec] = Field(default_factory=dict)
+    # Partitions the destination should hold; `agentl gaps` lists the missing ones.
+    expect: ExpectSpec | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 
