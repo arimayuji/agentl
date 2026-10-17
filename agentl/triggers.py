@@ -6,9 +6,12 @@
         secret: ${INVOICES_HOOK_SECRET}
       - files: "inbox/*.csv"                      # new or changed files, local or remote glob
         every: 1m
+      - after: extract_orders                     # when that pipeline finishes (`status`)
 
 A `use: trigger` step gets what started the run: the webhook body as records, one record per new
-file (`path`, `name`, `size`, `modified`), or `{scheduled_at}` for a schedule. Runs of the same
+file (`path`, `name`, `size`, `modified`), `{scheduled_at}` for a schedule, or the finished
+parent run (`pipeline`, `run_id`, `status`, `error`) for `after`. `on_success` / `on_failure` /
+`after` actions chain pipelines and emit events (see agentl.chain). Runs of the same
 pipeline never overlap: they queue one after the other. Standard library only."""
 
 from __future__ import annotations
@@ -218,8 +221,12 @@ class Service:
         self.on_late: Callable[[Any, _dt.date, _dt.datetime], None] | None = None
         self.pending: dict[tuple[str, int], set[str]] = {}  # files handed to a run not finished yet
         self._stop = threading.Event()
+        from . import chain
+
+        chain.check(specs)
+        chained = {a.trigger for s in specs for a in [*s.on_success, *s.on_failure, *s.after]}
         for spec in specs:
-            if not spec.trigger:
+            if not spec.trigger and spec.name not in chained:
                 raise ValueError(f"pipeline '{spec.name}' has no trigger; add one under `trigger:`")
             for i, t in enumerate(spec.trigger):
                 if t.webhook:
@@ -241,19 +248,27 @@ class Service:
         return Runner(spec, store=self.store, trigger=records).run()
 
     def submit(
-        self, spec: Any, records: list[dict], kind: str, after: Callable[[bool], None] | None = None
+        self,
+        spec: Any,
+        records: list[dict],
+        kind: str,
+        after: Callable[[bool], None] | None = None,
+        parent: dict | None = None,
+        chain: tuple[str, ...] = (),
     ) -> None:
-        """Queue a run; runs of one pipeline go one at a time in its own worker thread."""
+        """Queue a run; runs of one pipeline go one at a time in its own worker thread. `parent`
+        and `chain` are set when another pipeline's run started this one."""
         q = self.queues.get(spec.name)
         if q is None:
             q = self.queues[spec.name] = queue.Queue()
             threading.Thread(target=self._worker, args=(q,), daemon=True, name=f"agentl-{spec.name}").start()
-        q.put((spec, records, kind, after))
+        q.put((spec, records, kind, after, parent, chain))
 
     def _worker(self, q: queue.Queue) -> None:
         while True:
-            spec, records, kind, after = q.get()
+            spec, records, kind, after, parent, chain = q.get()
             ok = False
+            result = None
             try:
                 result = self._run(spec, records, kind)
                 ok = getattr(result, "status", "succeeded") == "succeeded"
@@ -271,7 +286,53 @@ class Service:
             finally:
                 if after:
                     after(ok)
+                try:
+                    self._link(spec, result, parent)
+                    self._then(spec, records, result, (*chain, spec.name))
+                except Exception:
+                    log.exception("%s: after-run actions failed", spec.name)
                 q.task_done()
+
+    def _link(self, spec: Any, result: Any, parent: dict | None) -> None:
+        """Record parent <-> child on both runs, so the dashboard shows where a run came from."""
+        run_id = getattr(result, "run_id", None)
+        if not parent or not run_id or not hasattr(self.store, "event"):
+            return
+        status = getattr(result, "status", "failed")
+        self.store.event(run_id, "chain.parent", None, parent)
+        self.store.event(
+            parent["run_id"], "chain.child", None, {"pipeline": spec.name, "run_id": run_id, "status": status}
+        )
+
+    def _then(self, spec: Any, records: list[dict], result: Any, chain: tuple[str, ...]) -> None:
+        """Run the `on_success` / `on_failure` / `after` actions and start `after:` triggers."""
+        from . import chain as ch
+
+        m = ch.metrics(result)
+        ctx = ch.context(spec, result, records)
+        parent = {"pipeline": spec.name, "run_id": ctx["run"]["id"], "status": m["status"]}
+        actions = [*(spec.on_success if m["status"] == "succeeded" else spec.on_failure), *spec.after]
+        for a in actions:
+            if a.when and not ch.evaluate(a.when, m):
+                continue
+            if a.emit:
+                try:
+                    ch.emit(a.emit, ctx)
+                except Exception as e:  # an unreachable receiver must not stop the service
+                    log.warning("%s: emit %s failed: %s", spec.name, a.emit.topic, e)
+            elif a.trigger:
+                self._start(a.trigger, [ch.resolve(a.with_, ctx)], parent, chain)
+        for name, other in self.specs.items():
+            for t in other.trigger:
+                if t.after == spec.name and t.status in (m["status"], "any"):
+                    rec = {**parent, "error": ctx["run"]["error"]}
+                    self._start(name, [rec], parent, chain)
+
+    def _start(self, name: str, records: list[dict], parent: dict, chain: tuple[str, ...]) -> None:
+        if name in chain:  # checked when the service starts; this is the runtime backstop
+            log.error("%s: not started, it would chain in a cycle: %s", name, " -> ".join([*chain, name]))
+            return
+        self.submit(self.specs[name], records, "chain", parent=parent, chain=chain)
 
     def tick(self, now: float | None = None) -> None:
         """Start the runs that are due: schedules whose time came, and file triggers with new files.
@@ -438,10 +499,10 @@ class Service:
                 t.cron
                 or (f"schedule {t.schedule.tz}" if t.schedule else None)
                 or t.webhook
-                or (f"files {t.files}" if t.files else f"every {t.every}")
+                or (f"files {t.files}" if t.files else f"after {t.after}" if t.after else f"every {t.every}")
                 for t in spec.trigger
             )
-            print(f"  {name}: {kinds}")
+            print(f"  {name}: {kinds or 'chained'}")
         try:
             while not self._stop.wait(interval):
                 self.tick()

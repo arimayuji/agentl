@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import assist, graph, registry
 from .runner import Runner
@@ -149,7 +150,124 @@ def _rejected(a: argparse.Namespace) -> int:
     if result is None:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
-    return 0 if result.status == "succeeded" else 1
+    return _exit_code(spec, result)
+
+
+def _exit_code(spec: Any, result: Any) -> int:
+    """Per outcome, from `outcomes.exit_codes` (default: 1 for failed, 0 otherwise)."""
+    if result.outcome is None:
+        return 0 if result.status in ("succeeded", "skipped", "no_change") else 1
+    return int(spec.outcomes.exit_code(result.outcome))
+
+
+def _gaps(a: argparse.Namespace) -> int:
+    from . import gaps
+
+    spec = load(a.pipeline)
+    if spec.expect is None:
+        print(f"{a.pipeline}: no expect: block (expect.partitions and expect.present_in)", file=sys.stderr)
+        return 2
+    found = gaps.find(spec.expect, a.since, a.until, spec.base_dir)
+    cmds = gaps.backfill_commands(a.pipeline, found, spec.expect.partitions.fmt)
+    if a.json:
+        print(json.dumps({**found.to_dict(), "commands": cmds}, indent=2, ensure_ascii=False))
+    else:
+        n = len(found.missing)
+        print(f"{spec.name}: {n} of {found.expected} partitions missing")
+        for keys, first, last in found.ranges():
+            label = " ".join(f"{k}={v}" for k, v in keys.items())
+            span = first if first == last else f"{first} .. {last}"
+            print(f"  {label + '  ' if label else ''}{span}")
+        if a.commands:
+            if cmds:
+                print("\nbackfill:")
+                for c in cmds:
+                    print(f"  {c}")
+            elif n:
+                print("\n(no backfill lines: only daily partitions in %Y-%m-%d map to --from/--to)")
+    return 1 if a.fail and found.missing else 0
+
+
+def _snapshot(a: argparse.Namespace) -> int:
+    from . import snapshots
+
+    spec = load(a.pipeline, params=_params(a.param))
+    with open_store(a.db) as store:
+        result = Runner(spec, store=store, use_cache=not a.no_cache, listeners=[]).run()
+    if result.status != "succeeded":
+        print(f"run {result.status}: snapshots not compared", file=sys.stderr)
+        return 1
+    folder = Path(a.dir) / spec.name
+    key = [k.strip() for k in a.key.split(",") if k.strip()] if a.key else None
+    steps = a.step or [s.id for s in spec.steps]
+    pending: list[str] = []
+    for step in steps:
+        new = list(result.outputs.get(step, []))
+        old = snapshots.load_snapshot(folder, step)
+        if old is None:
+            print(f"{step}: no snapshot ({len(new)} records)")
+            pending.append(step)
+            continue
+        d = snapshots.diff_records(old, new, key)
+        if d.empty:
+            print(f"{step}: ok ({len(new)} records)")
+        else:
+            print(d.render(step))
+            pending.append(step)
+    if not pending:
+        return 0
+    if not a.update_snapshots:
+        print(f"{len(pending)} step(s) differ; accept with --update-snapshots", file=sys.stderr)
+        return 1
+    if not a.yes:
+        if not sys.stdin.isatty():
+            print("not a terminal: pass --yes to accept", file=sys.stderr)
+            return 1
+        if input(f"accept {len(pending)} snapshot(s)? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    for step in pending:
+        print(f"wrote {snapshots.save_snapshot(folder, step, result.outputs.get(step, []), key)}")
+    return 0
+
+
+def _windowed(
+    a: argparse.Namespace, spec: Any, start: Any = None, end: Any = None, resume: bool = True
+) -> int:
+    from .windows import run_windows
+
+    with open_store(a.db) as store:
+        report = run_windows(
+            spec, store, start, end, resume=resume, use_cache=not a.no_cache, listeners=_listeners(a)
+        )
+    if getattr(a, "show", None):
+        rows = [r for res in report.results.values() for r in res.outputs.get(a.show, [])]
+        print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    print(f"windows: {len(report.done)} done, {len(report.skipped)} skipped, {len(report.failed)} failed")
+    for key, err in report.failed.items():
+        print(f"  pending {key}: {err}", file=sys.stderr)
+    return 0 if report.status == "succeeded" else 1
+
+
+def _has_window(path: str) -> bool:
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    return isinstance(raw, dict) and raw.get("window") is not None
+
+
+def _window_backfill(a: argparse.Namespace) -> int:
+    import datetime as dt
+
+    if a.glob or a.param_name or a.every != "day" or a.concurrency != 1:
+        raise ValueError(
+            "a pipeline with `window:` is backfilled by date range only: "
+            "--glob, --param-name, --every and --concurrency do not apply"
+        )
+    if not _checked(a.pipeline):
+        return 2
+    spec = load(a.pipeline, params=_params(a.param))
+    end = dt.date.fromisoformat(a.end) + dt.timedelta(days=1)  # --to is inclusive
+    return _windowed(a, spec, dt.date.fromisoformat(a.start), end, resume=not a.redo)
 
 
 def _schedule_next(spec: PipelineSpec, n: int) -> int:
@@ -302,6 +420,26 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd("keygen", "print a new random key for the protect and unprotect steps")
 
+    te = cmd("test", "run a pipeline on fixture files (echo LLM, no writes) and compare with a golden file")
+    te.add_argument("pipeline")
+    te.add_argument(
+        "--fixture",
+        action="append",
+        default=[],
+        metavar="[STEP=]PATH",
+        help="file a source step reads instead (STEP= may be left out with one source step)",
+    )
+    te.add_argument("--expect", required=True, help="golden JSON: [records] or {writer step: [records]}")
+    te.add_argument("--key", help="match rows by this field instead of by position")
+    te.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="FIELD",
+        help="leave this field out of the comparison",
+    )
+    te.add_argument("--update", action="store_true", help="write the golden file from this run")
+
     pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
     pv.add_argument("pipeline")
     pv.add_argument("step")
@@ -352,6 +490,16 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("action", choices=["show", "reset"])
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
+
+    ca = cmd("cache", "cached results in the run store: clear one key, a prefix (key*) or all")
+    ca.add_argument("action", choices=["clear"])
+    ca.add_argument("key", nargs="?", help="the key, or a prefix ending in * (e.g. 'catalog:*')")
+    ca.add_argument("--all", action="store_true", help="clear every cached result, agent answers included")
+
+    se = cmd("seen", "keys skip_seen already let through: list them, or forget them to reprocess")
+    se.add_argument("action", choices=["list", "forget"])
+    se.add_argument("key", nargs="?", help="forget: only this key (default: the whole scope)")
+    se.add_argument("--scope", help="only this scope (default scope: the pipeline name)")
 
     mp = cmd("mappings", "column mappings of map_schema steps: show, approve or forget them")
     mp.add_argument("action", choices=["show", "approve", "forget"])
@@ -411,7 +559,30 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
-    bf = cmd("backfill", "one run per file or per date, resumable")
+    sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
+    sn.add_argument("pipeline")
+    sn.add_argument("--dir", default="snapshots", help="snapshot folder (default: snapshots/<pipeline name>)")
+    sn.add_argument("--step", action="append", help="only this step (repeatable; default: every step)")
+    sn.add_argument("--key", help="fields that identify a record, comma separated (e.g. id or id,date)")
+    sn.add_argument(
+        "--update-snapshots", "-u", action="store_true", help="show the diff and ask to accept it"
+    )
+    sn.add_argument("--yes", action="store_true", help="with -u: accept without asking")
+    sn.add_argument("--no-cache", action="store_true")
+    _param_arg(sn)
+
+    gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
+    gp.add_argument("pipeline")
+    gp.add_argument("--since", help="first period to check (default: expect.partitions.from)")
+    gp.add_argument("--until", help="last period to check (default: the last complete one)")
+    gp.add_argument("--json", action="store_true", help="print the report as JSON")
+    gp.add_argument("--commands", action="store_true", help="print `agentl backfill` lines for the gaps")
+    gp.add_argument("--fail", action="store_true", help="exit 1 when something is missing (cron, CI)")
+
+    bf = cmd(
+        "backfill",
+        "one run per file or per date (params) or per window chunk (`window:`), resumable",
+    )
     bf.add_argument("pipeline")
     src = bf.add_mutually_exclusive_group(required=True)
     src.add_argument("--glob", help="one run per matching file (local or s3://, gs://... with [remote])")
@@ -420,7 +591,19 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--every", choices=["day", "week", "month"], default="day")
     bf.add_argument("--param-name", help="the param that gets each file or date (default: the only one)")
     bf.add_argument("--concurrency", type=int, default=1)
-    bf.add_argument("--redo", action="store_true", help="run items that already succeeded again")
+    bf.add_argument(
+        "--redo",
+        "--no-resume",
+        dest="redo",
+        action="store_true",
+        help="run items (or window chunks) that already succeeded again",
+    )
+    bf.add_argument("--no-cache", action="store_true")
+    bf.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    bf.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    bf.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
     bf.add_argument("--json", action="store_true", help="print the final report as JSON")
     _param_arg(bf)
 
@@ -434,12 +617,16 @@ def main(argv: list[str] | None = None) -> int:
             if not a.no_check and not _checked(a.pipeline):
                 return 2
             spec = load(a.pipeline, params=_params(a.param))
+            if spec.window is not None:
+                return _windowed(a, spec)
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return _exit_code(spec, result)
+        if a.cmd == "snapshot":
+            return _snapshot(a)
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -472,6 +659,31 @@ def main(argv: list[str] | None = None) -> int:
                 planned = preflight.plan(load(a.pipeline), store)
             print(json.dumps(planned.to_dict(), indent=2) if a.json else planned.text())
             return 0
+        if a.cmd == "gaps":
+            return _gaps(a)
+        if a.cmd == "test":
+            from . import testing
+
+            fixtures: dict[str | None, str] = {}
+            for f in a.fixture:
+                sid, sep, path = f.partition("=")
+                if sep and sid and not Path(f).exists():
+                    fixtures[sid] = path
+                else:
+                    fixtures[None] = f
+            tested = testing.run_test(
+                load(a.pipeline),
+                fixtures,
+                a.expect,
+                key=a.key,
+                ignore=testing.IGNORED + tuple(a.ignore),
+                update=a.update,
+            )
+            if a.update:
+                print(f"wrote {a.expect} ({tested.status})")
+                return 0 if tested.status == "succeeded" else 1
+            print(tested.text(), file=sys.stdout if tested.ok else sys.stderr)
+            return 0 if tested.ok else 1
         if a.cmd == "preview":
             from . import preflight
 
@@ -529,7 +741,9 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 runs = store.runs()
             for run in runs:
-                print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
+                outcome = run.get("outcome") or "-"
+                status = f"{run['status']:<10} {outcome:<9}"
+                print(f"{run['id']}  {status} {run['pipeline']}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
             print(registry.describe(a.name) if a.name else "\n".join(registry.names()))
@@ -607,6 +821,32 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "cache":
+            if bool(a.key) == bool(a.all):
+                print("agentl cache clear needs a key or --all", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                count = store.cache_clear(None if a.all else a.key)
+            print(f"cleared {count} cached result(s)")
+            return 0
+
+        if a.cmd == "seen":
+            with open_store(a.db) as store:
+                if a.action == "list":
+                    seen = store.seen_list(a.scope)
+                    for row in seen:
+                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                        print(f"{row['scope']}  {row['key']}  (run {row['run_id']}, {when})")
+                    if not seen:
+                        print("no seen keys stored")
+                    return 0
+                if not a.scope:
+                    print("agentl seen forget needs --scope", file=sys.stderr)
+                    return 2
+                count = store.seen_forget(a.scope, a.key)
+                print(f"forgot {count} key(s) of {a.scope}; the next run handles them again")
+                return 0
+
         if a.cmd == "mappings":
             return _mappings(a)
         if a.cmd == "rejected":
@@ -641,6 +881,11 @@ def main(argv: list[str] | None = None) -> int:
 
             if a.start and not a.end:
                 raise ValueError("--from needs --to")
+            # One command, two modes: a pipeline with `window:` is backfilled chunk by chunk
+            # over [--from, --to] (both inclusive); otherwise one run per file or date, each
+            # passed as a run parameter.
+            if _has_window(a.pipeline):
+                return _window_backfill(a)
             items = bfill.periods(a.start, a.end, a.every) if a.start else bfill.files(a.glob)
             if not items:
                 print("backfill: nothing matches", file=sys.stderr)

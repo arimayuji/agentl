@@ -192,6 +192,35 @@ record back. The fixed part of the prompt is paid once per call instead of once 
   10 to 20, and lower it if items come back wrong. The output schema cannot have a field named
   `index`.
 
+### Many rows from one record
+
+To extract hundreds of rows from one document, asking for one JSON object per row spends output
+tokens on repeated field names and can hit the output limit. `output_mode: rows` asks for one JSON
+array per line, in the column order of `output`, and agentl builds the records:
+
+```yaml
+- id: items
+  input: doc
+  agent: List every line item of the invoice.
+  output_mode: rows
+  output: {date: str, category: str, item: str, value: float, unit: str?}
+  on_truncated: continue   # default; `fail` rejects the record instead
+  max_continuations: 4     # default
+```
+
+- One call per input record; the step outputs one record per row.
+- When the provider stops at `max_tokens`, the cut row is dropped and the model is asked to go on
+  after the last complete row. Rows it repeats at the seam are dropped, so two identical rows that
+  fall exactly on the seam count once.
+- A row with the wrong number of values, a wrong type or a line that is not a JSON array is
+  rejected on its own (with `_row`, `_source` and `_error`) and goes to the quarantine; the other
+  rows are kept.
+- The step's spend reports `rows`, `continuations` and `output_tokens_saved_est`, an estimate of
+  the output tokens saved against one JSON object per row.
+- Providers: `anthropic` and `echo`. Not with `records_per_call`, `mode: batch`, tools, a list
+  of llms or `rules:` (hybrid rules map one record to one output; rows mode makes many). Not
+  with `attempts:` either: rows mode retries by continuation and rejects a bad row on its own.
+
 ### Batch mode
 
 For jobs that can wait, send the whole step through the provider's batch API. It answers within
