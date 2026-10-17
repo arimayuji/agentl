@@ -17,6 +17,28 @@ They are always listed under **Changed** or **Removed**.
   rows are left alone; `on_missing: close` closes keys absent from the input. `as_of` (default
   now) needs a time zone and is stored in UTC. Reports `inserted`, `versioned`, `unchanged` and
   `closed`.
+- Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
+  handles each record first; only records where a rule fails or an `output:` field is missing or
+  invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
+  `agent`), and the `hybrid.paths` event and the step's spend count each path. New `hybrid
+  transforms` benchmark compares rules only, agent only and hybrid on messy addresses.
+- Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
+  int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
+  Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
+  --param` and the Celery, Temporal and Airflow (`run_params=`) integrations; unknown, missing and
+  mistyped values fail before the run starts, and `agentl lint` checks declarations and references
+  (AE010). `agentl backfill PIPELINE --glob 'reports/**/*.xlsx' | --from DATE --to DATE [--every
+  day|week|month] [--concurrency N]` runs once per file or period, records what finished in the
+  run store and skips it when started again, and prints a final report.
+- Declarative HTML extraction and list-to-detail crawling (#192). `html.select` gives one record
+  per element matching `items`, with `fields` read by CSS selector (text, `attr`, `absolute`
+  links, `type` with the `cast` types, `all`, `required`), from `url`, `path` or upstream records
+  with an `html` field. `crawl` follows `list` links with `next_page` and `max_pages`, runs
+  `detail` steps (`html.read`, `html.select`) on each page with `url` and `source_url`, honours
+  `limit`, waits `delay` between requests, sends an identifying User-Agent and keeps the
+  private-network guard. `html.read` takes `select`, `header_rows` and denormalises `colspan` and
+  `rowspan`. `on_selector_miss: fail_with_snapshot` (default) fails naming the selector and URL,
+  saves the received HTML and emits `selector.missed`; `skip` and `empty` keep going.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
