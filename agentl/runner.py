@@ -164,6 +164,8 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     if step.escalate:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
     # records_per_call is not part of the key: the answer per record is the same.
+    if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
+        return _hash("agent-rows", step.agent, step.output, llm_key, rec)
     if step.tools:  # tools can change the answer, so they are part of the key
         return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
     return _hash("agent", step.agent, step.output, llm_key, rec)
@@ -411,10 +413,114 @@ class Runner:
         return out
 
     # steps --------------------------------------------------------------
+    def _run_rows(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """`output_mode: rows` (#215): one call per input record, answered as one JSON array per
+        line. A truncated answer is continued up to `max_continuations` times; rows the model
+        repeats at the seam are dropped. A row with the wrong shape is rejected on its own."""
+        columns = list(step.output or {})
+        schema = llm.schema_model(f"{step.id}_row", step.output or {})
+        prov = self._provider(step.llm)
+        if not hasattr(prov, "rows"):
+            provider = self.spec.llm[step.llm].provider
+            raise ValueError(f"step '{step.id}': llm provider '{provider}' does not support output_mode rows")
+        spec = self.spec.llm[step.llm]
+        cacheable = self.use_cache and step.cached
+        stats = {"continuations": 0, "array_chars": 0, "object_chars": 0, "output_tokens": 0}
+
+        def ask(rec: dict) -> tuple[list[list], Records]:
+            got: list[list] = []
+            bad: Records = []
+            previous: list[str] = []
+            while True:
+                self._check_budget(result)
+                try:
+                    chunk = prov.rows(step.agent or "", rec, columns, previous)
+                except (ValueError, RuntimeError) as e:
+                    self._charge(result, step, spec, e)
+                    raise
+                self._charge(result, step, spec, chunk)
+                with self._spend:
+                    stats["output_tokens"] += chunk.output_tokens
+                rows, lines, kept = parse_rows(chunk.text, chunk.truncated)
+                rows = drop_overlap(got, rows)
+                got.extend(rows)
+                bad.extend({"_row": line, "_error": "row is not a JSON array"} for line in lines)
+                if not chunk.truncated:
+                    return got, bad
+                if step.on_truncated == "fail":
+                    raise ValueError("answer truncated at the output token limit (on_truncated: fail)")
+                if len(previous) >= step.max_continuations:
+                    raise ValueError(f"answer still truncated after {step.max_continuations} continuations")
+                previous.append(kept)
+                with self._spend:
+                    stats["continuations"] += 1
+
+        ok: Records = []
+        bad: Records = []
+        for n, rec in enumerate(records):
+            k = agent_cache_key(self.spec, step, rec)
+            hit = self.store.cache_get(k) if cacheable else None
+            raw_rows: list[list]
+            raw_bad: Records
+            if hit is not None:
+                raw_rows, raw_bad = hit["rows"], []
+            else:
+                try:
+                    raw_rows, raw_bad = ask(rec)
+                except BudgetExceeded:
+                    raise
+                except (ValueError, RuntimeError) as e:
+                    bad.append({**rec, "_error": str(e)})
+                    continue
+                if cacheable:
+                    self.store.cache_set(k, {"rows": raw_rows})
+            for row_bad in raw_bad:
+                bad.append({**row_bad, "_source": n})
+            for row in raw_rows:
+                if len(row) != len(columns):
+                    bad.append(
+                        {
+                            "_row": row,
+                            "_source": n,
+                            "_error": f"row has {len(row)} values, expected {len(columns)}",
+                        }
+                    )
+                    continue
+                try:
+                    ok.append(schema.model_validate(dict(zip(columns, row, strict=True))).model_dump())
+                except ValidationError as e:
+                    bad.append({"_row": row, "_source": n, "_error": str(e)})
+                    continue
+                if hit is None:
+                    stats["array_chars"] += len(json.dumps(row, default=str))
+                    stats["object_chars"] += len(json.dumps(ok[-1], default=str))
+        saved = 0
+        if stats["array_chars"]:
+            per_char = stats["output_tokens"] / stats["array_chars"]
+            saved = round((stats["object_chars"] - stats["array_chars"]) * per_char)
+        with self._spend:
+            mine = result.spend[step.id]
+            mine["rows"] = len(ok)
+            mine["continuations"] = stats["continuations"]
+            mine["output_tokens_saved_est"] = max(0, saved)
+        self._emit(
+            run_id,
+            "agent.rows",
+            step.id,
+            rows=len(ok),
+            continuations=stats["continuations"],
+            output_tokens_saved_est=max(0, saved),
+        )
+        self._rejects(run_id, step.id, bad, len(ok) + len(bad), result)
+        return ok
+
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """An agent step. With `rules:` (#124) each record tries the rules first and only the
         records they cannot handle are sent to the llm; the output keeps the input order and each
-        record says which path produced it in `_path`."""
+        record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
+        (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        if step.output_mode == "rows":
+            return self._run_rows(run_id, step, records, result)
         if not step.rules:
             answered = self._agent_slots(run_id, step, records, result)
             return self._agent_finish(run_id, step, answered, len(records), result)
@@ -1241,6 +1347,36 @@ class Runner:
                 if result.status == "succeeded":
                     result.status = "failed"
                     result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"
+
+
+def parse_rows(text: str, truncated: bool = False) -> tuple[list[list], list[str], str]:
+    """(rows, lines that are not JSON arrays, the text of the complete lines). When the answer
+    was truncated, a last line that does not parse is the cut row: dropped, not rejected."""
+    lines = [ln.strip() for ln in text.strip().strip("`").splitlines()]
+    lines = [ln for ln in lines if ln and ln not in ("json", "```")]
+    rows: list[list] = []
+    bad: list[str] = []
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        try:
+            value = json.loads(line.rstrip(","))
+        except ValueError:
+            value = None
+        if isinstance(value, list):
+            rows.append(value)
+            kept.append(line)
+        elif not (truncated and i == len(lines) - 1):
+            bad.append(line)
+            kept.append(line)
+    return rows, bad, "\n".join(kept)
+
+
+def drop_overlap(got: list[list], new: list[list]) -> list[list]:
+    """Rows a continuation repeats from the end of what came before (the longest such run)."""
+    for k in range(min(len(got), len(new)), 0, -1):
+        if got[-k:] == new[:k]:
+            return new[k:]
+    return new
 
 
 def _apply_rules(

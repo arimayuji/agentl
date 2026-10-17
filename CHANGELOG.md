@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
+  in the column order of `output` and builds the records, so one record can give many rows. A
+  truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without
+  duplicate rows (`on_truncated: continue | fail`); a bad row is rejected on its own; the step's
+  spend reports `output_tokens_saved_est`. Providers: `anthropic` and `echo`.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or

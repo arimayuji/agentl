@@ -176,6 +176,11 @@ class StepSpec(BaseModel):
     escalate_below: float | None = Field(default=None, ge=0, le=1)
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
+    # Compact rows (#215): the model answers one JSON array per line in the column order of
+    # `output`, and agentl builds the records. One input record can give many rows.
+    output_mode: Literal["records", "rows"] = "records"
+    on_truncated: Literal["continue", "fail"] = "continue"  # rows mode: answer cut by max_tokens
+    max_continuations: int = Field(default=4, ge=0, le=50)
     mode: Literal["sync", "batch"] = "sync"
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
@@ -236,6 +241,15 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.output_mode == "rows":
+            if not self.agent:
+                raise ValueError(f"step '{self.id}': output_mode rows belongs to agent steps")
+            if self.mode == "batch" or self.records_per_call > 1 or self.tools or self.escalate or self.rules:
+                raise ValueError(
+                    f"step '{self.id}': output_mode rows works one record per call, without "
+                    "mode batch, records_per_call, tools, a list of llms or rules:"
+                )
+
         if self.rules and not self.agent:
             raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
         for rule in self.rules:
