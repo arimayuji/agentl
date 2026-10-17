@@ -29,9 +29,12 @@ class RunInput:
     pipeline: str
     vars: dict[str, str] = field(default_factory=dict)
     db: str | None = None
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @activity.defn(name="agentl.run")
 def run_pipeline(args: RunInput) -> dict[str, Any]:
     activity.heartbeat(args.pipeline)
-    return run(args.pipeline, vars=args.vars, db=args.db, raise_on_failure=True).summary()
+    return run(
+        args.pipeline, vars=args.vars, params=args.params or None, db=args.db, raise_on_failure=True
+    ).summary()
