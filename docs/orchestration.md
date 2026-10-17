@@ -112,6 +112,30 @@ check would pass `timeout`. With `on_timeout: fail` the run fails before the dat
 step; with `continue` it goes on with the last data it got. The run process stays alive while it
 waits, so give your scheduler's job timeout room for it.
 
+## Fetch windows: revisions and backfills
+
+Time-series APIs revise recent values and cap the range per call. A `window:` section handles both:
+
+```yaml
+window:
+  lookback: 10d            # every run re-reads the last 10 days (revisions)
+  max_span: 31d            # at most 31 days per chunk
+  align: calendar_month    # none | calendar_month | week
+  order: oldest_first      # or newest_first
+steps:
+  - id: series
+    use: http.get
+    with: { url: https://api.example.org/series, params: { from: "${window.start}", to: "${window.end}" } }
+```
+
+`${window.start}` and `${window.end}` are ISO dates; the end is exclusive. `agentl run` covers
+`[today - lookback, tomorrow)`. `agentl backfill p.yaml --from 2025-01-01 --to 2026-01-01` takes
+the same path with more chunks. The pipeline runs once per chunk and each chunk's status is kept in
+the run store: running the same backfill again skips the chunks that succeeded (`--no-resume`
+re-runs them), a failed chunk does not stop the others, and the report lists the pending ones.
+Durations are whole days or weeks (`10d`, `2w`). Writers should be idempotent (upsert) because the
+tail is re-read on every run.
+
 ## GitHub Actions
 
 ```yaml

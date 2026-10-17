@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import assist, graph, registry
 from .runner import Runner
@@ -127,6 +128,24 @@ def _rejected(a: argparse.Namespace) -> int:
     return 0 if result.status == "succeeded" else 1
 
 
+def _windowed(
+    a: argparse.Namespace, spec: Any, start: Any = None, end: Any = None, resume: bool = True
+) -> int:
+    from .windows import run_windows
+
+    with open_store(a.db) as store:
+        report = run_windows(
+            spec, store, start, end, resume=resume, use_cache=not a.no_cache, listeners=_listeners(a)
+        )
+    if getattr(a, "show", None):
+        rows = [r for res in report.results.values() for r in res.outputs.get(a.show, [])]
+        print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    print(f"windows: {len(report.done)} done, {len(report.skipped)} skipped, {len(report.failed)} failed")
+    for key, err in report.failed.items():
+        print(f"  pending {key}: {err}", file=sys.stderr)
+    return 0 if report.status == "succeeded" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -160,6 +179,18 @@ def main(argv: list[str] | None = None) -> int:
         "--otel", action="store_true", help="emit OpenTelemetry traces and metrics (agentl-etl[otel])"
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
+
+    bf = cmd("backfill", "run a windowed pipeline over a date range, chunk by chunk, resumable")
+    bf.add_argument("pipeline")
+    bf.add_argument("--from", dest="start", required=True, help="first date, inclusive (YYYY-MM-DD)")
+    bf.add_argument("--to", dest="end", required=True, help="last date, exclusive (YYYY-MM-DD)")
+    bf.add_argument("--no-resume", action="store_true", help="re-run chunks that already succeeded")
+    bf.add_argument("--no-cache", action="store_true")
+    bf.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    bf.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    bf.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
 
     v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
@@ -277,12 +308,26 @@ def main(argv: list[str] | None = None) -> int:
             if not a.no_check and not _checked(a.pipeline):
                 return 2
             spec = load(a.pipeline)
+            if spec.window is not None:
+                return _windowed(a, spec)
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return 0 if result.status == "succeeded" else 1
+        if a.cmd == "backfill":
+            import datetime as dt
+
+            if not _checked(a.pipeline):
+                return 2
+            spec = load(a.pipeline)
+            if spec.window is None:
+                print("agentl backfill needs a `window:` section in the pipeline", file=sys.stderr)
+                return 2
+            return _windowed(
+                a, spec, dt.date.fromisoformat(a.start), dt.date.fromisoformat(a.end), not a.no_resume
+            )
         if a.cmd in ("validate", "lint"):
             from . import lint
 

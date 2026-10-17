@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Fetch windows (#190): a `window:` section (`lookback`, `max_span`, `align: none | calendar_month
+  | week`, `order`) fills `${window.start}` / `${window.end}` in steps. `agentl run` re-reads the
+  lookback tail; `agentl backfill --from X --to Y` runs the same chunked path over any range, keeps
+  a status per chunk, skips finished chunks on resume and lists the pending ones.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
