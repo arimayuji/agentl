@@ -274,6 +274,12 @@ way. Each call is priced with its own llm, and the step's spend says who answere
   reason (`_error`, `_value`) and an `item.dropped` event is logged. A required field that is still
   invalid rejects the record, as `strict` does.
 
+    !!! warning "Retrying a dropped item writes the record again"
+        A dropped item's quarantine entry belongs to a record that was already written. `agentl
+        rejected retry` on it re-runs the whole record, so a destination without a key (append,
+        CSV, JSON) gets a second copy. Retry dropped-item entries only into a keyed `upsert`
+        destination.
+
 A record that fails every attempt is rejected to the quarantine with the last error. Each failed
 attempt logs an `agent.attempt` event (attempt, llm, tokens, errors), and the step's spend counts
 calls, failures and tokens per attempt next to `answered_by`:
