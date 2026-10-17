@@ -54,6 +54,117 @@ class InvalidOutput(ValueError):
         self.cost_usd: float | None = None
 
 
+@dataclass
+class RowsChunk:
+    """One answer of a rows-mode call (#215): raw text, one JSON array per line, and whether the
+    provider stopped at the output token limit."""
+
+    text: str
+    truncated: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float | None = None
+
+
+ROWS_SYSTEM = (
+    " Answer only with rows, one JSON array per line, values in the given column order, no "
+    "header, no prose and no code fences. Use null for a value that is not present."
+)
+
+CONTINUE_NOTE = (
+    "Your answer was cut by the output limit. Continue with the next row after the last complete "
+    "one, in the same format. Do not repeat rows already sent."
+)
+
+
+def rows_instruction(instruction: str, columns: list[str]) -> str:
+    return f"{instruction}\n\nColumns, in this order: {json.dumps(columns)}"
+
+
+def validation_errors(e: BaseException) -> list[dict[str, Any]]:
+    """Structured errors of a rejected answer: field, rule and the (clipped) value, never the
+    record. Used as feedback for the next attempt (#198)."""
+    cause: BaseException | None = e
+    while cause is not None and not isinstance(cause, ValidationError):
+        cause = cause.__cause__
+    if cause is None:
+        return [{"field": None, "rule": type(e).__name__, "value": None}]
+    out = []
+    for err in cause.errors():
+        value = err.get("input")
+        if isinstance(value, dict | list):  # the whole answer or a nested object: name it only
+            value = type(value).__name__
+        elif isinstance(value, str) and len(value) > 80:
+            value = value[:80] + "..."
+        field = ".".join(str(p) for p in err.get("loc", ())) or None
+        out.append({"field": field, "rule": err.get("type"), "value": value})
+    return out
+
+
+def feedback_instruction(instruction: str, errors: list[dict[str, Any]]) -> str:
+    """The instruction for a retry: the validator's errors and a stricter reminder."""
+    lines = "\n".join(json.dumps(e, default=str) for e in errors)
+    return (
+        f"{instruction}\n\nYour previous answer was rejected by the validator with these errors "
+        f"(field, rule, value):\n{lines}\nAnswer again with exactly the requested fields and types; "
+        "use null for an optional field you cannot fill."
+    )
+
+
+def lenient_schema(schema: type[BaseModel]) -> type[BaseModel]:
+    """A model that accepts any value per field but shows the provider the strict JSON schema, so
+    the answer can be checked field by field afterwards (see `lenient_check`)."""
+    strict = schema
+
+    class Lenient(BaseModel):
+        model_config = {"extra": "ignore"}
+
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kw: Any) -> dict[str, Any]:
+            return strict.model_json_schema(*args, **kw)
+
+    fields: dict[str, Any] = {f: (Any, None) for f in schema.model_fields}
+    return create_model(f"{schema.__name__}_lenient", __base__=Lenient, **fields)
+
+
+def lenient_check(schema: type[BaseModel], answer: dict) -> tuple[dict, list[dict[str, Any]]]:
+    """Validates `answer` against `schema`, dropping what can be dropped: invalid items of list
+    fields and invalid optional fields (set to None). Returns the clean answer and one error per
+    dropped value. Raises InvalidOutput when a required field is still invalid."""
+    clean = dict(answer)
+    dropped: list[dict[str, Any]] = []
+    for _ in range(len(schema.model_fields) + 1):
+        try:
+            return schema.model_validate(clean).model_dump(), dropped
+        except ValidationError as e:
+            by_field: dict[str, list[Any]] = {}
+            for err in e.errors():
+                loc = err.get("loc", ())
+                by_field.setdefault(str(loc[0]) if loc else "", []).append(err)
+            fixed = False
+            for name, errs in by_field.items():
+                info = schema.model_fields.get(name)
+                value = clean.get(name)
+                idx = {
+                    x["loc"][1] for x in errs if len(x.get("loc", ())) >= 2 and isinstance(x["loc"][1], int)
+                }
+                if info is not None and isinstance(value, list) and idx:
+                    for i in sorted(idx):
+                        rule = next(x.get("type") for x in errs if x["loc"][1] == i)
+                        dropped.append({"field": f"{name}.{i}", "rule": rule, "value": value[i]})
+                    clean[name] = [v for i, v in enumerate(value) if i not in idx]
+                    fixed = True
+                elif info is not None and not info.is_required() and value is not None:
+                    dropped.append({"field": name, "rule": errs[0].get("type"), "value": value})
+                    clean[name] = None
+                    fixed = True
+            if not fixed:
+                raise InvalidOutput(str(e)) from e
+    raise InvalidOutput("answer could not be made valid")
+
+
 class Provider(Protocol):
     def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result: ...
     def text(self, instruction: str, content: str) -> str: ...
@@ -190,6 +301,28 @@ class AnthropicProvider:
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": out, "is_error": err})
             messages.append({"role": "user", "content": results})
 
+    def rows(self, instruction: str, record: dict, columns: list[str], previous: list[str]) -> RowsChunk:
+        """Rows mode (#215). `previous` holds the earlier, truncated answers for this record; each
+        is replayed as an assistant turn followed by a request to continue."""
+        messages: list[dict] = [
+            {"role": "user", "content": self._content(rows_instruction(instruction, columns), record)}
+        ]
+        for text in previous:
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": CONTINUE_NOTE})
+        resp = self.client.messages.create(
+            model=self.spec.model,
+            max_tokens=self.spec.max_tokens,
+            system=SYSTEM + ROWS_SYSTEM,
+            messages=messages,
+            **self.options,
+        )
+        tin, tout, read, write = self._usage(resp.usage)
+        if resp.stop_reason == "refusal":
+            raise InvalidOutput("model refused this record", tin, tout)
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        return RowsChunk(text, resp.stop_reason == "max_tokens", tin, tout, read, write)
+
     # Message Batches: same request per record, answered within 24 h at a lower price.
     def submit_batch(self, instruction: str, records: dict[str, dict], schema: type[BaseModel]) -> str:
         fmt = {"type": "json_schema", "schema": _strict_schema(schema)}
@@ -250,6 +383,13 @@ class EchoProvider:
 
     def structured(self, instruction: str, record: dict, schema: type[BaseModel]) -> Result:
         return Result(schema.model_validate({k: record.get(k) for k in schema.model_fields}))
+
+    def rows(self, instruction: str, record: dict, columns: list[str], previous: list[str]) -> RowsChunk:
+        """A record's `rows` list (lists of values) as-is, else one row of its matching fields."""
+        rows = record.get("rows")
+        if not isinstance(rows, list):
+            rows = [[record.get(c) for c in columns]]
+        return RowsChunk("\n".join(json.dumps(r, default=str) for r in rows))
 
     def text(self, instruction: str, content: str) -> str:
         return content[:500]

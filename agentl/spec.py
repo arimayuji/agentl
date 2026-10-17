@@ -107,6 +107,7 @@ _EXPECTATIONS = (  # see checks.py
     "fresh",
     "vs_last_run",
     "rejected_rate",
+    "pii",
 )
 
 
@@ -149,6 +150,21 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+class AttemptSpec(BaseModel):
+    """One try of an agent step at a record (#198). `attempts:` lists them in order; a record moves
+    to the next attempt when its answer fails validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm: str | None = None  # default: the step's llm
+    # strict: any invalid field fails the attempt. lenient: invalid list items and optional fields
+    # are dropped (each one quarantined with its reason) and the record goes on.
+    validate_: Literal["strict", "lenient"] = Field(default="strict", alias="validate")
+    # Add the previous attempt's validation errors (field, rule, value) and a stricter reminder.
+    feedback: bool = False
+    on_invalid: Literal["quarantine"] = "quarantine"
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -174,8 +190,16 @@ class StepSpec(BaseModel):
     # the retry, or whose `confidence` is below `escalate_below`, goes to the next llm.
     escalate: list[str] = Field(default_factory=list)
     escalate_below: float | None = Field(default=None, ge=0, le=1)
+    # Attempts with validator feedback and progressive strictness (#198). Replaces the default
+    # "two tries per llm" when set. See AttemptSpec.
+    attempts: list[AttemptSpec] = Field(default_factory=list)
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
+    # Compact rows (#215): the model answers one JSON array per line in the column order of
+    # `output`, and agentl builds the records. One input record can give many rows.
+    output_mode: Literal["records", "rows"] = "records"
+    on_truncated: Literal["continue", "fail"] = "continue"  # rows mode: answer cut by max_tokens
+    max_continuations: int = Field(default=4, ge=0, le=50)
     mode: Literal["sync", "batch"] = "sync"
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
@@ -185,12 +209,22 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
+    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
+    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
+    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
     on_bad: Literal["reject", "fail", "coerce"] = "reject"
     extra: Literal["keep", "drop", "forbid"] = "keep"
     rejected_to: WriterSpec | None = None  # writes the step's rejected records (any reason)
+
+    @property
+    def llms(self) -> list[str]:
+        """Every llm the step may call, in order, without repeats."""
+        names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
+        return list(dict.fromkeys(names))
 
     @model_validator(mode="before")
     @classmethod
@@ -232,6 +266,40 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.output_mode == "rows":
+            if not self.agent:
+                raise ValueError(f"step '{self.id}': output_mode rows belongs to agent steps")
+            if self.mode == "batch" or self.records_per_call > 1 or self.tools or self.escalate or self.rules:
+                raise ValueError(
+                    f"step '{self.id}': output_mode rows works one record per call, without "
+                    "mode batch, records_per_call, tools, a list of llms or rules:"
+                )
+            if self.attempts:
+                raise ValueError(
+                    f"step '{self.id}': output_mode rows has its own retries (continuations, a bad "
+                    "row rejected on its own); attempts: works with whole-record answers only"
+                )
+
+        if self.rules and not self.agent:
+            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
+        for rule in self.rules:
+            if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
+            kind, body = next(iter(rule.items()))
+            if kind == "fn" and not (isinstance(body, str) and ":" in body):
+                raise ValueError(f"step '{self.id}': rule fn must look like 'module:function'")
+            if kind != "fn" and not (isinstance(body, dict) and body):
+                raise ValueError(f"step '{self.id}': rule {kind} maps fields to expressions or types")
+            if kind == "compute":
+                from . import expr
+
+                for text in body.values():
+                    try:
+                        expr.compile_expr(str(text))
+                    except expr.ExprError as e:
+                        raise ValueError(f"step '{self.id}': rule compute: {e}") from None
         if self.tools and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take tools")
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
@@ -247,6 +315,18 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":
             raise ValueError(f"step '{self.id}': a cascade of llms does not work with mode batch")
+        if self.attempts:
+            if not self.agent:
+                raise ValueError(f"step '{self.id}': only agent steps take attempts")
+            if self.escalate:
+                raise ValueError(f"step '{self.id}': set the llm of each attempt instead of a list of llms")
+            if self.mode == "batch" or self.records_per_call > 1:
+                raise ValueError(
+                    f"step '{self.id}': attempts work one record per call; drop mode batch and"
+                    " records_per_call"
+                )
+            if any(a.validate_ == "lenient" for a in self.attempts[:-1]):
+                raise ValueError(f"step '{self.id}': only the last attempt can be lenient")
         if self.escalate_below is not None:
             if not self.escalate:
                 raise ValueError(
@@ -488,7 +568,7 @@ class PipelineSpec(BaseModel):
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
         if self.budget and self.budget.max_usd is not None:
-            used = {n for s in self.steps if s.kind == "agent" for n in [s.llm, *s.escalate]}
+            used = {n for s in self.steps if s.kind == "agent" for n in s.llms}
             used |= {f for n in used if n in self.llm for f in self.llm[n].fallback}
             unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
             free = ("echo", "ollama", "openrouter")  # openrouter reports the cost of each call
@@ -509,7 +589,7 @@ class PipelineSpec(BaseModel):
             for ref in s.inputs:
                 if ref not in ids:
                     raise ValueError(f"step '{s.id}': unknown input '{ref}'")
-            for name in [s.llm, *s.escalate] if s.kind == "agent" else []:
+            for name in s.llms if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
             if s.check and "rejected_rate" in s.expect:
