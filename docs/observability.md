@@ -65,3 +65,52 @@ opentelemetry-instrument agentl run pipeline.yaml --otel
 Failed runs become Sentry issues tagged with `agentl.pipeline`, `agentl.run_id` and the failing
 `agentl.step`, grouped per pipeline and step, with the run summary as context. `Sentry()` reuses an
 SDK you already initialized; `Sentry(dsn=...)` initializes it.
+
+## OpenLineage
+
+agentl sends [OpenLineage](https://openlineage.io) events to the data catalog your team uses
+(Marquez, DataHub, OpenMetadata, or any other that reads OpenLineage). Every run sends `START` and
+then `COMPLETE` or `FAIL` for the run (the job is the pipeline name) and for each step (the job is
+`<pipeline>.<step>`, with a `parent` facet that points at the run). A `FAIL` carries the error in an
+`errorMessage` facet. Run ids are UUIDs derived from the agentl run id, so the same run always maps
+to the same id.
+
+Input and output datasets come from the parameters of connector steps: `table`, `topic`, `queue`,
+`stream`, `path`, `file`, `url`, `sheet` or `folder`. Steps whose connector writes (`*.write`,
+`*.post`, `*.send`, `*.produce`, `*.publish`, `*.upload`) have outputs, the others have inputs.
+Files use the `file` namespace, URLs their `scheme://host`, tables the host of the step's `dsn`.
+
+```yaml
+name: orders
+lineage:
+  url: http://localhost:5000   # events go to <url>/api/v1/lineage
+  namespace: shop              # job namespace, default "agentl"
+  api_key: ${OPENLINEAGE_API_KEY:-}   # optional, sent as a Bearer token
+  # file: lineage.jsonl        # or: append one JSON event per line
+steps:
+  - id: src
+    use: csv.read
+    with: {path: data/orders.csv}
+  - id: out
+    use: json.write
+    input: src
+    with: {path: out/orders.json}
+```
+
+Without `lineage:` in the YAML, set `OPENLINEAGE_URL` (or `OPENLINEAGE_FILE`), and optionally
+`OPENLINEAGE_NAMESPACE` and `OPENLINEAGE_API_KEY`. A catalog that is down only logs a warning on
+the `agentl.lineage` logger; the run carries on.
+
+### Recipe: Marquez on your machine
+
+```bash
+git clone https://github.com/MarquezProject/marquez && cd marquez
+./docker/up.sh                       # API on :5000, web UI on :3000
+OPENLINEAGE_URL=http://localhost:5000 agentl run orders.yaml
+```
+
+Open http://localhost:3000, pick the namespace (`agentl` or yours) and the `orders` job shows the
+graph `data/orders.csv -> orders -> out/orders.json`, with one run per `agentl run`.
+
+Not yet: column-level lineage (for `select`, `compute`, `cast`, `aggregate`) and per-record
+provenance (#209).
