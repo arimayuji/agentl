@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- OpenLineage events (#238): `lineage:` in the YAML (or `OPENLINEAGE_URL` / `OPENLINEAGE_FILE`)
+  sends START / COMPLETE / FAIL RunEvents for the run and each step to an HTTP endpoint such as
+  Marquez, or to a JSON lines file, with input and output datasets taken from connector
+  parameters. Stdlib only; a catalog that is down never fails the run. See Observability.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
