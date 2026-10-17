@@ -14,6 +14,14 @@ They are always listed under **Changed** or **Removed**.
 - Agent `attempts:` (#198): per-attempt llm and validation, the validator's structured errors
   (field, rule, value) fed back to the next attempt, and a lenient last attempt that drops invalid
   values to the quarantine. Attempts and tokens per attempt show in events and in the step's spend.
+- Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
+  int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
+  Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
+  --param` and the Celery, Temporal and Airflow (`run_params=`) integrations; unknown, missing and
+  mistyped values fail before the run starts, and `agentl lint` checks declarations and references
+  (AE010). `agentl backfill PIPELINE --glob 'reports/**/*.xlsx' | --from DATE --to DATE [--every
+  day|week|month] [--concurrency N]` runs once per file or period, records what finished in the
+  run store and skips it when started again, and prints a final report.
 - Declarative HTML extraction and list-to-detail crawling (#192). `html.select` gives one record
   per element matching `items`, with `fields` read by CSS selector (text, `attr`, `absolute`
   links, `type` with the `cast` types, `all`, `required`), from `url`, `path` or upstream records
