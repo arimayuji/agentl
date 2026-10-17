@@ -12,7 +12,9 @@ Priorities change with feedback, so dates are intentionally left out.
   `unpivot`; `join` on several keys and outer; `dedupe keep`. Rejected records go to a quarantine
   (`agentl rejected list|show|retry`). `postgres.write` and `sqlite.write` upserts take
   `on_conflict` and `update_columns` and report inserted, updated and unchanged rows. Also polars
-  steps, `agentl mcp install` for five clients and a performance gate in CI.
+  steps, `agentl mcp install` for five clients and a performance gate in CI. Sensitive fields can be
+  encrypted, hashed, masked or dropped (`protect`), and IoT data arrives through MQTT, Kinesis and
+  Event Hubs, aggregated in time windows.
 - **0.10.0**: messaging everywhere, with a `.send` step and a `notify:` channel for WhatsApp, SMS,
   Slack, Teams, Telegram, Discord, Google Chat, Mattermost, ntfy, Pushover, Matrix and email. Also
   `agentl new --template` (the tested recipes, no LLM call), `agentl run` checking the pipeline

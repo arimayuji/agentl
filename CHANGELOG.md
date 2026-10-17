@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-17
+
+Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for
+rejected records with retry, upserts that report what changed, field-level encryption, and MQTT,
+Kinesis and Event Hubs sources with time windows.
+
 ### Added
 
 - Schema contracts on any step (#122): `schema:` checks every record a step outputs with the
@@ -36,13 +42,6 @@ They are always listed under **Changed** or **Removed**.
 - `aggregate` takes `window: {field, every, end}` (#226): tumbling time windows (`30s`, `5m`,
   `1h`, `1d`) aligned to the epoch, combined with `group_by`, with `window_start` and optional
   `window_end`. Records with an unreadable timestamp are rejected with `_error`.
-
-## [0.11.0] - 2026-10-17
-
-Data cleaning and safe re-runs: typed `cast`, expressions, reshaping, a quarantine for rejected
-records with retry, and upserts that report what changed.
-
-### Added
 
 - Upsert options for `postgres.write` and `sqlite.write` (#183): `on_conflict: update|do_nothing|error`
   and `update_columns`. Upserts report `inserted`, `updated` and `unchanged` in the step result,
