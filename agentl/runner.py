@@ -206,6 +206,10 @@ class Runner:
         self._providers: dict[str, llm.Provider] = {}
         self._toolbox: ToolBox | None = None
         self._spend = threading.Lock()
+        # Calls that passed the budget check and have not been charged yet, per thread: the check
+        # counts them at the average cost of a call, so parallel workers cannot all slip past it.
+        self._inflight = 0
+        self._reserved = threading.local()
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
@@ -289,6 +293,7 @@ class Runner:
         if batch and spec.price and known is None:
             cost *= spec.price.batch
         with self._spend:
+            self._release()
             result.input_tokens += tin
             result.output_tokens += tout
             result.cache_read_tokens += read
@@ -309,19 +314,35 @@ class Runner:
             m["output_tokens"] += tout
             m["cost_usd"] += cost
 
+    def _release(self) -> None:
+        """Drop this thread's reservation (caller holds `_spend`). A thread makes one call at a
+        time, so a reservation left by a call that raised is released by the next check."""
+        if getattr(self._reserved, "held", False):
+            self._reserved.held = False
+            self._inflight -= 1
+
     def _check_budget(self, result: RunResult) -> None:
         with self._spend:
-            reason = self._over_budget(result)
+            self._release()
+            reason = self._over_budget(result, self._inflight)
+            if not reason and self.spec.budget is not None:
+                self._reserved.held = True
+                self._inflight += 1
         if reason:
             raise BudgetExceeded(reason)
 
-    def _over_budget(self, result: RunResult) -> str | None:
+    def _over_budget(self, result: RunResult, inflight: int = 0) -> str | None:
         b = self.spec.budget
         if b is None:
             return None
-        if b.max_tokens is not None and result.input_tokens + result.output_tokens >= b.max_tokens:
+        # Calls already running are counted at the average cost of the calls charged so far.
+        calls = max(1, result.llm_calls)
+        tokens = result.input_tokens + result.output_tokens
+        tokens += inflight * tokens // calls if result.llm_calls else 0
+        usd = result.cost_usd + (inflight * result.cost_usd / calls if result.llm_calls else 0)
+        if b.max_tokens is not None and tokens >= b.max_tokens:
             return f"max_tokens {b.max_tokens} reached ({result.input_tokens + result.output_tokens} used)"
-        if b.max_usd is not None and result.cost_usd >= b.max_usd:
+        if b.max_usd is not None and usd >= b.max_usd:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
         if b.max_tool_calls is not None and result.tool_calls >= b.max_tool_calls:
             return f"max_tool_calls {b.max_tool_calls} reached"

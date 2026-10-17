@@ -84,6 +84,12 @@ They are always listed under **Changed** or **Removed**.
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
 
+### Fixed
+
+- `budget:` with parallel agent workers (`concurrency`): calls already running count against
+  `max_usd` / `max_tokens` at the average cost of a call, so workers no longer slip past the
+  limit together and the run stops after the same number of calls every time.
+
 ## [0.11.0] - 2026-10-17
 
 Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for
