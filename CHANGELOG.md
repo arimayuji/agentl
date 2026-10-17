@@ -16,6 +16,74 @@ They are always listed under **Changed** or **Removed**.
   event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
   `rows_changed`, `outcome`); an `after: <pipeline>` trigger; parent and child runs are linked;
   cycles are rejected at start.
+- `if_changed` on `http.get` (#189): skip the download when the source did not change, checking a
+  page stamp (regex on another page), `Content-Length` (HEAD), ETag / Last-Modified (304) and
+  finally a body hash. Validators are kept per pipeline and step in the run store (`agentl state`).
+  `on_unchanged: stop` ends the run with the new status `no_change`; `continue_empty` returns no
+  records.
+- Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
+  CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
+  and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
+- `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
+  (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
+  storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
+  broken files go to the rejected records, and `validate: true` checks the `chave` check digit and
+  orphan events.
+- Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
+  in the column order of `output` and builds the records, so one record can give many rows. A
+  truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without
+  duplicate rows (`on_truncated: continue | fail`); a bad row is rejected on its own; the step's
+  spend reports `output_tokens_saved_est`. Providers: `anthropic` and `echo`.
+- `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
+  Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
+  an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters
+  attachments on both providers; records now carry `received_at`.
+- `select` and `cast` say what they do (#276, #277): `select` `fields` accept output names (after
+  `rename`) as well as input names, and a listed field no record has fails the step instead of
+  becoming nulls; `cast` with `on_bad: fail` stops on a missing or null field unless its type is
+  optional (`int?`, `optional: true` or `nullable: true`); lint AL010 warns when a `cast` without
+  `locale` (pt-BR) reads a local CSV whose numbers look en-US.
+- `agentl stats` reports cost per record, per accepted answer and per LLM answer for each agent
+  step and model, plus the cache hits and what they saved (#156). `step.succeeded` events of agent
+  steps now carry `model` and `cache_hits`.
+- Agent `attempts:` (#198): per-attempt llm and validation, the validator's structured errors
+  (field, rule, value) fed back to the next attempt, and a lenient last attempt that drops invalid
+  values to the quarantine. Attempts and tokens per attempt show in events and in the step's spend.
+- Run ledger (#209, first part): `agentl runs show RUN_ID` prints records per step, rows changed,
+  rejected records, LLM calls, tokens, cost, duration and outcome of one run; `agentl cost --since
+  30d --by pipeline,model` groups LLM spend by pipeline, step, model or day. Step events now carry
+  `models`: calls, tokens and cost per model, so fallbacks show which model was paid for.
+- `time.normalize` step (#213): hour-ending, hour-beginning, half-hour and accumulated-window
+  labels to ISO instants with an offset. DST gaps and overlaps fail by default (`on_missing`,
+  `on_ambiguous`); `clock: elapsed` reads 23- and 25-hour days.
+- `archive.read` (#193): extract zip, tar or gz members whose path matches a regex `pattern`
+  (with `password` for ZipCrypto zips), streamed to disk with zip-slip, member count and size
+  limits; no match fails listing the members. `csv.read`, `json.read`, `txt.read` and `file.read`
+  take `encoding` as a list of attempts or `auto` (UTF-8, then Latin-1) and record the one used in
+  `_encoding`.
+- `map_schema` step (#177): maps messy columns (multi-row headers, merged cells, varying names)
+  onto typed target fields. Matches by name and `synonyms` first, asks the LLM once only for the
+  rest, and keeps the mapping per layout in the run store, so later runs make no model call. A new
+  layout fails clearly; `review: required` waits for `agentl mappings approve`; `mapping:` pins it
+  in the YAML. New `agentl mappings show|approve|forget`.
+- `web.crawl` (#240): crawl a site breadth first from `start` URLs and `sitemap` (indexes and
+  gzip), with `max_depth`, `max_pages`, `allowed_domains`, `include`/`exclude` regexes and URL
+  normalisation and dedupe; one record per page with `url`, `status`, `depth`, `referrer`,
+  `links` and `html` and/or `markdown`. Obeys `robots.txt` and `Crawl-delay` by default
+  (`obey_robots: false` is logged), waits `delay` per host, honours `Retry-After`, sends an
+  identifying User-Agent, takes a `proxy` per run or per host, and with `incremental: true`
+  skips pages unchanged since the last successful run (ETag, Last-Modified, content hash).
+- `resolve` step (#179): match messy names to a reference table (inline values, a file or a
+  previous step). Values are normalised (case, accents, punctuation, suffixes such as Ltda or Inc),
+  matched exactly, then by similarity (`difflib`, or `rapidfuzz` with the `fuzzy` extra); only
+  values below `threshold` go to the model, once each. Each record gets the match, score and
+  method; unresolved ones are rejected. A `resolve.counts` event reports the rows per path, and
+  `agentl resolve export|import` round-trips the model decisions for review.
+- Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
+  handles each record first; only records where a rule fails or an `output:` field is missing or
+  invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
+  `agent`), and the `hybrid.paths` event and the step's spend count each path. New `hybrid
+  transforms` benchmark compares rules only, agent only and hybrid on messy addresses.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
@@ -47,6 +115,17 @@ They are always listed under **Changed** or **Removed**.
   rejected records through a writer, and checks take `rejected_rate: "< 1%"`. Unknown types fail
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
+
+### Fixed
+
+- Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
+  send a record whose key field is null or missing to the step's rejected records with the reason
+  (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index
+  on the key. A writer's `step.succeeded` event reports the rows written in `records` (it said 1,
+  the number of summary records), and chunked runs now report `written` and upsert counts too.
+- `budget:` with parallel agent workers (`concurrency`): calls already running count against
+  `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
+  limit together and the run stops after the same number of calls every time.
 
 ## [0.11.0] - 2026-10-17
 

@@ -60,3 +60,11 @@ def test_bad_args(tmp_path):
         get("sql.write")([{"id": 1}], url=url, table="x", mode="upsert")
     with pytest.raises(ValueError, match="does not exist"):
         get("sql.write")([{"id": 1}], url=url, table="x", create=False)
+
+
+def test_upsert_rejects_null_keys(url, table):
+    out = get("sql.write")(
+        [{"id": 1, "v": "a"}, {"id": None, "v": "x"}], url=url, table=table, mode="upsert", key="id"
+    )
+    assert out[0]["written"] == 1 and [r["v"] for r in out.rejected] == ["x"]
+    assert [(r["id"], r["v"]) for r in read(url, table)] == [(1, "a")]
