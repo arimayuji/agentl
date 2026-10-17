@@ -61,6 +61,7 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
 | `vs_last_run` | `{ rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, changed more than that since the last run that passed |
+| `rejected_rate` | `"< 1%"` or `{ orders: "<= 0.5%" }` | a step rejected a larger share of its records in this run (see [contracts](#schema-contracts)) |
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
@@ -84,3 +85,65 @@ has no orders today; on the last run it had 312."* When it passes, its findings 
 
 Both emit `check.failed` with `findings` (a list of `{check, detail}`), so any notification rule
 can route them; a passing check emits `check.passed`. Both show on the dashboard's timeline.
+
+## Schema contracts
+
+A contract checks each record; a check looks at the whole dataset. Put a `schema:` on the step
+that brings the data in, so a bad row stops there instead of crashing a later step or reaching
+the warehouse:
+
+```yaml
+steps:
+  - id: orders                       # source
+    use: http.get
+    with: { url: "https://api.example.com/orders" }
+    schema:                          # contract, per record
+      id: int
+      total: { money: BRL }
+      status: { enum: [paid, pending, refunded] }
+      email: email?                  # `?`: may be missing or empty
+    on_bad: reject                   # reject | coerce | fail
+    extra: keep                      # keep | drop | forbid
+    rejected_to: { use: json.write, with: { path: rejected/orders.json } }
+
+  - id: verify                       # check, per dataset
+    check: orders
+    expect:
+      rows: { min: 100 }
+      rejected_rate: "< 1%"
+
+  - id: load                         # delivery
+    use: postgres.write
+    input: verify
+    with: { dsn: "${DATABASE_URL}", table: orders }
+```
+
+The types are the ones of [`cast`](connectors.md#clean-types-cast), written the same way. A field
+is required unless its type ends in `?`.
+
+- `on_bad: reject` (default): a record whose values are not already clean values of their type
+  (`"12"` for an `int`, a status outside the enum, a missing `id`) leaves the output. It goes to the
+  step's rejected records with `_error` (the reason, per field) and `_raw` (the offending values),
+  as agent and `cast` rejects do: an `item.rejected` event, the quarantine (`agentl rejected`),
+  the dashboard and `agentl stats` count it.
+- `on_bad: coerce`: values are converted as `cast` converts them (`"12"` becomes 12,
+  `"R$ 1.234,56"` becomes 1234.56, dates become ISO text); what cannot be converted is rejected.
+  Numbers follow pt-BR unless the field says otherwise: `{ type: decimal, locale: en-US }`.
+- `on_bad: fail`: the first bad record stops the run, with the step, the record's position and the
+  field in the error.
+- `extra`: fields the schema does not name are kept (default), dropped, or make the record bad
+  (`forbid`).
+- `rejected_to`: once the step is done, all its rejected records of the run (from the contract or
+  from the step itself) go to that writer, so nothing is lost. Nothing is written when there are
+  none.
+
+The contract runs after the step. On an agent step, `output:` still shapes and validates what the
+model answers; `schema:` then checks the result like any other step's. In a chunked chain
+(`chunk_size`) it runs on every chunk, and `rejected_rate` adds up all chunks. A step with a
+`schema:` outputs records, not an Arrow table: the fast path stops at that step and the next steps
+read records.
+
+**Contract or check?** Use a contract for what each record must be (types, required fields,
+allowed values), and to set bad records aside while the good ones go on. Use a check for what the
+dataset as a whole must look like (row counts, duplicates, freshness, changes since the last run,
+how many records were rejected), and to stop delivery when it does not.
