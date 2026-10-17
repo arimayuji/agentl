@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Fetch windows (#190): a `window:` section (`lookback`, `max_span`, `align: none | calendar_month
+  | week`, `order`) fills `${window.start}` / `${window.end}` in steps. `agentl run` re-reads the
+  lookback tail; `agentl backfill --from X --to Y` runs the same chunked path over any range, keeps
+  a status per chunk, skips finished chunks on resume and lists the pending ones. It is the same `agentl backfill` command as the params-based one
+  (#250): a pipeline with `window:` is backfilled by chunk, any other by file or date; `--to` is
+  inclusive in both modes and `--no-resume` is an alias of `--redo`.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or

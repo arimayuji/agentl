@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 # ${params.name} (or ${param.name}): a run parameter declared under `params:`.
@@ -370,6 +370,28 @@ class TriggerSpec(BaseModel):
         return "every"
 
 
+class WindowSpec(BaseModel):
+    """Fetch windows: `${window.start}` / `${window.end}` (ISO dates, end exclusive) in a step's
+    `with:`. A run re-reads the last `lookback`; `agentl backfill` covers any range. Either way the
+    range is split into chunks of at most `max_span`, cut at `align` boundaries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lookback: str = "1d"
+    max_span: str | None = None
+    align: Literal["none", "calendar_month", "week"] = "none"
+    order: Literal["oldest_first", "newest_first"] = "oldest_first"
+
+    @field_validator("lookback", "max_span")
+    @classmethod
+    def _duration(cls, v: str | None) -> str | None:
+        if v is not None:
+            from .windows import days
+
+            days(v)
+        return v
+
+
 class ParamSpec(BaseModel):
     """A run parameter: `agentl run --param name=value`, `agentl.run(..., params={...})`."""
 
@@ -491,6 +513,8 @@ def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
 
 class PipelineSpec(BaseModel):
     name: str
+    window: WindowSpec | None = None
+
     # Run parameters, used as ${params.name}. Values come from --param, params= or serve.
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     # Under `agentl serve`: what starts a run. A `use: trigger` step gets what started it.

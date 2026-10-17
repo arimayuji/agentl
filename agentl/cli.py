@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import assist, graph, registry
 from .runner import Runner
@@ -125,6 +126,46 @@ def _rejected(a: argparse.Namespace) -> int:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
     return 0 if result.status == "succeeded" else 1
+
+
+def _windowed(
+    a: argparse.Namespace, spec: Any, start: Any = None, end: Any = None, resume: bool = True
+) -> int:
+    from .windows import run_windows
+
+    with open_store(a.db) as store:
+        report = run_windows(
+            spec, store, start, end, resume=resume, use_cache=not a.no_cache, listeners=_listeners(a)
+        )
+    if getattr(a, "show", None):
+        rows = [r for res in report.results.values() for r in res.outputs.get(a.show, [])]
+        print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    print(f"windows: {len(report.done)} done, {len(report.skipped)} skipped, {len(report.failed)} failed")
+    for key, err in report.failed.items():
+        print(f"  pending {key}: {err}", file=sys.stderr)
+    return 0 if report.status == "succeeded" else 1
+
+
+def _has_window(path: str) -> bool:
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    return isinstance(raw, dict) and raw.get("window") is not None
+
+
+def _window_backfill(a: argparse.Namespace) -> int:
+    import datetime as dt
+
+    if a.glob or a.param_name or a.every != "day" or a.concurrency != 1:
+        raise ValueError(
+            "a pipeline with `window:` is backfilled by date range only: "
+            "--glob, --param-name, --every and --concurrency do not apply"
+        )
+    if not _checked(a.pipeline):
+        return 2
+    spec = load(a.pipeline, params=_params(a.param))
+    end = dt.date.fromisoformat(a.end) + dt.timedelta(days=1)  # --to is inclusive
+    return _windowed(a, spec, dt.date.fromisoformat(a.start), end, resume=not a.redo)
 
 
 def _params(pairs: list[str] | None) -> dict[str, str]:
@@ -296,7 +337,10 @@ def main(argv: list[str] | None = None) -> int:
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
 
-    bf = cmd("backfill", "one run per file or per date, resumable")
+    bf = cmd(
+        "backfill",
+        "one run per file or per date (params) or per window chunk (`window:`), resumable",
+    )
     bf.add_argument("pipeline")
     src = bf.add_mutually_exclusive_group(required=True)
     src.add_argument("--glob", help="one run per matching file (local or s3://, gs://... with [remote])")
@@ -305,7 +349,19 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--every", choices=["day", "week", "month"], default="day")
     bf.add_argument("--param-name", help="the param that gets each file or date (default: the only one)")
     bf.add_argument("--concurrency", type=int, default=1)
-    bf.add_argument("--redo", action="store_true", help="run items that already succeeded again")
+    bf.add_argument(
+        "--redo",
+        "--no-resume",
+        dest="redo",
+        action="store_true",
+        help="run items (or window chunks) that already succeeded again",
+    )
+    bf.add_argument("--no-cache", action="store_true")
+    bf.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    bf.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    bf.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
     bf.add_argument("--json", action="store_true", help="print the final report as JSON")
     _param_arg(bf)
 
@@ -319,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
             if not a.no_check and not _checked(a.pipeline):
                 return 2
             spec = load(a.pipeline, params=_params(a.param))
+            if spec.window is not None:
+                return _windowed(a, spec)
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
@@ -497,6 +555,11 @@ def main(argv: list[str] | None = None) -> int:
 
             if a.start and not a.end:
                 raise ValueError("--from needs --to")
+            # One command, two modes: a pipeline with `window:` is backfilled chunk by chunk
+            # over [--from, --to] (both inclusive); otherwise one run per file or date, each
+            # passed as a run parameter.
+            if _has_window(a.pipeline):
+                return _window_backfill(a)
             items = bfill.periods(a.start, a.end, a.every) if a.start else bfill.files(a.glob)
             if not items:
                 print("backfill: nothing matches", file=sys.stderr)
