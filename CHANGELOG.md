@@ -16,6 +16,15 @@ They are always listed under **Changed** or **Removed**.
   accuracy per field (numbers within a tolerance), cost and the records that differ.
   `--compare model=NAME` runs the same check with another model side by side, and a run below
   `min_accuracy` exits 1 for CI.
+- Declarative HTML extraction and list-to-detail crawling (#192). `html.select` gives one record
+  per element matching `items`, with `fields` read by CSS selector (text, `attr`, `absolute`
+  links, `type` with the `cast` types, `all`, `required`), from `url`, `path` or upstream records
+  with an `html` field. `crawl` follows `list` links with `next_page` and `max_pages`, runs
+  `detail` steps (`html.read`, `html.select`) on each page with `url` and `source_url`, honours
+  `limit`, waits `delay` between requests, sends an identifying User-Agent and keeps the
+  private-network guard. `html.read` takes `select`, `header_rows` and denormalises `colspan` and
+  `rowspan`. `on_selector_miss: fail_with_snapshot` (default) fails naming the selector and URL,
+  saves the received HTML and emits `selector.missed`; `skip` and `empty` keep going.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
