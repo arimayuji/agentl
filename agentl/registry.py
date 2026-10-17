@@ -260,3 +260,24 @@ def after_run(on_success: Callable[[], None], on_failure: Callable[[], None] | N
         on_success()
     else:
         hooks.append((on_success, on_failure))
+
+
+# ---------------------------------------------------------------- step state
+# Stream readers without broker-side offsets (Kinesis, Event Hubs) keep their checkpoints in the
+# run store, keyed by pipeline and step id, like incremental cursors (`agentl state`).
+class StepState:
+    """The stored state of the step being run: `get()` reads it, `set(value)` writes it (JSON)."""
+
+    def __init__(self, get: Callable[[], Any], set: Callable[[Any], None]):
+        self.get, self.set = get, set
+
+
+_STEP_STATE: contextvars.ContextVar[StepState | None] = contextvars.ContextVar(
+    "agentl_step_state", default=None
+)
+
+
+def step_state() -> StepState | None:
+    """The current step's stored state, or None outside a run (a connector called directly).
+    Write it from an `after_run` success hook so it moves only when the run succeeded."""
+    return _STEP_STATE.get()

@@ -1,13 +1,15 @@
-"""Queues and streams: Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub and MQTT.
+"""Queues and streams: Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub, MQTT, Amazon Kinesis and Azure
+Event Hubs.
 
 Consumers read a micro-batch (up to `max_records`, or until `max_seconds` pass) and acknowledge
 it only after the whole run succeeded: offsets are committed, messages deleted or acked. If the
 run fails, nothing is acknowledged and the broker delivers the messages again (at-least-once), so
-make the load idempotent (upsert by a key). Run them on a schedule or back to back with
-`agentl serve` (`trigger: [{every: 30s}]`).
+make the load idempotent (upsert by a key). Kinesis and Event Hubs have no consumer offsets on
+the broker side: their checkpoints live in the run store (`agentl state`) and move the same way.
+Run them on a schedule or back to back with `agentl serve` (`trigger: [{every: 30s}]`).
 
-Install the client you need: `agentl-etl[kafka]`, `[aws]` (SQS), `[rabbitmq]`, `[pubsub]` or
-`[mqtt]`."""
+Install the client you need: `agentl-etl[kafka]`, `[aws]` (SQS, Kinesis), `[rabbitmq]`,
+`[pubsub]`, `[mqtt]` or `[eventhubs]`."""
 
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import threading
 import time
 from typing import Any
 
-from ..registry import after_run, connector, require
+from ..registry import after_run, connector, require, step_state
 from ._util import single
 
 
@@ -597,3 +599,216 @@ def mqtt_publish(
     finally:
         _mqtt_close(client)
     return [{"topic": topic or f"{{{topic_field}}}", "published": len(rows)}]
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, dt.datetime) else (None if value is None else str(value))
+
+
+def _checkpoint(new: dict) -> None:
+    """Save the checkpoints read in this run once it succeeded (no-op outside a run)."""
+    state = step_state()
+    if state is not None:
+        after_run(lambda: state.set(new))
+
+
+# ---------------------------------------------------------------- Kinesis
+# Kinesis allows 5 GetRecords calls per second per shard; past that it throttles.
+_KINESIS_THROTTLED = ("ProvisionedThroughputExceededException", "LimitExceededException")
+
+
+@connector("kinesis.read")
+def kinesis_read(
+    input: Any = None,
+    stream: str = "",
+    region: str | None = None,
+    start: str = "TRIM_HORIZON",
+    max_records: int = 10000,
+    max_seconds: float = 10,
+    format: str = "auto",
+    endpoint_url: str | None = None,
+) -> list[dict]:
+    """Read up to `max_records` records (or for `max_seconds`) from every shard of a Kinesis data
+    stream (`stream`: name or ARN). The first run starts at `start` (`TRIM_HORIZON`, the oldest
+    record kept, or `LATEST`); later runs continue after the last sequence number read per shard.
+    Those checkpoints are kept in the run store (`agentl state`) and advance only when the run
+    succeeds, so a failed run reads the same records again (at-least-once). A closed shard is read
+    to its end before its child shards. Records: `value` (JSON parsed when it is JSON),
+    `partition_key`, `sequence_number`, `shard_id`, `arrival_timestamp` (ISO 8601)."""
+    _check(format)
+    if start not in ("TRIM_HORIZON", "LATEST"):
+        raise ValueError("start must be TRIM_HORIZON or LATEST")
+    if not stream:
+        raise ValueError("kinesis.read needs a stream (name or ARN)")
+    boto3 = require("boto3", "aws")
+    client = boto3.client("kinesis", region_name=region, endpoint_url=endpoint_url)
+    ident = {"StreamARN": stream} if stream.startswith("arn:") else {"StreamName": stream}
+    state = step_state()
+    saved = (state.get() if state else None) or {}
+    seqs: dict[str, str] = dict(saved.get("shards") or {})
+    closed: set[str] = set(saved.get("closed") or [])
+
+    shards: list[dict] = []
+    args: dict[str, Any] = dict(ident)
+    while True:
+        page = client.list_shards(**args)
+        shards.extend(page.get("Shards", []))
+        if not page.get("NextToken"):
+            break
+        args = {"NextToken": page["NextToken"]}
+    known = {s["ShardId"] for s in shards}
+
+    out: list[dict] = []
+    deadline = time.monotonic() + max_seconds
+    for shard in shards:
+        sid = shard["ShardId"]
+        parents = [p for k in ("ParentShardId", "AdjacentParentShardId") if (p := shard.get(k))]
+        if sid in closed or any(p in known and p not in closed for p in parents):
+            continue  # finished, or its parent still has records to read first
+        if len(out) >= max_records or time.monotonic() >= deadline:
+            break
+        if sid in seqs:
+            it_args = {"ShardIteratorType": "AFTER_SEQUENCE_NUMBER", "StartingSequenceNumber": seqs[sid]}
+        else:
+            it_args = {"ShardIteratorType": "TRIM_HORIZON" if parents else start}
+        iterator = client.get_shard_iterator(**ident, ShardId=sid, **it_args).get("ShardIterator")
+        throttled = 0
+        while iterator and len(out) < max_records and time.monotonic() < deadline:
+            try:
+                res = client.get_records(ShardIterator=iterator, Limit=min(10000, max_records - len(out)))
+            except Exception as e:  # throttled: back off, then leave the shard for the next run
+                code = getattr(e, "response", {}).get("Error", {}).get("Code")
+                if code not in _KINESIS_THROTTLED:
+                    raise
+                if throttled >= 3:
+                    break
+                throttled += 1
+                time.sleep(min(0.5 * 2**throttled, max(0.0, deadline - time.monotonic())))
+                continue
+            throttled = 0
+            for r in res.get("Records", []):
+                out.append(
+                    {
+                        "value": _decode(r.get("Data"), format),
+                        "partition_key": r.get("PartitionKey"),
+                        "sequence_number": r["SequenceNumber"],
+                        "shard_id": sid,
+                        "arrival_timestamp": _iso(r.get("ApproximateArrivalTimestamp")),
+                    }
+                )
+                seqs[sid] = r["SequenceNumber"]
+            iterator = res.get("NextShardIterator")
+            if iterator is None:
+                closed.add(sid)  # a closed shard read to its end: its children come next
+            elif not res.get("Records") and not res.get("MillisBehindLatest"):
+                break  # caught up with this shard
+    _checkpoint({"shards": seqs, "closed": sorted(closed & known)})
+    return out
+
+
+# ---------------------------------------------------------------- Event Hubs
+@connector("eventhubs.consume")
+def eventhubs_consume(
+    input: Any = None,
+    connection_string: str | None = None,
+    eventhub: str | None = None,
+    namespace: str | None = None,
+    consumer_group: str = "$Default",
+    start: str = "earliest",
+    max_records: int = 10000,
+    max_seconds: float = 10,
+    format: str = "auto",
+) -> list[dict]:
+    """Receive events from every partition of an Azure Event Hub for `max_seconds` (or until
+    `max_records`). Connect with `connection_string` (with `EntityPath`, or name the hub in
+    `eventhub`), or with `namespace` (`<name>.servicebus.windows.net`) plus `eventhub`, using
+    `DefaultAzureCredential` (needs `azure-identity`). Azure IoT Hub's built-in endpoint is
+    Event Hubs-compatible: use its connection string. The first run starts at `start`
+    (`earliest` or `latest`); later runs continue after the last sequence number read per
+    partition. Those checkpoints are kept in the run store (`agentl state`, no blob checkpoint
+    store) and advance only when the run succeeds. Records: `value` (JSON parsed when it is
+    JSON), `partition_id`, `sequence_number`, `offset`, `enqueued_time` (ISO 8601),
+    `partition_key`, `properties`."""
+    _check(format)
+    if start not in ("earliest", "latest"):
+        raise ValueError("start must be earliest or latest")
+    eh = require("azure.eventhub", "eventhubs")
+    if connection_string:
+        client = eh.EventHubConsumerClient.from_connection_string(
+            connection_string, consumer_group=consumer_group, eventhub_name=eventhub
+        )
+    elif namespace and eventhub:
+        identity = require("azure.identity", "eventhubs")
+        client = eh.EventHubConsumerClient(
+            fully_qualified_namespace=namespace,
+            eventhub_name=eventhub,
+            consumer_group=consumer_group,
+            credential=identity.DefaultAzureCredential(),
+        )
+    else:
+        raise ValueError("eventhubs.consume needs connection_string, or namespace and eventhub")
+    state = step_state()
+    seqs: dict[str, int] = dict(((state.get() if state else None) or {}).get("partitions") or {})
+    default = "-1" if start == "earliest" else "@latest"
+    out: list[dict] = []
+    lock = threading.Lock()
+    full = threading.Event()
+    errors: list[BaseException] = []
+
+    def on_batch(ctx: Any, events: list) -> None:
+        with lock:
+            for e in events:
+                if len(out) >= max_records:
+                    full.set()
+                    return  # not checkpointed: read again next run
+                body = e.body_as_str(encoding="utf-8") if hasattr(e, "body_as_str") else e.body
+                props = {
+                    (k.decode() if isinstance(k, bytes) else str(k)): (
+                        v.decode() if isinstance(v, bytes) else v
+                    )
+                    for k, v in (e.properties or {}).items()
+                }
+                out.append(
+                    {
+                        "value": _decode(body, format),
+                        "partition_id": ctx.partition_id,
+                        "sequence_number": e.sequence_number,
+                        "offset": e.offset,
+                        "enqueued_time": _iso(e.enqueued_time),
+                        "partition_key": e.partition_key,
+                        "properties": props,
+                    }
+                )
+                seqs[ctx.partition_id] = e.sequence_number
+            if len(out) >= max_records:
+                full.set()
+
+    def on_error(ctx: Any, error: BaseException) -> None:
+        errors.append(error)
+
+    try:
+        partitions = client.get_partition_ids()
+        positions = {p: seqs.get(p, default) for p in partitions}
+        worker = threading.Thread(
+            target=client.receive_batch,
+            kwargs={
+                "on_event_batch": on_batch,
+                "on_error": on_error,
+                "starting_position": positions,
+                "starting_position_inclusive": False,
+                "max_batch_size": min(300, max_records),
+                "max_wait_time": min(5.0, max_seconds),
+            },
+            daemon=True,
+        )
+        worker.start()
+        full.wait(max_seconds)
+    finally:
+        client.close()  # stops receive_batch
+    worker.join(10)
+    if errors and not out:
+        raise RuntimeError(f"eventhubs: {type(errors[0]).__name__}: {errors[0]}")
+    with lock:
+        rows = list(out)
+        _checkpoint({"partitions": dict(seqs)})
+    return rows

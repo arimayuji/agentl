@@ -740,7 +740,8 @@ For alerts when a run fails, use the `discord` channel of [`notify:`](notificati
 
 ## Queues and streams
 
-Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub and MQTT, as micro-batches:
+Kafka, Amazon SQS, RabbitMQ, Google Pub/Sub, MQTT, Amazon Kinesis and Azure Event Hubs, as
+micro-batches:
 
 ```yaml
 name: invoice-events
@@ -773,6 +774,8 @@ broker delivers the messages again (at-least-once). Make the load idempotent, as
 | `rabbitmq.consume` (`url`, `queue`; requeued on failure) | `rabbitmq.publish` (persistent, publisher confirms) | `[rabbitmq]` | `body`, `routing_key`, `headers` |
 | `pubsub.pull` (`subscription`; deadline reset on failure) | `pubsub.publish` (waits for message ids) | `[pubsub]` | `data`, `attributes`, `message_id`, `publish_time` |
 | `mqtt.subscribe` (`url`, `topic`, `qos`, `client_id`, `clean_session`) | `mqtt.publish` (`topic` or `topic_field`, `qos`, `retain`; waits for confirmation) | `[mqtt]` | `value`, `topic`, `qos`, `retain`, `timestamp` |
+| `kinesis.read` (`stream` name or ARN, `region`, `start`) | | `[aws]` | `value`, `partition_key`, `sequence_number`, `shard_id`, `arrival_timestamp` |
+| `eventhubs.consume` (`connection_string` or `namespace`, `eventhub`, `consumer_group`, `start`) | | `[eventhubs]` | `value`, `partition_id`, `sequence_number`, `offset`, `enqueued_time`, `partition_key`, `properties` |
 
 Message bodies are parsed as JSON when they are JSON (`format: auto`); `format: json` fails on
 anything else, `format: text` keeps the text. Writers send each record as JSON, or one field of
@@ -846,11 +849,42 @@ steps:
     with: { dsn: "${PG_DSN}", table: sensor_minutes, mode: upsert, key: [device, window_start] }
 ```
 
+Devices on a cloud IoT service can use the same recipe: AWS IoT Core rules can route messages
+to a Kinesis data stream (read it with `kinesis.read`), and Azure IoT Hub exposes an Event
+Hubs-compatible endpoint (read it with `eventhubs.consume`). The payload is in `value` either way.
+
 !!! note "Batches, not millisecond streaming"
     agentl runs batches and micro-batches, such as `agentl serve` running a pipeline every
     minute. It is not a stream processor: latency is the trigger interval plus the run. Real-time
     alarms (a temperature over a limit right now) belong in the broker's rules or a stream
     processor; agentl fits the aggregation, enrichment and loading around them.
+
+### Kinesis and Event Hubs
+
+Neither keeps consumer offsets for agentl, so the checkpoints live in the run store, under the
+pipeline and step id, like incremental cursors: `agentl state` lists them and resetting the step
+reads from `start` again. They advance only when the whole run succeeds; a failed run reads the
+same records again (at-least-once).
+
+- `kinesis.read` reads every shard of a data stream (`stream`: name or ARN, `region`). The first
+  run starts at `start: TRIM_HORIZON` (the oldest record kept, the default) or `LATEST`; later
+  runs continue after the last sequence number read per shard (`AFTER_SEQUENCE_NUMBER`). After a
+  reshard, a closed shard is read to its end before its child shards.
+- `eventhubs.consume` receives from every partition for `max_seconds` (or until `max_records`)
+  with the sync `EventHubConsumerClient`. Connect with `connection_string` (plus `eventhub` when
+  it has no `EntityPath`), or with `namespace` (`<name>.servicebus.windows.net`) and `eventhub`
+  through `DefaultAzureCredential` (install `azure-identity`). `consumer_group` defaults to
+  `$Default`, `start` to `earliest` (or `latest`). No blob checkpoint store is needed; use one
+  consumer group per pipeline.
+
+Azure IoT Hub's built-in endpoint is Event Hubs-compatible: give `eventhubs.consume` the
+"Event Hub-compatible endpoint" connection string from the hub's built-in endpoints page.
+
+```yaml
+  - id: readings
+    use: kinesis.read
+    with: { stream: sensor-telemetry, region: us-east-1, max_records: 20000, max_seconds: 20 }
+```
 
 ## Remote storage
 
