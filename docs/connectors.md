@@ -175,7 +175,6 @@ Other databases will ship as plugins.
 | `aggregate` | `group_by` (name or list), `metrics` (name: `sum(f)`, `count()`, `avg(f)`, `min(f)`, `max(f)`, `count_distinct(f)`, `first(f)`, `last(f)`, `list(f)`) | One record per group |
 | `sort` | `by` (`[region, -total]` or `{total: desc}`) | Order records; empty values last |
 | `limit` | `n`, `offset` | The first `n` records |
-| `protect` / `unprotect` | `fields`, `key` | Encrypt, hash, mask or drop sensitive fields (below) |
 | `fill` | `values` (field: default) | Defaults for missing, null or blank fields |
 
 ### Expressions: `compute`
@@ -264,49 +263,6 @@ Rules, so nothing is guessed silently:
   `AGENTL_SAMPLES=0` for such pipelines.
 - Your own formats: `agentl.types.register_type("sku", parse)`, where `parse(value)` returns the
   clean value or raises `ValueError` with the reason.
-
-### Protect sensitive fields: `protect`
-
-Encrypt, hash, mask or drop fields before records reach a destination, for data protection laws
-(GDPR, LGPD) or plain privacy. Needs `pip install 'agentl-etl[crypto]'` for `encrypt`.
-
-```bash
-agentl keygen          # 32 random bytes in base64; keep it in a secret manager
-export AGENTL_DATA_KEY=...
-```
-
-```yaml
-- id: protect
-  use: protect
-  input: clean
-  with:
-    key: ${AGENTL_DATA_KEY}          # or a secret reference; never the key itself
-    fields:
-      tax_id: encrypt                # reversible with `unprotect` and the key
-      email: hash                    # same input, same output: joins and dedupe still work
-      phone: mask                    # "*******4321" ({mask: 2} keeps 2 characters)
-      notes: drop
-```
-
-| Action | What is stored | Reversible |
-|---|---|---|
-| `encrypt` | `enc:v1:<key id>:<base64>`, AES-256-GCM with a random nonce; the field name is bound to the value, so it does not decrypt in another field | yes, with `unprotect` |
-| `hash` | HMAC-SHA256 in hex, keyed: a plain hash of a tax id or phone number is reversed by trying every value | no |
-| `mask` | the last characters, the rest as `*` | no |
-| `drop` | nothing | no |
-
-To read encrypted fields back: `use: unprotect` with `fields: [tax_id]` and the same `key`. Its output
-is never kept in the run store's samples. To rotate keys, pass a list: `key: [${NEW_KEY}, ${OLD_KEY}]`
-protects with the first and unprotects with any of them; hashes change with the key, so rehash
-before relying on joins across keys. An empty value stays empty.
-
-- Put `protect` before any agent step that does not need those fields: `agentl lint` warns (AL008)
-  when an agent step sees them first, since its records go to the LLM provider.
-- Encrypted or hashed data is still personal data under most privacy laws, and whoever holds the
-  key can read it. Losing the key loses the data.
-- Steps before `protect` still hold the clear values: set `AGENTL_SAMPLES=0` and
-  `AGENTL_QUARANTINE=0` if the run store must never see them.
-- In transit, encryption is set in the connection URL, for example `?sslmode=require` on Postgres.
 
 ## AWS Lambda
 
