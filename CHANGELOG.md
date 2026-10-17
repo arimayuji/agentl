@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `web.crawl` (#240): crawl a site breadth first from `start` URLs and `sitemap` (indexes and
+  gzip), with `max_depth`, `max_pages`, `allowed_domains`, `include`/`exclude` regexes and URL
+  normalisation and dedupe; one record per page with `url`, `status`, `depth`, `referrer`,
+  `links` and `html` and/or `markdown`. Obeys `robots.txt` and `Crawl-delay` by default
+  (`obey_robots: false` is logged), waits `delay` per host, honours `Retry-After`, sends an
+  identifying User-Agent, takes a `proxy` per run or per host, and with `incremental: true`
+  skips pages unchanged since the last successful run (ETag, Last-Modified, content hash).
 - `resolve` step (#179): match messy names to a reference table (inline values, a file or a
   previous step). Values are normalised (case, accents, punctuation, suffixes such as Ltda or Inc),
   matched exactly, then by similarity (`difflib`, or `rapidfuzz` with the `fuzzy` extra); only
