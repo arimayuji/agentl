@@ -165,6 +165,7 @@ Other databases will ship as plugins.
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `skip_seen` | `key` (`sha256` of the file at `path`, `path`, or any field), `scope` (default: the pipeline name) | Only records no earlier successful run let through; see below |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
 | `flatten` | `sep` (`.`), `fields` | Nested objects become columns: `end.cidade` |
 | `explode` | `field`, `keep_empty` (true) | One record per item of a list |

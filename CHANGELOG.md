@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `skip_seen` step (#184): drops files or records an earlier successful run already handled, keyed
+  by `sha256` of the file at `path`, by `path` or by any field. Keys live in the run store per
+  `scope` (default: the pipeline name) and are marked only when the run succeeds. `agentl seen
+  list|forget [--scope S]` shows and clears them.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
