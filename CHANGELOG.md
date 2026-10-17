@@ -16,6 +16,10 @@ records with retry, and upserts that report what changed.
 
 ### Added
 
+- `protect` and `unprotect` steps (#225): encrypt (AES-256-GCM, key rotation), keyed hash, mask or
+  drop sensitive fields before they reach a destination. `agentl keygen` makes a key, the
+  `crypto` extra installs `cryptography`, and `lint` warns (AL008) when an agent step sees the fields
+  before `protect`. Decrypted values stay out of the run store's samples.
 - Upsert options for `postgres.write` and `sqlite.write` (#183): `on_conflict: update|do_nothing|error`
   and `update_columns`. Upserts report `inserted`, `updated` and `unchanged` in the step result,
   the `step.succeeded` event and the run summary (`writes`); rows whose values did not change are
