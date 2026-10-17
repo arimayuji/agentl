@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Best-effort steps and step order (#206): `required: false` (or `criticality: best_effort`) on a
+  step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,
+  `partial` on the result, its summary and `run.succeeded`) without failing the run. `after:`
+  orders steps without passing data, e.g. the legacy write after the new one.
 - Declarative HTML extraction and list-to-detail crawling (#192). `html.select` gives one record
   per element matching `items`, with `fields` read by CSS selector (text, `attr`, `absolute`
   links, `type` with the `cast` types, `all`, `required`), from `url`, `path` or upstream records
