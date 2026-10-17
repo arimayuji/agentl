@@ -14,6 +14,11 @@ They are always listed under **Changed** or **Removed**.
 - `time.normalize` step (#213): hour-ending, hour-beginning, half-hour and accumulated-window
   labels to ISO instants with an offset. DST gaps and overlaps fail by default (`on_missing`,
   `on_ambiguous`); `clock: elapsed` reads 23- and 25-hour days.
+- `archive.read` (#193): extract zip, tar or gz members whose path matches a regex `pattern`
+  (with `password` for ZipCrypto zips), streamed to disk with zip-slip, member count and size
+  limits; no match fails listing the members. `csv.read`, `json.read`, `txt.read` and `file.read`
+  take `encoding` as a list of attempts or `auto` (UTF-8, then Latin-1) and record the one used in
+  `_encoding`.
 - `map_schema` step (#177): maps messy columns (multi-row headers, merged cells, varying names)
   onto typed target fields. Matches by name and `synonyms` first, asks the LLM once only for the
   rest, and keeps the mapping per layout in the run store, so later runs make no model call. A new
