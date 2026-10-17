@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `skip_seen` step (#184): drops files or records an earlier successful run already handled, keyed
+  by `sha256` of the file at `path`, by `path` or by any field. Keys live in the run store per
+  `scope` (default: the pipeline name) and are marked only when the run succeeds. `agentl seen
+  list|forget [--scope S]` shows and clears them.
 - Checks (#185): `vs_runs: { last: 5, rows: 30% }` compares with the median of the last N passing
   runs, and `severity:` sets `fail`, `warn` or `reject` (drop the failing rows) per rule. Check
   events carry the result of each rule in `rules`.

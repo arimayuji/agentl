@@ -217,6 +217,25 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+## Seen files
+
+`skip_seen` lets a pipeline run by hand or by a scheduler handle each file once: it drops the
+records whose key an earlier successful run already let through. Keys are stored in the run store,
+per scope, and marked only when the whole run succeeds, so a failed run handles the same files
+again next time.
+
+```yaml
+- id: new_files
+  use: skip_seen
+  input: attachments
+  with: { key: sha256, scope: weekly-reports }   # key: sha256 | path | a field
+```
+
+```bash
+agentl seen list [--scope weekly-reports]
+agentl seen forget --scope weekly-reports [KEY]  # reprocess one key, or the whole scope
+```
+
 ## Column mappings
 
 `map_schema` steps keep one column mapping per input layout in the run store

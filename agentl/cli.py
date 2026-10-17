@@ -344,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
 
+    se = cmd("seen", "keys skip_seen already let through: list them, or forget them to reprocess")
+    se.add_argument("action", choices=["list", "forget"])
+    se.add_argument("key", nargs="?", help="forget: only this key (default: the whole scope)")
+    se.add_argument("--scope", help="only this scope (default scope: the pipeline name)")
+
     mp = cmd("mappings", "column mappings of map_schema steps: show, approve or forget them")
     mp.add_argument("action", choices=["show", "approve", "forget"])
     mp.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; else required)")
@@ -616,6 +621,23 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "seen":
+            with open_store(a.db) as store:
+                if a.action == "list":
+                    seen = store.seen_list(a.scope)
+                    for row in seen:
+                        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                        print(f"{row['scope']}  {row['key']}  (run {row['run_id']}, {when})")
+                    if not seen:
+                        print("no seen keys stored")
+                    return 0
+                if not a.scope:
+                    print("agentl seen forget needs --scope", file=sys.stderr)
+                    return 2
+                count = store.seen_forget(a.scope, a.key)
+                print(f"forgot {count} key(s) of {a.scope}; the next run handles them again")
+                return 0
+
         if a.cmd == "mappings":
             return _mappings(a)
         if a.cmd == "rejected":

@@ -19,6 +19,7 @@ from . import (  # noqa: F401  (registers connectors)
     queues,
     saas,
     scrape,
+    seen,
     sql,
     timeconv,
     transforms,

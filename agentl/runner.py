@@ -933,9 +933,11 @@ class Runner:
             return hit
         token = registry._AFTER_RUN.set(self._after_run)
         state = registry._STEP_STATE.set(self._step_state(step.id))
+        seen = registry._SEEN.set(self._seen_keys())
         try:
             out = fn(data, **step.with_)
         finally:
+            registry._SEEN.reset(seen)
             registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
@@ -1618,6 +1620,14 @@ class Runner:
             self._emit(run_id, "cursor.advanced", step_id, cursor=value)
 
         return registry.StepState(lambda: self.store.state_get(self.spec.name, step_id), put)
+
+    def _seen_keys(self) -> registry.SeenKeys:
+        """Keys `skip_seen` let through, kept per scope in the run store."""
+        return registry.SeenKeys(
+            self.spec.name,
+            self.store.seen_filter,
+            lambda scope, keys: self.store.seen_add(scope, keys, self._run_id or ""),
+        )
 
     def _finish_after_run(self, run_id: str, result: RunResult) -> None:
         """Acknowledge (on success) or release (on failure) what queue consumers read. A failed
