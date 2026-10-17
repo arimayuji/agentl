@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import checks, graph, llm, registry, waits
+from . import checks, contracts, graph, llm, registry, waits
 from .notify import Notifier
 from .spec import LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
@@ -205,6 +205,7 @@ class Runner:
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
+        self._reject_stats: dict[str, list[int]] = {}  # step id -> [rejected, seen], for checks
         self._polars_fed: set[str] = set()
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
@@ -546,19 +547,48 @@ class Runner:
                 ok.append(good)
             elif rejected is not None:
                 bad.append(rejected)
-        if bad:
-            result.rejected.setdefault(step.id, []).extend(bad)  # chunked steps add per chunk
-            self._quarantine(run_id, step.id, bad)
-            self._emit(
-                run_id,
-                "item.rejected",
-                step.id,
-                count=len(bad),
-                total=len(records),
-                rate=round(len(bad) / max(1, len(records)), 4),
-                error=bad[0]["_error"],
-            )
+        self._rejects(run_id, step.id, bad, len(records), result)
         return ok
+
+    def _rejects(self, run_id: str, step_id: str, bad: Records, total: int, result: RunResult) -> None:
+        """Rejected records of a step: kept on the result and in the quarantine, counted for
+        `rejected_rate` checks, and announced with an `item.rejected` event. Chunked steps call
+        this once per chunk."""
+        with self._spend:
+            stats = self._reject_stats.setdefault(step_id, [0, 0])
+            stats[0] += len(bad)
+            stats[1] += total
+        if not bad:
+            return
+        result.rejected.setdefault(step_id, []).extend(bad)
+        self._quarantine(run_id, step_id, bad)
+        self._emit(
+            run_id,
+            "item.rejected",
+            step_id,
+            count=len(bad),
+            total=total,
+            rate=round(len(bad) / max(1, total), 4),
+            error=bad[0].get("_error"),
+        )
+
+    def _contract(self, run_id: str, step: StepSpec, out: Any, result: RunResult, start: int = 0) -> Records:
+        """Applies the step's `schema:` to its output (#122). Arrow tables become records."""
+        rows = out.to_pylist() if _is_table(out) else list(out or [])
+        if step.schema_ is None:
+            return rows
+        good, bad = contracts.validate(
+            rows, step.schema_, on_bad=step.on_bad, extra=step.extra, step=step.id, start=start
+        )
+        self._rejects(run_id, step.id, bad, len(rows), result)
+        return good
+
+    def _write_rejected(self, step: StepSpec, result: RunResult) -> None:
+        """`rejected_to`: hands all the step's rejected records of this run to a writer."""
+        rows = result.rejected.get(step.id)
+        if step.rejected_to is None or not rows:
+            return
+        registry.get(step.rejected_to.use)(list(rows), **step.rejected_to.with_)
 
     def _run_step(
         self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult
@@ -613,19 +643,7 @@ class Runner:
             registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
-            bad = out.rejected
-            result.rejected.setdefault(step.id, []).extend(bad)
-            self._quarantine(run_id, step.id, bad)
-            total = len(out) + len(bad)
-            self._emit(
-                run_id,
-                "item.rejected",
-                step.id,
-                count=len(bad),
-                total=total,
-                rate=round(len(bad) / max(1, total), 4),
-                error=bad[0].get("_error"),
-            )
+            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
         out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out)
@@ -640,7 +658,11 @@ class Runner:
         records = list(records)
         memory = _hash("check-profile", self.spec.name, step.id)
         previous = self.store.cache_get(memory)
-        findings = checks.run_expectations(records, step.expect, previous)
+        with self._spend:
+            stats = {k: (v[0], v[1]) for k, v in self._reject_stats.items()}
+        findings = checks.run_expectations(
+            records, step.expect, previous, rejected=stats, step=step.check or ""
+        )
         prof = checks.profile(records)
         notes: list[str] = []
         if step.review:
@@ -762,8 +784,8 @@ class Runner:
         out = set()
         self._polars_fed = set()
         for step in self.spec.steps:
-            if step.cached or step.id in chunked or not consumers[step.id]:
-                continue
+            if step.cached or step.id in chunked or not consumers[step.id] or step.schema_ is not None:
+                continue  # a contract checks records, so a step with `schema:` outputs records
             makes = (step.use and registry.arrow(step.use)[0] is not None) or is_frame(step)
             if makes and all(takes(c, step.id) for c in consumers[step.id]):
                 out.add(step.id)
@@ -804,6 +826,9 @@ class Runner:
             if step.cursor:
                 step = self._with_cursor(step)
             out = self._run_step(run_id, step, result.outputs, result)
+            if step.schema_ is not None:
+                out = self._contract(run_id, step, out, result)
+            self._write_rejected(step, result)
             if step.cursor:
                 self._track_cursor(step, out)
         except Exception as e:
@@ -945,7 +970,10 @@ class Runner:
             assert reader is not None
             try:
                 for chunk in reader(None, chunk_size=size, **head.with_):
+                    seen = counts[head.id]
                     counts[head.id] += len(chunk)
+                    if head.schema_ is not None:
+                        chunk = self._contract(run_id, head, chunk, result, start=seen)
                     yield chunk
             except Exception:
                 failing.append(head.id)
@@ -953,12 +981,20 @@ class Runner:
 
         def stage(chunks: Iterator[Records], step: StepSpec) -> Iterator[Records]:
             fn = None if step.kind == "agent" else registry.get(step.use or "")
+            seen = 0
             try:
                 for chunk in chunks:
                     if fn is None:
                         out = self._run_agent(run_id, step, chunk, result)
                     else:
-                        out = list(fn(chunk, **step.with_) or [])
+                        out = fn(chunk, **step.with_)
+                        if isinstance(out, registry.Rejects) and out.rejected:
+                            self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
+                        out = list(out or [])
+                    before = len(out)
+                    if step.schema_ is not None:
+                        out = self._contract(run_id, step, out, result, start=seen)
+                    seen += before
                     counts[step.id] += len(out)
                     yield out
             except Exception:
@@ -977,8 +1013,12 @@ class Runner:
                     failing.append(last.id)
                     raise
                 counts[last.id] = len(out)
+                if last.schema_ is not None:
+                    out = self._contract(run_id, last, out, result)
             else:
                 out = [r for chunk in stage(chunks, last) for r in chunk]
+            for step in chain:
+                self._write_rejected(step, result)
         except Exception as e:
             culprit = failing[0] if failing else last.id
             if isinstance(e, BudgetExceeded):

@@ -95,7 +95,16 @@ class MCPServerSpec(BaseModel):
         return self
 
 
-_EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run")  # see checks.py
+_EXPECTATIONS = (  # see checks.py
+    "rows",
+    "not_null",
+    "unique",
+    "accepted",
+    "range",
+    "fresh",
+    "vs_last_run",
+    "rejected_rate",
+)
 
 
 class WaitSpec(BaseModel):
@@ -126,6 +135,15 @@ class CursorSpec(BaseModel):
 
     field: str
     initial: str | int | float | None = None
+
+
+class WriterSpec(BaseModel):
+    """Where a step's rejected records go: a writer connector and its settings."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    use: str
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
 class StepSpec(BaseModel):
@@ -164,6 +182,12 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
+    # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
+    # against `cast` types. See agentl/contracts.py.
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+    on_bad: Literal["reject", "fail", "coerce"] = "reject"
+    extra: Literal["keep", "drop", "forbid"] = "keep"
+    rejected_to: WriterSpec | None = None  # writes the step's rejected records (any reason)
 
     @model_validator(mode="before")
     @classmethod
@@ -227,6 +251,21 @@ class StepSpec(BaseModel):
                 )
             if (self.output or {}).get("confidence", "").rstrip("?") not in ("float", "int"):
                 raise ValueError(f"step '{self.id}': escalate_below needs a 'confidence: float' output field")
+        if self.schema_ is not None:
+            from .contracts import parse as parse_contract
+
+            try:
+                parse_contract(self.schema_)
+            except ValueError as e:
+                raise ValueError(f"step '{self.id}': {e}") from None
+        else:
+            for name, default in (("on_bad", "reject"), ("extra", "keep")):
+                if getattr(self, name) != default:
+                    raise ValueError(f"step '{self.id}': {name} goes with a 'schema'")
+        if "rejected_rate" in self.expect:
+            from .checks import rejected_limits
+
+            rejected_limits(self.expect["rejected_rate"], self.check or "")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
         return self
@@ -349,6 +388,15 @@ class PipelineSpec(BaseModel):
             for name in [s.llm, *s.escalate] if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
+            if s.check and "rejected_rate" in s.expect:
+                from .checks import rejected_limits
+
+                above = _upstream(self.steps, s.id)
+                for ref in rejected_limits(s.expect["rejected_rate"], s.check):
+                    if ref not in above:
+                        raise ValueError(
+                            f"step '{s.id}': rejected_rate names '{ref}', which is not upstream of this check"
+                        )
             for t in s.tools:
                 name = t if isinstance(t, str) else next(iter(t))
                 server = name[4:].split("/", 1)[0]
@@ -358,6 +406,19 @@ class PipelineSpec(BaseModel):
 
     def step(self, step_id: str) -> StepSpec:
         return next(s for s in self.steps if s.id == step_id)
+
+
+def _upstream(steps: list[StepSpec], step_id: str) -> set[str]:
+    by_id = {s.id: s for s in steps}
+    seen: set[str] = set()
+    todo = list(by_id[step_id].inputs)
+    while todo:
+        cur = todo.pop()
+        if cur in seen or cur not in by_id:
+            continue
+        seen.add(cur)
+        todo.extend(by_id[cur].inputs)
+    return seen
 
 
 def interpolate(value: Any, env: Mapping[str, str] | None = None) -> Any:

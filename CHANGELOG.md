@@ -17,6 +17,14 @@ They are always listed under **Changed** or **Removed**.
   `allow_files: true`. Errors name the step and suggest step ids; `agentl validate` reports tables
   that are not inputs (AE009). The `duckdb` extra now installs `duckdb` and `pyarrow`, and `duckdb`
   is in `all` and `dev`.
+- Schema contracts on any step (#122): `schema:` checks every record a step outputs with the
+  `cast` types (`int`, `{money: BRL}`, `{enum: [...]}`, `email?` for optional fields). `on_bad:
+  reject` (default) sends bad records to the step's rejected set and the quarantine with the
+  reason, `coerce` converts what it can, `fail` stops the run naming the record and field. `extra:
+  keep | drop | forbid` for fields outside the schema, `rejected_to: {use, with}` writes the
+  rejected records through a writer, and checks take `rejected_rate: "< 1%"`. Unknown types fail
+  at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
+  chunked chains are now kept too.
 
 ## [0.11.0] - 2026-10-17
 
