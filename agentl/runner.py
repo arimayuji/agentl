@@ -161,7 +161,11 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     """The per-record cache key of an agent step (also used by `agentl plan` to count hits)."""
     # Without a cascade the key stays what it was, so existing caches keep their hits.
     llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
-    if step.escalate:
+    if step.attempts:
+        llm_key = [
+            [spec.llm[a.llm or step.llm].model_dump(exclude={"price"}), a.validate_] for a in step.attempts
+        ]
+    elif step.escalate:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
     # records_per_call is not part of the key: the answer per record is the same.
     if step.tools:  # tools can change the answer, so they are part of the key
@@ -506,32 +510,85 @@ class Runner:
                 and conf < step.escalate_below
             )
 
+        # The tries a record gets: `attempts:` when set, else two per llm of the cascade.
+        plan: list[tuple[str, str, bool]] = (
+            [(a.llm or step.llm, a.validate_, a.feedback) for a in step.attempts]
+            if step.attempts
+            else [(name, "strict", False) for name in chain for _ in range(2)]
+        )
+        loose = llm.lenient_schema(schema) if any(v == "lenient" for _, v, _ in plan) else schema
+
+        def count_attempt(n: int, name: str, usage: Any, ok: bool) -> None:
+            if not step.attempts:
+                return
+            with self._spend:
+                per = result.spend[step.id].setdefault("attempts", {})
+                a = per.setdefault(
+                    str(n + 1), {"llm": name, "calls": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0}
+                )
+                a["calls"] += 1
+                a["failed"] += 0 if ok else 1
+                a["input_tokens"] += getattr(usage, "input_tokens", 0)
+                a["output_tokens"] += getattr(usage, "output_tokens", 0)
+
         def one(rec: dict) -> tuple[dict | None, dict | None]:
             last: Exception | None = None
-            for n, name in enumerate(chain):
+            errors: list[dict] = []
+            n = 0
+            while n < len(plan):
+                name, validate, feedback = plan[n]
                 p, spec = self._provider(name), self.spec.llm[name]
-                for _ in range(2):  # one retry on invalid output
-                    self._check_budget(result)
-                    try:
-                        if call_tool is not None:
-                            res = p.structured_tools(  # type: ignore[attr-defined]
-                                step.agent or "", rec, schema, tool_defs, call_tool, step.max_tool_calls
-                            )
-                        else:
-                            res = p.structured(step.agent or "", rec, schema)
-                    except BudgetExceeded:
-                        raise
-                    except (ValidationError, ValueError, RuntimeError) as e:
-                        # Invalid answers still cost tokens: count them for budget and spend.
-                        self._charge(result, step, spec, e)
-                        last = e
-                        continue
-                    self._charge(result, step, spec, res)
-                    out = res.value.model_dump()
-                    if n + 1 < len(chain) and unsure(out):
-                        last = ValueError(f"confidence {out['confidence']} below {step.escalate_below}")
-                        break  # the next llm answers this record
-                    return done(rec, out, name)
+                instruction = step.agent or ""
+                if feedback and errors:
+                    instruction = llm.feedback_instruction(instruction, errors)
+                asked = loose if validate == "lenient" else schema
+                self._check_budget(result)
+                res: llm.Result | None = None
+                try:
+                    if call_tool is not None:
+                        res = p.structured_tools(  # type: ignore[attr-defined]
+                            instruction, rec, asked, tool_defs, call_tool, step.max_tool_calls
+                        )
+                    else:
+                        res = p.structured(instruction, rec, asked)
+                    dropped: list[dict] = []
+                    if validate == "lenient":
+                        out, dropped = llm.lenient_check(schema, res.value.model_dump())
+                    else:
+                        out = res.value.model_dump()
+                except BudgetExceeded:
+                    raise
+                except (ValidationError, ValueError, RuntimeError) as e:
+                    usage: Any = e if res is None else res  # lenient: the answer came, then failed
+                    # Invalid answers still cost tokens: count them for budget and spend.
+                    self._charge(result, step, spec, usage)
+                    count_attempt(n, name, usage, False)
+                    last, errors = e, llm.validation_errors(e)
+                    if step.attempts:
+                        self._emit(
+                            run_id,
+                            "agent.attempt",
+                            step.id,
+                            attempt=n + 1,
+                            llm=name,
+                            ok=False,
+                            input_tokens=getattr(usage, "input_tokens", 0),
+                            output_tokens=getattr(usage, "output_tokens", 0),
+                            errors=errors[:10],
+                        )
+                    n += 1
+                    continue
+                assert res is not None
+                self._charge(result, step, spec, res)
+                count_attempt(n, name, res, True)
+                nxt = next((j for j in range(n + 1, len(plan)) if plan[j][0] != name), None)
+                if nxt is not None and unsure(out):
+                    last = ValueError(f"confidence {out['confidence']} below {step.escalate_below}")
+                    n = nxt  # the next llm answers this record
+                    continue
+                if dropped:
+                    self._dropped(run_id, step.id, rec, dropped)
+                return done(rec, out, name)
             return None, {**rec, "_error": str(last)}
 
         batch_schema = _batch_schema(step.id, schema)
@@ -600,6 +657,16 @@ class Runner:
             self._emit(run_id, "agent.deduplicated", step.id, records=len(copies))
         assert all(slot is not None for slot in slots)
         return slots  # type: ignore[return-value]
+
+    def _dropped(self, run_id: str, step_id: str, rec: dict, dropped: list[dict]) -> None:
+        """A lenient attempt kept the record but dropped invalid values: each goes to the
+        quarantine with its reason (field, rule, value), and an `item.dropped` event says so."""
+        rows = [
+            {**rec, "_error": f"dropped {d['field']}: {d['rule']}", "_dropped": True, "_value": d["value"]}
+            for d in dropped
+        ]
+        self._quarantine(run_id, step_id, rows)
+        self._emit(run_id, "item.dropped", step_id, count=len(rows), error=rows[0]["_error"])
 
     def _rejects(self, run_id: str, step_id: str, bad: Records, total: int, result: RunResult) -> None:
         """Rejected records of a step: kept on the result and in the quarantine, counted for
@@ -1452,7 +1519,7 @@ def retry_rejected(
     step_id = steps[0]
     if step_id not in {s.id for s in spec.steps}:
         raise ValueError(f"step '{step_id}' is not in pipeline '{spec.name}'")
-    hidden = {"_error", "_raw"}
+    hidden = {"_error", "_raw", "_dropped", "_value"}
     records = [{k: v for k, v in r["record"].items() if k not in hidden} for r in rows]
     picked = [
         s.model_copy(update={"input": None}) if s.id == step_id else s for s in _downstream(spec, step_id)

@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Agent `attempts:` (#198): per-attempt llm and validation, the validator's structured errors
+  (field, rule, value) fed back to the next attempt, and a lenient last attempt that drops invalid
+  values to the quarantine. Attempts and tokens per attempt show in events and in the step's spend.
 - Run ledger (#209, first part): `agentl runs show RUN_ID` prints records per step, rows changed,
   rejected records, LLM calls, tokens, cost, duration and outcome of one run; `agentl cost --since
   30d --by pipeline,model` groups LLM spend by pipeline, step, model or day. Step events now carry
