@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
+  LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
+  with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
+  Exits 1 with a per-field row diff on a mismatch, for CI.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
