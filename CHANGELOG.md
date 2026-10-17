@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Compact rows output for agent steps (#215): `output_mode: rows` asks for one JSON array per line
+  in the column order of `output` and builds the records, so one record can give many rows. A
+  truncated answer (stop at `max_tokens`) is continued up to `max_continuations` times without
+  duplicate rows (`on_truncated: continue | fail`); a bad row is rejected on its own; the step's
+  spend reports `output_tokens_saved_est`. Providers: `anthropic` and `echo`.
 - `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
   Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
   an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters
