@@ -127,6 +127,27 @@ class WaitSpec(BaseModel):
         return self
 
 
+class ConcurrencySpec(BaseModel):
+    """At most one run at a time per `key` (default: the pipeline name), across every worker that
+    shares the run store. The lock is a lease renewed while the run lives; a dead worker's lease
+    lapses after `lease`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = "{pipeline}"
+    on_overlap: Literal["skip", "queue", "fail"] = "skip"
+    lease: str | float = "5m"
+    wait: str | float = "1h"  # queue: how long to wait for the other run before failing
+
+    @model_validator(mode="after")
+    def _valid(self) -> ConcurrencySpec:
+        from .checks import parse_duration
+
+        if parse_duration(self.lease) <= 0 or parse_duration(self.wait) <= 0:
+            raise ValueError("concurrency: lease and wait must be positive")
+        return self
+
+
 class CursorSpec(BaseModel):
     """Incremental loading: the largest `field` seen in a successful run is kept in the run store
     and replaces `{cursor}` in the step's `with` on the next run (`initial` on the first)."""
@@ -177,6 +198,7 @@ class StepSpec(BaseModel):
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
+    cache_ttl: str | float | None = None  # cached results expire after this long; default: never
     # Tools the agent may call, per record: "http.get", "sqlite.query", "fn:module:function",
     # "mcp:server" or "mcp:server/tool"; a one-key dict adds settings, e.g. {sqlite.query: {db: x}}.
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
@@ -351,6 +373,7 @@ class PipelineSpec(BaseModel):
     steps: list[StepSpec]
     notify: NotifySpec | None = None
     budget: BudgetSpec | None = None
+    concurrency: ConcurrencySpec | None = None
     # Independent steps run together, up to this many; 1 = one at a time.
     max_parallel_steps: int = Field(default=4, ge=1, le=64)
     # Stream linear chains (reader -> row-wise steps -> writer) this many records at a time.

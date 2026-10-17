@@ -124,7 +124,7 @@ def _rejected(a: argparse.Namespace) -> int:
     if result is None:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
-    return 0 if result.status == "succeeded" else 1
+    return 0 if result.status in ("succeeded", "skipped") else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -227,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
 
+    ca = cmd("cache", "cached results in the run store: clear one key, a prefix (key*) or all")
+    ca.add_argument("action", choices=["clear"])
+    ca.add_argument("key", nargs="?", help="the key, or a prefix ending in * (e.g. 'catalog:*')")
+    ca.add_argument("--all", action="store_true", help="clear every cached result, agent answers included")
+
     rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
     rj.add_argument("action", choices=["list", "show", "retry"])
     rj.add_argument("target", nargs="?", help="show: the rejected record id; retry: the pipeline file")
@@ -282,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return 0 if result.status in ("succeeded", "skipped") else 1
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -428,6 +433,14 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "cache":
+            if bool(a.key) == bool(a.all):
+                print("agentl cache clear needs a key or --all", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                count = store.cache_clear(None if a.all else a.key)
+            print(f"cleared {count} cached result(s)")
+            return 0
         if a.cmd == "rejected":
             return _rejected(a)
         if a.cmd == "serve":

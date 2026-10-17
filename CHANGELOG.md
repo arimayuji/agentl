@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Concurrency control and single-flight cache (#204): `concurrency: {key, on_overlap: skip | queue
+  | fail}` allows one run per key across workers sharing the run store (`skip` ends as `skipped`,
+  not an error); the `cache` step keeps the result of its `do` steps for a `ttl` and computes it
+  once for concurrent callers; `cache_ttl` on cached steps; `agentl cache clear <key>`. Locks are
+  leases renewed while held, so they lapse if the process dies. SQLite on one host, Postgres across
+  hosts (table `agentl_locks`).
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
