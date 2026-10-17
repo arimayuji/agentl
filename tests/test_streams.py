@@ -236,3 +236,30 @@ def test_eventhubs_checkpoint_only_on_success(hub, tmp_path):
     assert hub.log[-2] == ("receive", {"0": 2, "1": "-1"}, False)  # resumes after the checkpoint
     assert [x["sequence_number"] for x in SAVED] == [3, 7]
     assert r.status == "succeeded" and state == {"partitions": {"0": 3, "1": 7}}
+
+
+def test_kinesis_backs_off_when_throttled(kinesis, monkeypatch):
+    def aws_error(code):
+        e = Exception(code)
+        e.response = {"Error": {"Code": code}}  # type: ignore[attr-defined]
+        return e
+
+    real, left = kinesis.get_records, {"n": 2}
+
+    def flaky(**kw):
+        if left["n"]:
+            left["n"] -= 1
+            raise aws_error("ProvisionedThroughputExceededException")
+        return real(**kw)
+
+    monkeypatch.setattr(kinesis, "get_records", flaky)
+    monkeypatch.setattr(queues.time, "sleep", lambda s: None)
+    rows = get("kinesis.read")(None, stream="sensor-stream", max_records=5)
+    assert [r["sequence_number"] for r in rows] == ["1", "2", "3", "4", "5"]
+
+    def denied(**kw):
+        raise aws_error("AccessDeniedException")
+
+    monkeypatch.setattr(kinesis, "get_records", denied)
+    with pytest.raises(Exception, match="AccessDenied"):
+        get("kinesis.read")(None, stream="sensor-stream")

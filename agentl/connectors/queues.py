@@ -613,6 +613,10 @@ def _checkpoint(new: dict) -> None:
 
 
 # ---------------------------------------------------------------- Kinesis
+# Kinesis allows 5 GetRecords calls per second per shard; past that it throttles.
+_KINESIS_THROTTLED = ("ProvisionedThroughputExceededException", "LimitExceededException")
+
+
 @connector("kinesis.read")
 def kinesis_read(
     input: Any = None,
@@ -668,8 +672,20 @@ def kinesis_read(
         else:
             it_args = {"ShardIteratorType": "TRIM_HORIZON" if parents else start}
         iterator = client.get_shard_iterator(**ident, ShardId=sid, **it_args).get("ShardIterator")
+        throttled = 0
         while iterator and len(out) < max_records and time.monotonic() < deadline:
-            res = client.get_records(ShardIterator=iterator, Limit=min(10000, max_records - len(out)))
+            try:
+                res = client.get_records(ShardIterator=iterator, Limit=min(10000, max_records - len(out)))
+            except Exception as e:  # throttled: back off, then leave the shard for the next run
+                code = getattr(e, "response", {}).get("Error", {}).get("Code")
+                if code not in _KINESIS_THROTTLED:
+                    raise
+                if throttled >= 3:
+                    break
+                throttled += 1
+                time.sleep(min(0.5 * 2**throttled, max(0.0, deadline - time.monotonic())))
+                continue
+            throttled = 0
             for r in res.get("Records", []):
                 out.append(
                     {
