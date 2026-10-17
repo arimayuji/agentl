@@ -250,6 +250,71 @@ A record goes to the next llm when its answer is still invalid after the retry, 
 way. Each call is priced with its own llm, and the step's spend says who answered:
 `"answered_by": {"cheap": 315, "strong": 35}`. Not with `mode: batch`.
 
+### Attempts with validator feedback
+
+`attempts:` spells out each try a record gets, in order, instead of the default two tries per llm:
+
+```yaml
+- id: lines
+  input: invoices
+  agent: Extract the amount and the line item codes.
+  output: { amount: float, codes: "list[int]", note: str? }
+  attempts:
+    - { llm: small, validate: strict }
+    - { llm: small, validate: strict, feedback: true }   # the validator's errors go into the prompt
+    - { llm: large, validate: lenient }
+```
+
+- `llm`: the llm of that attempt (default: the step's `llm`), so escalation to a stronger model
+  is just a later attempt.
+- `feedback: true`: the instruction gets the previous attempt's errors as `field`, `rule` and a
+  clipped `value` (never the record or the whole answer) plus a stricter reminder.
+- `validate: lenient` (last attempt only): invalid items of list fields and invalid optional fields
+  are dropped and the record goes on. Each dropped value goes to the quarantine (`agentl rejected`) with its
+  reason (`_error`, `_value`) and an `item.dropped` event is logged. A required field that is still
+  invalid rejects the record, as `strict` does.
+
+    !!! warning "Retrying a dropped item writes the record again"
+        A dropped item's quarantine entry belongs to a record that was already written. `agentl
+        rejected retry` on it re-runs the whole record, so a destination without a key (append,
+        CSV, JSON) gets a second copy. Retry dropped-item entries only into a keyed `upsert`
+        destination.
+
+A record that fails every attempt is rejected to the quarantine with the last error. Each failed
+attempt logs an `agent.attempt` event (attempt, llm, tokens, errors), and the step's spend counts
+calls, failures and tokens per attempt next to `answered_by`:
+`"attempts": {"1": {"llm": "small", "calls": 40, "failed": 6, "input_tokens": ..., "output_tokens": ...}}`.
+One record per call: not with `mode: batch`, `records_per_call` or `llm: [a, b]`.
+
+### Rules first, the agent for the rest
+
+Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
+record first; only the records they cannot handle are sent to the llm:
+
+```yaml
+- id: parse_address
+  input: customers
+  rules:
+    - compute:
+        zip: "regex(address, '\\d{5}$')"
+        state: "regex(address, '[A-Z]{2}(?= \\d{5}$)')"
+    - cast: {state: state}          # semantic type: "ZZ" is not a state
+  agent: Extract the zip code and the state from the address.
+  output: {zip: str, state: str}
+```
+
+- Each rule is `compute: {field: expression}`, `cast: {field: type}` or `fn: module:function`
+  (called with one record, returns a dict of fields). They run in order.
+- A record takes the rules path when every rule succeeds and every required `output:` field is
+  set and valid for its type. A rule that errors, a value that fails its `cast` type, an exception
+  in a `fn`, or a null field sends the original record to the agent, with cache, budget, cascade
+  and dedup as usual.
+- Output keeps the input order, has the same fields on both paths, and each record carries
+  `_path: rules` or `_path: agent`. The `hybrid.paths` event and `spend[step]["paths"]` in the run
+  summary count them: `{"rules": 9512, "agent": 488}`.
+- Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
+  `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
+
 ### Identical records are asked once
 
 Records that are exactly the same within a step are sent once and share the answer; the step logs
