@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from . import assist, graph, registry
 from .runner import Runner
@@ -124,7 +125,14 @@ def _rejected(a: argparse.Namespace) -> int:
     if result is None:
         print(f"no pending rejected records for {spec.name}" + (f" step {a.step}" if a.step else ""))
         return 0
-    return 0 if result.status == "succeeded" else 1
+    return _exit_code(spec, result)
+
+
+def _exit_code(spec: Any, result: Any) -> int:
+    """Per outcome, from `outcomes.exit_codes` (default: 1 for failed, 0 otherwise)."""
+    if result.outcome is None:
+        return 0 if result.status == "succeeded" else 1
+    return int(spec.outcomes.exit_code(result.outcome))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -282,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = runner.run()
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return 0 if result.status == "succeeded" else 1
+            return _exit_code(spec, result)
         if a.cmd in ("validate", "lint"):
             from . import lint
 
@@ -350,7 +358,9 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 runs = store.runs()
             for run in runs:
-                print(f"{run['id']}  {run['status']:<10} {run['pipeline']}  {run['error'] or ''}")
+                outcome = run.get("outcome") or "-"
+                status = f"{run['status']:<10} {outcome:<9}"
+                print(f"{run['id']}  {status} {run['pipeline']}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
             print(registry.describe(a.name) if a.name else "\n".join(registry.names()))

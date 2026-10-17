@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Run outcomes (#188): every run gets an `outcome` (`success`, `no_change`, `skipped`, `partial`,
+  `failed`) next to its unchanged `status`, set by an `outcomes:` policy (`on_transport_error:
+  skipped_upstream`, `on_empty`, `on_rejected`, `alert_on`, `max_skipped`, `exit_codes`). Skipped
+  runs end with `run.skipped` (status `skipped`), outcomes in `alert_on` emit `run.alert`, too many
+  skipped runs in a row fail, and `agentl runs`, `agentl stats` and the dashboard show the outcome.
+
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
