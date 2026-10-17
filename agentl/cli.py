@@ -90,6 +90,31 @@ def _mcp_install(a: argparse.Namespace) -> int:
         return 1
 
 
+def _resolve_decisions(a: argparse.Namespace) -> int:
+    """Decisions are {normalised value: reference id or null}; edit them and import them back."""
+    from .resolve import decisions_key
+
+    key = decisions_key(a.pipeline, a.step)
+    with open_store(a.db) as store:
+        if a.action == "export":
+            text = json.dumps(store.cache_get(key) or {}, indent=2, sort_keys=True, ensure_ascii=False)
+            if a.file:
+                Path(a.file).write_text(text + "\n", encoding="utf-8")
+            else:
+                print(text)
+            return 0
+        if not a.file:
+            print("agentl resolve import needs a JSON file", file=sys.stderr)
+            return 2
+        data = json.loads(Path(a.file).read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not all(v is None or isinstance(v, str) for v in data.values()):
+            print("the file must map each value to a reference id or null", file=sys.stderr)
+            return 2
+        store.cache_set(key, data)
+        print(f"imported {len(data)} decision(s) for {a.pipeline} / {a.step}")
+        return 0
+
+
 def _rejected(a: argparse.Namespace) -> int:
     from .runner import retry_rejected
 
@@ -254,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("action", choices=["show", "reset"])
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
+
+    rs = cmd("resolve", "model decisions of resolve steps: export them for review, import them back")
+    rs.add_argument("action", choices=["export", "import"])
+    rs.add_argument("pipeline", help="pipeline name")
+    rs.add_argument("step", help="the resolve step id")
+    rs.add_argument("file", nargs="?", help="JSON file (export: default stdout; import: required)")
 
     rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
     rj.add_argument("action", choices=["list", "show", "retry"])
@@ -472,6 +503,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         if a.cmd == "rejected":
             return _rejected(a)
+        if a.cmd == "resolve":
+            return _resolve_decisions(a)
         if a.cmd == "serve":
             import logging
 
