@@ -412,6 +412,53 @@ class Runner:
 
     # steps --------------------------------------------------------------
     def _run_agent(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """An agent step. With `rules:` (#124) each record tries the rules first and only the
+        records they cannot handle are sent to the llm; the output keeps the input order and each
+        record says which path produced it in `_path`."""
+        if not step.rules:
+            answered = self._agent_slots(run_id, step, records, result)
+            return self._agent_finish(run_id, step, answered, len(records), result)
+        records = list(records)
+        schema = llm.schema_model(f"{step.id}_output", step.output or {})
+        by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
+        rest = [i for i, out in enumerate(by_rules) if out is None]
+        asked = self._agent_slots(run_id, step, [records[i] for i in rest], result) if rest else []
+        slots: list[tuple[dict | None, dict | None]] = []
+        answers = iter(asked)
+        for rec, out in zip(records, by_rules, strict=True):
+            if out is not None:
+                slots.append(({**rec, **out, "_path": "rules"}, None))
+                continue
+            good, bad = next(answers)
+            slots.append(({**good, "_path": "agent"} if good is not None else None, bad))
+        paths = {"rules": len(records) - len(rest), "agent": len(rest)}
+        with self._spend:
+            result.spend[step.id]["paths"] = paths
+        self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
+        return self._agent_finish(run_id, step, slots, len(records), result)
+
+    def _agent_finish(
+        self,
+        run_id: str,
+        step: StepSpec,
+        slots: list[tuple[dict | None, dict | None]],
+        total: int,
+        result: RunResult,
+    ) -> Records:
+        ok: Records = []
+        bad: Records = []
+        for good, rejected in slots:
+            if good is not None:
+                ok.append(good)
+            elif rejected is not None:
+                bad.append(rejected)
+        self._rejects(run_id, step.id, bad, total, result)
+        return ok
+
+    def _agent_slots(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> list[tuple[dict | None, dict | None]]:
+        """Asks the llm about each record: (answered record, None) or (None, rejected record)."""
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         prov = self._provider(step.llm)
         llm_spec = self.spec.llm[step.llm]
@@ -538,17 +585,8 @@ class Runner:
             slots[i] = slots[src]
         if copies:
             self._emit(run_id, "agent.deduplicated", step.id, records=len(copies))
-        ok: Records = []
-        bad: Records = []
-        for slot in slots:
-            assert slot is not None
-            good, rejected = slot
-            if good is not None:
-                ok.append(good)
-            elif rejected is not None:
-                bad.append(rejected)
-        self._rejects(run_id, step.id, bad, len(records), result)
-        return ok
+        assert all(slot is not None for slot in slots)
+        return slots  # type: ignore[return-value]
 
     def _rejects(self, run_id: str, step_id: str, bad: Records, total: int, result: RunResult) -> None:
         """Rejected records of a step: kept on the result and in the quarantine, counted for
@@ -1245,6 +1283,45 @@ class Runner:
                 if result.status == "succeeded":
                     result.status = "failed"
                     result.error = f"acknowledging the messages read failed: {type(e).__name__}: {e}"
+
+
+def _apply_rules(
+    step: StepSpec, records: Records, schema: type[BaseModel], base_dir: Any
+) -> list[dict | None]:
+    """The `rules:` of a hybrid agent step on each record, in order. Returns the `output:` fields
+    for each record the rules handled, or None when a rule failed (an expression error, a value
+    that is not of its semantic type, an exception in a fn) or an output field is missing, null
+    or invalid. Those records go to the agent."""
+    from .connectors.transforms import cast, compute
+
+    tag = "\x00agentl_row"
+    current: list[dict] = [{**r, tag: i} for i, r in enumerate(records)]
+    for rule in step.rules:
+        kind, body = next(iter(rule.items()))
+        if kind == "fn":
+            fn = registry.resolve_fn(body, base_dir)
+            nxt = []
+            for r in current:
+                with contextlib.suppress(Exception):
+                    out = fn({k: v for k, v in r.items() if k != tag})
+                    if isinstance(out, dict):
+                        nxt.append({**r, **out, tag: r[tag]})
+            current = nxt
+        elif kind == "compute":
+            current = list(compute(current, fields=body))
+        else:
+            current = list(cast(current, fields=body))
+    found: list[dict | None] = [None] * len(records)
+    required = [f for f, t in (step.output or {}).items() if not t.endswith("?")]
+    for r in current:
+        if any(r.get(f) is None or r.get(f) == "" for f in required):
+            continue
+        try:
+            value = schema.model_validate({f: r.get(f) for f in step.output or {}})
+        except ValidationError:
+            continue
+        found[r[tag]] = value.model_dump()
+    return found
 
 
 def _review_instruction(review: str) -> str:

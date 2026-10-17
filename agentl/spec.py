@@ -185,6 +185,10 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
+    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
+    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
+    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
@@ -232,6 +236,26 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.rules and not self.agent:
+            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
+        for rule in self.rules:
+            if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
+            kind, body = next(iter(rule.items()))
+            if kind == "fn" and not (isinstance(body, str) and ":" in body):
+                raise ValueError(f"step '{self.id}': rule fn must look like 'module:function'")
+            if kind != "fn" and not (isinstance(body, dict) and body):
+                raise ValueError(f"step '{self.id}': rule {kind} maps fields to expressions or types")
+            if kind == "compute":
+                from . import expr
+
+                for text in body.values():
+                    try:
+                        expr.compile_expr(str(text))
+                    except expr.ExprError as e:
+                        raise ValueError(f"step '{self.id}': rule compute: {e}") from None
         if self.tools and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take tools")
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
