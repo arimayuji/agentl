@@ -844,6 +844,15 @@ class Runner:
                     output_tokens=totals[1],
                     cost_usd=totals[2],
                 )
+            if getattr(e, "snapshot", None):  # html.select, html.read, crawl: what the site sent
+                self._emit(
+                    run_id,
+                    "selector.missed",
+                    step_id,
+                    selector=getattr(e, "selector", None),
+                    url=getattr(e, "url", None),
+                    snapshot=e.snapshot,  # type: ignore[attr-defined]
+                )
             self._emit(
                 run_id,
                 "step.failed",
