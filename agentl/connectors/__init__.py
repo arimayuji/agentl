@@ -3,6 +3,7 @@
 `input` is None for sources, a list of records for one upstream step, or a
 dict of {step_id: records} when the step has several inputs."""
 
+from .. import mapping  # noqa: F401  (registers map_schema)
 from . import (  # noqa: F401  (registers connectors)
     aws,
     browser,
@@ -12,11 +13,14 @@ from . import (  # noqa: F401  (registers connectors)
     files,
     http,
     mail,
+    nfe,
     postgres,
     protect,
     queues,
     saas,
     scrape,
     sql,
+    timeconv,
     transforms,
+    webcrawl,
 )
