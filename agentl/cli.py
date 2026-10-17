@@ -91,6 +91,31 @@ def _mcp_install(a: argparse.Namespace) -> int:
         return 1
 
 
+def _resolve_decisions(a: argparse.Namespace) -> int:
+    """Decisions are {normalised value: reference id or null}; edit them and import them back."""
+    from .resolve import decisions_key
+
+    key = decisions_key(a.pipeline, a.step)
+    with open_store(a.db) as store:
+        if a.action == "export":
+            text = json.dumps(store.cache_get(key) or {}, indent=2, sort_keys=True, ensure_ascii=False)
+            if a.file:
+                Path(a.file).write_text(text + "\n", encoding="utf-8")
+            else:
+                print(text)
+            return 0
+        if not a.file:
+            print("agentl resolve import needs a JSON file", file=sys.stderr)
+            return 2
+        data = json.loads(Path(a.file).read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not all(v is None or isinstance(v, str) for v in data.values()):
+            print("the file must map each value to a reference id or null", file=sys.stderr)
+            return 2
+        store.cache_set(key, data)
+        print(f"imported {len(data)} decision(s) for {a.pipeline} / {a.step}")
+        return 0
+
+
 def _rejected(a: argparse.Namespace) -> int:
     from .runner import retry_rejected
 
@@ -133,6 +158,42 @@ def _exit_code(spec: Any, result: Any) -> int:
     if result.outcome is None:
         return 0 if result.status == "succeeded" else 1
     return int(spec.outcomes.exit_code(result.outcome))
+
+
+def _mappings(a: argparse.Namespace) -> int:
+    """`agentl mappings`: print stored mappings as YAML ready to pin, approve or forget them."""
+    with open_store(a.db) as store:
+        if a.action == "show":
+            rows = store.mapping_list(a.pipeline)
+            for row in rows:
+                for sig, m in row.get("layouts", {}).items():
+                    state = "approved" if m.get("approved") else "waiting for review"
+                    llm = f", by LLM: {', '.join(m['by_llm'])}" if m.get("by_llm") else ""
+                    print(f"# {row['pipeline']}  {row['step']}  layout {sig}  ({state}{llm})")
+                    print("mapping:")
+                    for f, c in m.get("columns", {}).items():
+                        print(f"  {f}: {json.dumps(c, ensure_ascii=False)}")
+            if not rows:
+                print("no mappings stored")
+            return 0
+        if not (a.pipeline and a.step):
+            print(f"agentl mappings {a.action} needs a pipeline name and a step", file=sys.stderr)
+            return 2
+        stored = store.mapping_get(a.pipeline, a.step) or {}
+        layouts = dict(stored.get("layouts") or {})
+        chosen = [s for s in layouts if a.layout in (None, s)]
+        if not chosen:
+            print(f"no mapping stored for {a.pipeline} {a.step}", file=sys.stderr)
+            return 1
+        for sig in chosen:
+            if a.action == "approve":
+                layouts[sig] = {**layouts[sig], "approved": True}
+            else:
+                del layouts[sig]
+        store.mapping_set(a.pipeline, a.step, {"layouts": layouts})
+        done = "approved" if a.action == "approve" else "forgot"
+        print(f"{done} {len(chosen)} layout(s) of {a.pipeline} {a.step}")
+        return 0
 
 
 def _params(pairs: list[str] | None) -> dict[str, str]:
@@ -234,7 +295,15 @@ def main(argv: list[str] | None = None) -> int:
     d = cmd("diagram", "print the pipeline as a Mermaid diagram")
     d.add_argument("pipeline")
 
-    cmd("runs", "list recent runs")
+    ru = cmd("runs", "list recent runs, or show what one run did (rows, changes, LLM cost)")
+    ru.add_argument("action", nargs="?", choices=["list", "show"], default="list")
+    ru.add_argument("run_id", nargs="?", help="show: the run id")
+    ru.add_argument("--json", action="store_true", help="show: print the ledger as JSON")
+
+    ct = cmd("cost", "LLM calls, tokens and cost over recent runs, grouped by pipeline, step, model or day")
+    ct.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
+    ct.add_argument("--by", default="pipeline,model", help="comma list of pipeline, step, model, day")
+    ct.add_argument("--json", action="store_true")
     co = cmd("connectors", "list installed connectors, or show one connector's parameters")
     co.add_argument("name", nargs="?", help="a connector, e.g. http.get: prints its `with:` parameters")
 
@@ -262,6 +331,18 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("action", choices=["show", "reset"])
     sa.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; reset: required)")
     sa.add_argument("--step", help="reset only this step's cursor")
+
+    mp = cmd("mappings", "column mappings of map_schema steps: show, approve or forget them")
+    mp.add_argument("action", choices=["show", "approve", "forget"])
+    mp.add_argument("pipeline", nargs="?", help="pipeline name (show: default all; else required)")
+    mp.add_argument("step", nargs="?", help="the map_schema step (approve / forget: required)")
+    mp.add_argument("--layout", help="approve / forget only this layout signature")
+
+    rs = cmd("resolve", "model decisions of resolve steps: export them for review, import them back")
+    rs.add_argument("action", choices=["export", "import"])
+    rs.add_argument("pipeline", help="pipeline name")
+    rs.add_argument("step", help="the resolve step id")
+    rs.add_argument("file", nargs="?", help="JSON file (export: default stdout; import: required)")
 
     rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
     rj.add_argument("action", choices=["list", "show", "retry"])
@@ -396,6 +477,28 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "diagram":
             print(graph.mermaid(load(a.pipeline)))
             return 0
+        if a.cmd == "runs" and a.action == "show":
+            from . import ledger
+
+            if not a.run_id:
+                print("agentl runs show needs a run id", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                report = ledger.show(store, a.run_id)
+            if report is None:
+                print(f"error: no run {a.run_id} in this store", file=sys.stderr)
+                return 2
+            print(json.dumps(report, indent=2, default=str) if a.json else ledger.show_text(report))
+            return 0
+        if a.cmd == "cost":
+            from . import ledger
+            from .checks import parse_duration
+
+            by = [k.strip() for k in a.by.split(",") if k.strip()]
+            with open_store(a.db) as store:
+                report = ledger.cost(store, time.time() - parse_duration(a.since), by)
+            print(json.dumps(report, indent=2, default=str) if a.json else ledger.cost_text(report))
+            return 0
         if a.cmd == "runs":
             with open_store(a.db) as store:
                 runs = store.runs()
@@ -480,8 +583,12 @@ def main(argv: list[str] | None = None) -> int:
                 count = store.state_reset(a.pipeline, a.step)
                 print(f"reset {count} cursor(s) of {a.pipeline}; the next run starts from `initial`")
                 return 0
+        if a.cmd == "mappings":
+            return _mappings(a)
         if a.cmd == "rejected":
             return _rejected(a)
+        if a.cmd == "resolve":
+            return _resolve_decisions(a)
         if a.cmd == "serve":
             import logging
 

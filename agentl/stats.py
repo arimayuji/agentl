@@ -1,5 +1,6 @@
-"""Track record per pipeline: success rate, durations, cost, failures grouped by reason, and a
-per-day trend. Computed from the runs and events the store already keeps; nothing new is stored.
+"""Track record per pipeline: success rate, durations, cost, failures grouped by reason, a
+per-day trend, and per agent step and model what a record, an accepted answer and a cache hit
+cost. Computed from the runs and events the store already keeps; nothing new is stored.
 
     agentl stats [PIPELINE] [--since 30d] [--json]"""
 
@@ -13,6 +14,7 @@ from typing import Any
 
 FAILURE_EVENTS = ("step.failed", "check.failed", "budget.exceeded")
 END_EVENTS = ("run.succeeded", "run.failed", "run.skipped")
+STEP_EVENTS = ("step.succeeded", "item.rejected")
 
 _NOISE = [
     (re.compile(r"https?://\S+"), "<url>"),
@@ -48,10 +50,18 @@ def compute(
     ids = {r["id"] for r in runs}
     failing: dict[str, dict] = {}
     cost: dict[str, float] = {}
-    for e in store.events_of(since, FAILURE_EVENTS + END_EVENTS):
+    run_pipeline = {r["id"]: r["pipeline"] for r in runs}
+    rejected: dict[tuple[str, str], int] = {}
+    done_steps: list[dict] = []
+    for e in store.events_of(since, FAILURE_EVENTS + END_EVENTS + STEP_EVENTS):
         if e["run_id"] not in ids:
             continue
-        if e["type"] in END_EVENTS:
+        if e["type"] == "item.rejected":
+            k = (e["run_id"], e["step"])
+            rejected[k] = rejected.get(k, 0) + int((e["data"] or {}).get("count") or 0)
+        elif e["type"] == "step.succeeded":
+            done_steps.append(e)
+        elif e["type"] in END_EVENTS:
             cost[e["run_id"]] = float((e["data"] or {}).get("cost_usd") or 0)
         else:
             failing.setdefault(e["run_id"], e)  # the first failure is the cause
@@ -97,8 +107,10 @@ def compute(
             g["count"] += 1
             g["last_seen"], g["last_run"], g["last_error"] = r["started"], r["id"], r["error"]
 
+    agents = _agent_costs(done_steps, rejected, run_pipeline)
     pipelines = []
     for p in out.values():
+        p["agents"] = agents.get(p["pipeline"], [])
         secs = sorted(p.pop("_secs"))
         done = p["succeeded"] + p["failed"]
         p["success_rate"] = round(p["succeeded"] / done, 4) if done else None
@@ -110,6 +122,62 @@ def compute(
         pipelines.append(p)
     pipelines.sort(key=lambda p: -p["last_started"])
     return {"since": since, "until": now, "pipelines": pipelines}
+
+
+def _per(cost: float, n: int) -> float | None:
+    return round(cost / n, 6) if n else None
+
+
+def _agent_costs(
+    done: list[dict], rejected: dict[tuple[str, str], int], run_pipeline: dict[str, str]
+) -> dict[str, list[dict]]:
+    """Per pipeline, one row per agent step and model: what a record, an accepted answer and a
+    cache hit cost. Records are the step's output plus the ones it rejected; accepted answers
+    are the ones not rejected. A cache hit avoided is priced at what an answered record cost."""
+    rows: dict[tuple[str, str, str], dict] = {}
+    for e in done:
+        d = e["data"] or {}
+        if "llm_calls" not in d:  # not an agent step
+            continue
+        key = (run_pipeline[e["run_id"]], e["step"], str(d.get("model") or "unknown"))
+        row = rows.setdefault(
+            key,
+            {
+                "step": key[1],
+                "model": key[2],
+                "runs": 0,
+                "records": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "answered": 0,
+                "cache_hits": 0,
+                "cost_usd": 0.0,
+            },
+        )
+        bad = rejected.get((e["run_id"], e["step"]), 0)
+        accepted = int(d.get("records") or 0)
+        row["runs"] += 1
+        row["accepted"] += accepted
+        row["rejected"] += bad
+        row["records"] += accepted + bad
+        row["answered"] += sum((d.get("answered_by") or {}).values())
+        row["cache_hits"] += int(d.get("cache_hits") or 0)
+        row["cost_usd"] += float(d.get("cost_usd") or 0)
+    out: dict[str, list[dict]] = {}
+    for (pipeline, _, _), row in sorted(rows.items()):
+        c = row["cost_usd"]
+        row["cost_usd"] = round(c, 6)
+        row["cost_per_record"] = _per(c, row["records"])
+        row["cost_per_accepted"] = _per(c, row["accepted"])
+        per_answer = _per(c, row["answered"])
+        row["cost_per_answer"] = per_answer
+        row["cache_saved_usd"] = round(per_answer * row["cache_hits"], 6) if per_answer else None
+        out.setdefault(pipeline, []).append(row)
+    return out
+
+
+def _usd(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.6f}"
 
 
 def _when(ts: float) -> str:
@@ -135,6 +203,15 @@ def text(report: dict, top: int = 5) -> str:
         if p["cost_usd"]:
             lines.append(f"  cost: {p['cost_usd']:.4f} USD")
         lines.append(f"  last run: {p['last_run']} {p['last_status']}")
+        if p.get("agents"):
+            lines.append("  agent cost (USD):")
+            for a in p["agents"]:
+                saved = f", cache saved {a['cache_saved_usd']:.4f}" if a["cache_saved_usd"] else ""
+                lines.append(
+                    f"    [{a['step']}] {a['model']}: {_usd(a['cost_per_record'])}/record,"
+                    f" {_usd(a['cost_per_accepted'])}/accepted ({a['accepted']} of {a['records']}),"
+                    f" {a['cache_hits']} cache hits{saved}"
+                )
         if p["failures"]:
             lines.append("  failures by reason:")
             for g in p["failures"][:top]:

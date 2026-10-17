@@ -146,6 +146,27 @@ class Store:
     def cache_set(self, key: str, value: Any) -> None:
         self._exec(self.UPSERT_CACHE, (key, json.dumps(value, default=str), time.time()))
 
+    # column mappings of map_schema steps (#177), per pipeline and step: {"layouts": {sig: mapping}}
+    MAPPING_PREFIX: ClassVar[str] = "map_schema:"
+
+    def mapping_get(self, pipeline: str, step: str) -> dict | None:
+        return self.cache_get(f"{self.MAPPING_PREFIX}{pipeline}:{step}")
+
+    def mapping_set(self, pipeline: str, step: str, value: dict) -> None:
+        self.cache_set(f"{self.MAPPING_PREFIX}{pipeline}:{step}", value)
+
+    def mapping_list(self, pipeline: str | None = None) -> list[dict]:
+        """[{pipeline, step, layouts}] of every stored mapping, sorted."""
+        rows = self._query(
+            "SELECT key, value FROM {cache} WHERE key LIKE ? ORDER BY key", (self.MAPPING_PREFIX + "%",)
+        )
+        out = []
+        for r in rows:
+            pipe, _, step = r["key"][len(self.MAPPING_PREFIX) :].rpartition(":")
+            if pipeline is None or pipe == pipeline:
+                out.append({"pipeline": pipe, "step": step, **self._load(r["value"])})
+        return out
+
     # cursors of incremental steps, per pipeline and step
     def state_get(self, pipeline: str, step: str) -> Any | None:
         rows = self._query("SELECT value FROM {state} WHERE pipeline = ? AND step = ?", (pipeline, step))
