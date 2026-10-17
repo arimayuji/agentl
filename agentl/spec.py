@@ -104,6 +104,7 @@ _EXPECTATIONS = (  # see checks.py
     "fresh",
     "vs_last_run",
     "rejected_rate",
+    "pii",
 )
 
 

@@ -14,7 +14,17 @@ from typing import Any
 
 Records = list[dict[str, Any]]
 
-EXPECTATIONS = ("rows", "not_null", "unique", "accepted", "range", "fresh", "vs_last_run", "rejected_rate")
+EXPECTATIONS = (
+    "rows",
+    "not_null",
+    "unique",
+    "accepted",
+    "range",
+    "fresh",
+    "vs_last_run",
+    "rejected_rate",
+    "pii",
+)
 _RATE = re.compile(r"^(<=?)?\s*(\d+(?:\.\d+)?)\s*(%?)$")
 
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhdw])$")
@@ -194,6 +204,14 @@ def run_expectations(
                         f"{name}: {n_bad} of {total} records rejected ({rate:.2%}), "
                         f"expected {op} {limit:.2%}",
                     )
+        elif key == "pii":
+            from .pii import describe, scan
+
+            allow = set() if rule is True else set(_names((rule or {}).get("allow", [])))
+            if rule is not False:
+                for f in scan(records):
+                    if f["field"] not in allow:
+                        fail("pii", describe(f))
         else:
             raise ValueError(f"unknown expectation '{key}'. Use {', '.join(EXPECTATIONS)}")
     return fails

@@ -11,6 +11,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Personal data detection (#239): `agentl.pii.scan` samples records and flags fields that look like
+  CPF, CNPJ, SSN, e-mail, phone, card number (Luhn), IBAN, IP address or names, with a masked example
+  and a suggested `protect` action; the `pii` expectation on a check step fails the run on them.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
