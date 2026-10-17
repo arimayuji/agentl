@@ -130,6 +130,28 @@ agentl schema > pipeline.schema.json
 name: tickets
 ```
 
+## Snapshots
+
+`agentl snapshot` runs a pipeline and compares each step's output with the JSON saved in
+`snapshots/<pipeline name>/<step>.json`. Records are matched by `--key`, not by order, and a change
+is shown field by field:
+
+```bash
+agentl snapshot pipeline.yaml --key id             # exit 1 when a step differs or has no snapshot
+agentl snapshot pipeline.yaml --key id -u          # show the diff and ask before accepting
+agentl snapshot pipeline.yaml --step clean --key id,date -u --yes   # accept without asking (CI)
+```
+
+```text
+clean: ~ [42]
+    total: 10.5 -> 12.0
+clean: + {"id": 43, "total": 3}
+clean: - {"id": 7, "total": 1}
+```
+
+Without `--key` a record is either identical or added/removed. Snapshots are written sorted by key
+so their diffs in git stay small. Without a terminal, `-u` needs `--yes`.
+
 ## Run store
 
 The run store keeps run history, events and the per-record agent cache.

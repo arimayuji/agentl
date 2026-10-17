@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl snapshot` (#211, first part): runs a pipeline and compares step outputs with saved
+  snapshots by key, not by order, with a per-field diff; `--update-snapshots` shows the diff and
+  asks before accepting (`--yes` for CI). `agentl.snapshots` also has `redact_headers` and
+  `redact_url` to hide credentials in anything recorded.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or
