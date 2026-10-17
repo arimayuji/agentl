@@ -15,6 +15,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
@@ -30,9 +31,54 @@ log = logging.getLogger("agentl.files")
 Records = list[dict]
 
 
+# ---------------------------------------------------------------- encodings
+AUTO_ENCODINGS = ("utf-8", "latin-1")
+Encoding = str | list[str] | tuple[str, ...]
+
+
+def resolve_encoding(p: Path, encoding: Encoding) -> str:
+    """The first of `encoding` (a name, a list of attempts or `auto`) that decodes all of `p`.
+
+    The file is decoded in 1 MiB chunks, so large files are never held in memory. A single name is
+    returned as is, without reading the file.
+    """
+    if isinstance(encoding, str) and encoding.lower() != "auto":
+        return encoding
+    tries = AUTO_ENCODINGS if isinstance(encoding, str) else tuple(encoding)
+    if not tries:
+        raise ValueError("encoding: the list of attempts is empty")
+    import codecs
+
+    for enc in tries:
+        dec = codecs.getincrementaldecoder(enc)()
+        try:
+            with p.open("rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    dec.decode(chunk)
+            dec.decode(b"", final=True)
+        except UnicodeDecodeError:
+            continue
+        return enc
+    raise ValueError(f"{p.name}: none of the encodings {list(tries)} decodes the file")
+
+
+def _tagged(rows: Iterable[dict], encoding: Encoding, resolved: str) -> Iterator[dict]:
+    """Add `_encoding` to each record when the encoding was chosen from attempts."""
+    if isinstance(encoding, str) and encoding.lower() != "auto":
+        yield from rows
+        return
+    for r in rows:
+        r.setdefault("_encoding", resolved)
+        yield r
+
+
 # ---------------------------------------------------------------- per-file readers
-def iter_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Iterator[dict]:
-    with p.open(newline="", encoding=encoding, errors="replace") as f:
+def iter_csv(p: Path, delimiter: str | None = None, encoding: Encoding = "utf-8", **_: Any) -> Iterator[dict]:
+    resolved = resolve_encoding(p, encoding)
+    if resolved is not encoding:
+        yield from _tagged(iter_csv(p, delimiter, resolved), encoding, resolved)
+        return
+    with p.open(newline="", encoding=resolved, errors="replace") as f:
         sample = f.read(64 * 1024)
         f.seek(0)
         if delimiter is None:
@@ -60,12 +106,15 @@ def iter_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_
                 yield row
 
 
-def read_csv(p: Path, delimiter: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:
+def read_csv(p: Path, delimiter: str | None = None, encoding: Encoding = "utf-8", **_: Any) -> Records:
     return list(iter_csv(p, delimiter, encoding))
 
 
-def read_json(p: Path, key: str | None = None, encoding: str = "utf-8", **_: Any) -> Records:
-    text = p.read_text(encoding=encoding)
+def read_json(p: Path, key: str | None = None, encoding: Encoding = "utf-8", **_: Any) -> Records:
+    resolved = resolve_encoding(p, encoding)
+    if resolved is not encoding:
+        return list(_tagged(read_json(p, key, resolved), encoding, resolved))
+    text = p.read_text(encoding=resolved)
     if p.suffix.lower() in (".jsonl", ".ndjson"):
         return [json.loads(line) for line in text.splitlines() if line.strip()]
     data = json.loads(text)
@@ -76,8 +125,11 @@ def read_json(p: Path, key: str | None = None, encoding: str = "utf-8", **_: Any
     return [r if isinstance(r, dict) else {"value": r} for r in rows]
 
 
-def read_txt(p: Path, lines: bool = False, encoding: str = "utf-8", **_: Any) -> Records:
-    text = p.read_text(encoding=encoding, errors="replace")
+def read_txt(p: Path, lines: bool = False, encoding: Encoding = "utf-8", **_: Any) -> Records:
+    resolved = resolve_encoding(p, encoding)
+    if resolved is not encoding:
+        return list(_tagged(read_txt(p, lines, resolved), encoding, resolved))
+    text = p.read_text(encoding=resolved, errors="replace")
     if lines:
         return [
             {"path": str(p), "line": i + 1, "text": t} for i, t in enumerate(text.splitlines()) if t.strip()
@@ -319,6 +371,129 @@ def _expand(p: Path, limit: int, depth: int = 0) -> list[tuple[Path, Path | None
     return [(p, None)]
 
 
+# ---------------------------------------------------------------- archive.read
+MAX_ARCHIVE_MEMBERS = 10_000
+
+
+def _archive_kind(p: Path, kind: str) -> str:
+    if kind != "auto":
+        if kind not in ("zip", "tar", "gz"):
+            raise ValueError("archive.read: type must be auto, zip, tar or gz")
+        return kind
+    if zipfile.is_zipfile(p):
+        return "zip"
+    if tarfile.is_tarfile(p):  # also .tar.gz, .tgz, .tar.bz2, .tar.xz
+        return "tar"
+    with p.open("rb") as f:
+        if f.read(2) == b"\x1f\x8b":
+            return "gz"
+    raise ValueError(f"archive.read: {p.name} is not a zip, tar or gz archive")
+
+
+def _copy_limited(src: Any, target: Path, name: str, budget: list[int]) -> int:
+    """Stream `src` to `target`, counting real bytes against the shared `budget`."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    with target.open("wb") as dst:
+        while chunk := src.read(1024 * 1024):
+            size += len(chunk)
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                raise ValueError(f"{name}: archive expands beyond max_extract_bytes")
+            dst.write(chunk)
+    return size
+
+
+def _safe_target(dest: Path, member: str, archive: str) -> Path:
+    target = (dest / member).resolve()
+    if (
+        member.startswith(("/", "\\"))
+        or not target.is_relative_to(dest.resolve())
+        or target == dest.resolve()
+    ):
+        raise ValueError(f"{archive}: unsafe path in archive: {member}")
+    return target
+
+
+def _archive_members(p: Path, kind: str) -> list[str]:
+    if kind == "zip":
+        with zipfile.ZipFile(p) as z:
+            return [i.filename for i in z.infolist() if not i.is_dir()]
+    if kind == "tar":
+        with tarfile.open(p) as t:
+            return [m.name for m in t.getmembers() if m.isfile()]
+    name = p.name[:-3] if p.name.lower().endswith(".gz") else p.name + ".out"
+    return [name]
+
+
+@connector("archive.read")
+def archive_read(
+    input: Any = None,
+    path: str | None = None,
+    url: str | None = None,
+    headers: dict | None = None,
+    field: str = "path",
+    storage_options: dict | None = None,
+    pattern: str | None = None,
+    password: str | None = None,
+    type: str = "auto",
+    max_extract_bytes: int = MAX_EXTRACT_BYTES,
+    max_members: int = MAX_ARCHIVE_MEMBERS,
+) -> Records:
+    """Extract the members of zip, tar or gz archives whose name matches `pattern` (a regex,
+    searched in the member path). One record per member: `path` (the extracted file, ready for any
+    reader), `member`, `archive`, `size`. Members are streamed to disk; paths escaping the archive,
+    links in tars, more than `max_members` members or more than `max_extract_bytes` fail the step.
+    A pattern that matches nothing fails listing the members available. `password` opens
+    traditional (ZipCrypto) encrypted zips.
+    """
+    rx = re.compile(pattern) if pattern else None
+    out: Records = []
+    for p in paths(input, path, field, url, headers, storage_options):
+        kind = _archive_kind(p, type)
+        names = _archive_members(p, kind)
+        if len(names) > max_members:
+            raise ValueError(f"{p.name}: {len(names)} members, more than max_members={max_members}")
+        chosen = [n for n in names if rx is None or rx.search(n)]
+        if not chosen:
+            shown = ", ".join(names[:50]) + (f", ... ({len(names)} in all)" if len(names) > 50 else "")
+            raise ValueError(f"{p.name}: no member matches {pattern!r}; members: {shown or '(none)'}")
+        dest = tmpdir("archive-")
+        budget = [max_extract_bytes]
+        found: list[tuple[str, Path, int]] = []
+        if kind == "zip":
+            with zipfile.ZipFile(p) as z:
+                if password is not None:
+                    z.setpassword(password.encode())
+                for n in chosen:
+                    target = _safe_target(dest, n, p.name)
+                    try:
+                        with z.open(n) as src:
+                            found.append((n, target, _copy_limited(src, target, p.name, budget)))
+                    except RuntimeError as e:  # encrypted member without (the right) password
+                        raise ValueError(f"{p.name}: cannot read {n}: {e}") from e
+        elif kind == "tar":
+            want = set(chosen)
+            with tarfile.open(p) as t:
+                for m in t.getmembers():
+                    if m.name not in want:
+                        continue
+                    target = _safe_target(dest, m.name, p.name)
+                    member = t.extractfile(m)
+                    if member is None:
+                        continue
+                    with member:
+                        found.append((m.name, target, _copy_limited(member, target, p.name, budget)))
+        else:
+            n = chosen[0]
+            target = _safe_target(dest, Path(n).name, p.name)
+            with gzip.open(p, "rb") as gz:
+                found.append((n, target, _copy_limited(gz, target, p.name, budget)))
+        for n, target, size in found:
+            out.append({"path": str(target), "member": n, "archive": origin(p), "size": size})
+    return out
+
+
 # ---------------------------------------------------------------- connectors
 def _each(
     reader: Callable[..., Records],
@@ -381,7 +556,7 @@ def csv_read(
     headers: dict | None = None,
     storage_options: dict | None = None,
     delimiter: str | None = None,
-    encoding: str = "utf-8",
+    encoding: Encoding = "utf-8",
 ) -> Records:
     return _each(
         read_csv,
@@ -404,7 +579,7 @@ def csv_read_chunks(
     headers: dict | None = None,
     storage_options: dict | None = None,
     delimiter: str | None = None,
-    encoding: str = "utf-8",
+    encoding: Encoding = "utf-8",
 ) -> Iterator[Records]:
     chunk: Records = []
     for p in paths(input, path, "path", url, headers, storage_options):
@@ -438,7 +613,7 @@ def csv_read_arrow(
     headers: dict | None = None,
     storage_options: dict | None = None,
     delimiter: str | None = None,
-    encoding: str = "utf-8",
+    encoding: Encoding = "utf-8",
     _engine: str | None = None,
 ) -> Any:
     """pyarrow's CSV reader with every column as text, like `csv.read`. Falls back to the normal
@@ -446,7 +621,7 @@ def csv_read_arrow(
     encoding, a BOM, duplicate or ragged columns, invalid UTF-8. With `_engine="polars"` (the runner
     sets it when every consumer is a polars step) polars reads the file, falling back to pyarrow."""
     files = paths(input, path, "path", url, headers, storage_options)
-    if len(files) != 1 or encoding.lower().replace("-", "") != "utf8":
+    if len(files) != 1 or not isinstance(encoding, str) or encoding.lower().replace("-", "") != "utf8":
         return csv_read(input, path, url, headers, storage_options, delimiter, encoding)
     pa = require("pyarrow", "arrow")
     pacsv = require("pyarrow.csv", "arrow")
@@ -511,7 +686,7 @@ def txt_read(
     headers: dict | None = None,
     storage_options: dict | None = None,
     lines: bool = False,
-    encoding: str = "utf-8",
+    encoding: Encoding = "utf-8",
 ) -> Records:
     return _each(
         read_txt, input, path, url, headers, lines=lines, encoding=encoding, storage_options=storage_options

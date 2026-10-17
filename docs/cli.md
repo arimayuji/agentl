@@ -12,7 +12,8 @@ agentl lint PIPELINE [--strict] [--format text|json|github]
 agentl schema
 agentl keygen                                   # a key for protect / unprotect
 agentl diagram PIPELINE
-agentl runs
+agentl runs [show RUN_ID [--json]]
+agentl cost [--since 30d] [--by pipeline,model] [--json]
 agentl connectors [NAME]
 agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
@@ -30,6 +31,24 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
+
+## Run ledger and LLM cost
+
+`agentl runs show RUN_ID` prints what one run did: records per step, rows changed (`inserted` plus
+`updated` from upserts), rejected records, LLM calls, tokens and cost per step with the models that
+were paid for, duration and outcome. `--json` prints the same as JSON.
+
+`agentl cost` groups LLM calls, tokens and cost over the runs of a period. `--by` takes any of
+`pipeline`, `step`, `model` and `day` (default `pipeline,model`):
+
+```text
+$ agentl cost --since 7d --by pipeline,model
+tickets  claude-haiku-4-5  420 calls in 7 runs, 210000 in / 21000 out tokens, $0.3150
+total $0.3150
+```
+
+Both read the runs and events the store already keeps. Steps recorded before per-model spend
+existed count under model `?`.
 
 ## Validate and lint
 
@@ -147,6 +166,17 @@ agentl dashboard                     # sees every run
 In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store.open_store(url)`.
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
+
+## Column mappings
+
+`map_schema` steps keep one column mapping per input layout in the run store
+([how](connectors.md#map-messy-columns-once-map_schema)).
+
+```bash
+agentl mappings show [pipeline]            # every stored mapping, as YAML ready to pin
+agentl mappings approve sales mapped       # unblock a step with review: required
+agentl mappings forget sales mapped        # infer again on the next run (--layout SIG for one)
+```
 
 ## Rejected records
 
