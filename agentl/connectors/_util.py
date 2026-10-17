@@ -184,6 +184,26 @@ def changeset_options(
     return drop, parts
 
 
+def null_keys(name: str, rows: list[dict], keys: list[str]) -> tuple[list[dict], list[dict]]:
+    """Split upsert records into (good, rejected): a record with a null (or missing) key field
+    cannot be matched to a row, so it goes to the rejected records with the reason in `_error`."""
+    if len(keys) == 1:
+        k = keys[0]
+        if all(r.get(k) is not None for r in rows):
+            return rows, []
+        bad_of = [r for r in rows if r.get(k) is None]
+    else:
+        bad_of = [r for r in rows if any(r.get(k) is None for k in keys)]
+        if not bad_of:
+            return rows, []
+    ids = {id(r) for r in bad_of}
+    good = [r for r in rows if id(r) not in ids]
+    bad = [
+        {**r, "_error": f"{name}: upsert key {[k for k in keys if r.get(k) is None]} is null"} for r in bad_of
+    ]
+    return good, bad
+
+
 def check_update_columns(name: str, upd: list[str] | None, cols: list[str]) -> None:
     if upd and (unknown := [c for c in upd if c not in cols]):
         raise ValueError(f"{name}: update_columns names unknown column(s) {unknown}; columns: {cols}")

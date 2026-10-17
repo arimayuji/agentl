@@ -8,8 +8,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from ..registry import connector, stream_reader, stream_writer
-from ._util import changeset_options, check_update_columns, single, upsert_options
+from ..registry import Rejects, connector, stream_reader, stream_writer
+from ._util import changeset_options, check_update_columns, null_keys, single, upsert_options
 
 
 @connector("sqlite.read")
@@ -34,6 +34,16 @@ def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+_AFFINITY = {bool: "INTEGER", int: "INTEGER", float: "REAL", str: "TEXT", bytes: "BLOB"}
+
+
+def _column(name: str, rows: list[dict]) -> str:
+    """Quoted column with a declared type when every non-null value has one Python type."""
+    kinds = {type(v) for v in map(lambda r: r.get(name), rows) if v is not None}
+    t = _AFFINITY.get(kinds.pop()) if len(kinds) == 1 else None
+    return f"{_quote(name)} {t}" if t else _quote(name)
+
+
 @stream_writer("sqlite.write")
 def sqlite_write_chunks(
     chunks: Iterable[list[dict]],
@@ -50,7 +60,8 @@ def sqlite_write_chunks(
     """Writes every chunk in one transaction. Columns that first appear in a later chunk are added
     to the table. `mode`: append, replace (drop the table first) or upsert (rows whose `key`
     columns match an existing row update it; see `sqlite_write` for on_conflict and update_columns).
-    Upsert reports inserted, updated and unchanged; it needs no unique index on `key`."""
+    Upsert reports inserted, updated and unchanged; it needs no unique index on `key` (a table it
+    creates gets one). Records with a null key field are rejected, not written."""
     if not table.replace("_", "").isalnum():
         raise ValueError(f"invalid table name '{table}'")
     if mode not in ("append", "replace", "upsert", "changeset"):
@@ -66,6 +77,7 @@ def sqlite_write_chunks(
     conflict, upd = upsert_options("sqlite.write", mode, keys, on_conflict, update_columns)
     written = inserted = updated = 0
     cols: list[str] = []
+    rejected: list[dict] = []
     if db and db != ":memory:":
         Path(db).parent.mkdir(parents=True, exist_ok=True)  # as file writers do
     with closing(sqlite3.connect(db)) as conn, conn:
@@ -86,13 +98,20 @@ def sqlite_write_chunks(
                         new.append(k)
             if new:
                 if not cols:
-                    conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({", ".join(map(_quote, new))})')
                     have = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+                    if not have:  # a new table: typed columns, and a unique index on an upsert key
+                        defs = ", ".join(_column(c, rows) for c in new)
+                        conn.execute(f'CREATE TABLE "{table}" ({defs})')
+                        have = set(new)
+                        if mode == "upsert" and all(k in have for k in keys):
+                            idx = _quote("uq_" + "_".join([table, *keys])[:55])
+                            klist = ", ".join(map(_quote, keys))
+                            conn.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON "{table}" ({klist})')
                 else:
                     have = set(cols)
                 for c in new:
                     if c not in have:
-                        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_quote(c)}')
+                        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_column(c, rows)}')
                 cols.extend(new)
             if not rows:
                 continue
@@ -107,11 +126,18 @@ def sqlite_write_chunks(
             if missing:
                 raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
             check_update_columns("sqlite.write", upd, cols)
+            rows, bad = null_keys("sqlite.write", rows, keys)
+            rejected.extend(bad)
+            if not rows:
+                continue
             # Set-based, so a large load stays fast: the chunk goes to a temp table, then one
             # UPDATE for changed rows and one INSERT for new keys.
             tmp = '"_agentl_upsert"'
             conn.execute(f"DROP TABLE IF EXISTS temp.{tmp}")
-            conn.execute(f"CREATE TEMP TABLE {tmp} ({names}, _hit)")
+            # The same declared types as the target, so comparisons on the key can use the indexes.
+            decl = {row[1]: row[2] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+            tdefs = ", ".join(f"{_quote(c)} {decl.get(c, '')}".rstrip() for c in cols)
+            conn.execute(f"CREATE TEMP TABLE {tmp} ({tdefs}, _hit)")
             conn.executemany(
                 f"INSERT INTO temp.{tmp} ({names}) VALUES ({ph})", [tuple(map(r.get, cols)) for r in rows]
             )
@@ -162,7 +188,7 @@ def sqlite_write_chunks(
     out: dict[str, Any] = {"table": table, "written": written}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
-    return [out]
+    return Rejects([out], rejected) if rejected else [out]
 
 
 _STAGE = '"_agentl_changeset"'
@@ -181,11 +207,14 @@ def _changeset(
     source), then the diff with the table runs as a handful of set-based statements. With
     `dry_run` the counts are computed and nothing in the database changes."""
     cols: list[str] = []
+    rejected: list[dict] = []  # null keys cannot be matched to a row, as in upsert
     if db and db != ":memory:" and not dry_run:
         Path(db).parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db)) as conn, conn:
         conn.execute(f"DROP TABLE IF EXISTS temp.{_STAGE}")
         for rows in chunks:
+            rows, bad = null_keys("sqlite.write", list(rows), keys)
+            rejected.extend(bad)
             new = [k for k in dict.fromkeys(k for r in rows for k in r) if k not in cols]
             for c in new:
                 if not cols:
@@ -203,7 +232,8 @@ def _changeset(
         have = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
         if not cols:
             if not have:  # no source rows and no table: nothing to compare
-                return [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                empty = [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                return Rejects(empty, rejected) if rejected else empty
             conn.execute(f"CREATE TEMP TABLE {_STAGE} ({', '.join(map(_quote, keys))}, _hit, _diff)")
             cols = list(keys)
         if missing := [k for k in keys if k not in cols]:
@@ -279,7 +309,7 @@ def _changeset(
     out = _counts(table, total, inserted, updated, deleted, total - inserted - updated, dry_run, parts)
     if parts:
         out.update(partitions=total_parts, partitions_unchanged=total_parts - changed_parts)
-    return [out]
+    return Rejects([out], rejected) if rejected else [out]
 
 
 def _gone(table: str, keys: list[str], drop: str, parts: list[str]) -> str:

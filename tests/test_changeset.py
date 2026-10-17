@@ -154,3 +154,13 @@ def test_counts_in_events_and_run_summary(tmp_path):
     done = next(e for e in events if e["type"] == "step.succeeded" and e["step"] == "save")
     assert done["data"]["deleted"] == 1 and done["data"]["written"] == 1
     assert result.summary()["writes"] == {"save": {"inserted": 0, "updated": 0, "deleted": 1, "unchanged": 5}}
+
+
+def test_null_keys_are_rejected_as_in_upsert(tmp_path):
+    db = str(tmp_path / "c.db")
+    out = get("sqlite.write")(
+        [{"id": None, "month": "2026-01", "v": "x"}, *ROWS[:2]], db=db, table="t", mode="changeset", key="id"
+    )
+    assert out[0]["inserted"] == 2
+    assert len(out.rejected) == 1 and "is null" in out.rejected[0]["_error"]
+    assert [r[0] for r in table(db)] == [0, 1]
