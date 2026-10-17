@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Checks (#185): `vs_runs: { last: 5, rows: 30% }` compares with the median of the last N passing
+  runs, and `severity:` sets `fail`, `warn` or `reject` (drop the failing rows) per rule. Check
+  events carry the result of each rule in `rules`.
+
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve
