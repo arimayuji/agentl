@@ -87,7 +87,7 @@ They are always listed under **Changed** or **Removed**.
 ### Fixed
 
 - `budget:` with parallel agent workers (`concurrency`): calls already running count against
-  `max_usd` / `max_tokens` at the average cost of a call, so workers no longer slip past the
+  `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
   limit together and the run stops after the same number of calls every time.
 
 ## [0.11.0] - 2026-10-17
