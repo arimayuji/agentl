@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
+  and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
+  accuracy per field (numbers within a tolerance), cost and the records that differ.
+  `--compare model=NAME` runs the same check with another model side by side, and a run below
+  `min_accuracy` exits 1 for CI.
 - Run parameters and backfill (#182): declare `params:` in the pipeline (`day: date`, `limit: {type:
   int, default: 100}`; types `str`, `int`, `float`, `bool`, `date`) and use them as `${params.x}`.
   Values come from `agentl run --param key=value`, `agentl.run(..., params={...})`, `agentl serve

@@ -105,6 +105,39 @@ llms cannot have fallbacks of their own; list the whole chain on the first one. 
 the first llm. With tools, a call that fails mid-way starts over on the next llm, so its tools may
 run again.
 
+## Golden sets: test a prompt or model change
+
+Give an agent step a JSONL file of records with the expected answer, and `agentl eval` scores
+the step on it before you ship a new prompt or model:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: { category: str, amount: float }
+  golden: golden/classify.jsonl   # or { file: ..., min_accuracy: 0.9, tolerance: 0.01 }
+```
+
+```json
+{"text": "Flight to Lisbon", "price": 300, "category": "travel", "amount": 300}
+```
+
+Each line holds the fields the step reads plus the expected value of some or all of its
+`output` fields. The step runs on the line without those fields, with the cache off and in a
+throwaway run store (nothing is written to your run history). Text must match exactly; numbers
+must be within `tolerance` (default 0). The path is relative to the pipeline file.
+
+```bash
+agentl eval pipeline.yaml                         # every step with a golden set
+agentl eval pipeline.yaml classify --compare model=claude-haiku-5-5   # side by side
+agentl eval pipeline.yaml --json
+```
+
+The report gives, per run: the share of records with every field right, the accuracy per field,
+the cost and tokens, and the lines that differ (expected and got). A record without a valid
+answer counts as wrong in every field. When `min_accuracy` is set and any run (the
+`--compare` ones included) is below it, the command exits 1, so CI can block a bad prompt.
+`--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step.
+
 ## Data privacy
 
 Agent steps send record contents to the configured provider. Use a local provider for data that must

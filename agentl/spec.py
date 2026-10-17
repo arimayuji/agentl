@@ -149,6 +149,22 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+class GoldenSpec(BaseModel):
+    """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
+    `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    min_accuracy: float | None = Field(default=None, ge=0, le=1)
+    tolerance: float = Field(default=0.0, ge=0)  # numbers within this absolute difference match
+
+    @model_validator(mode="before")
+    @classmethod
+    def _short(cls, raw: Any) -> Any:
+        return {"file": raw} if isinstance(raw, str) else raw
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -191,6 +207,7 @@ class StepSpec(BaseModel):
     on_bad: Literal["reject", "fail", "coerce"] = "reject"
     extra: Literal["keep", "drop", "forbid"] = "keep"
     rejected_to: WriterSpec | None = None  # writes the step's rejected records (any reason)
+    golden: GoldenSpec | None = None  # expected answers for `agentl eval` (agent steps)
 
     @model_validator(mode="before")
     @classmethod
@@ -234,6 +251,8 @@ class StepSpec(BaseModel):
             )
         if self.tools and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take tools")
+        if self.golden and not self.agent:
+            raise ValueError(f"step '{self.id}': only agent steps take a golden set")
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
             raise ValueError(
                 f"step '{self.id}': tools work one record per call; drop mode batch and records_per_call"
