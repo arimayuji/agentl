@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `map_schema` step (#177): maps messy columns (multi-row headers, merged cells, varying names)
+  onto typed target fields. Matches by name and `synonyms` first, asks the LLM once only for the
+  rest, and keeps the mapping per layout in the run store, so later runs make no model call. A new
+  layout fails clearly; `review: required` waits for `agentl mappings approve`; `mapping:` pins it
+  in the YAML. New `agentl mappings show|approve|forget`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
