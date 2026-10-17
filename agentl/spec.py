@@ -168,6 +168,12 @@ class StepSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _cascade(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and "sql" in raw:  # `sql: select ...` is short for `use: sql`
+            if raw.get("use") not in (None, "sql"):
+                raise ValueError(f"step '{raw.get('id')}': sql is a step kind; drop 'use'")
+            query = raw["sql"]
+            rest = {k: v for k, v in raw.items() if k != "sql"}
+            raw = {**rest, "use": "sql", "with": {**(rest.get("with") or {}), "query": query}}
         if isinstance(raw, dict) and isinstance(raw.get("llm"), list):
             names = [str(n) for n in raw["llm"]]
             if not names:

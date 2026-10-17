@@ -52,6 +52,7 @@ RULES = {
     "AE006": "duplicate step id",
     "AE007": "cycle between steps",
     "AE008": "environment variable not set",
+    "AE009": "sql step reads a table that is not an input",
     "AL001": "agent steps without a run budget",
     "AL002": "delivery with no check before it",
     "AL003": "secret written in the pipeline",
@@ -512,6 +513,32 @@ def _env_errors(text: str, pos: _Positions, env: Any) -> list[Finding]:
     return out
 
 
+def _sql_errors(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """A `sql` step may read only its inputs. Needs DuckDB to parse; skipped without it."""
+    from .connectors import duck
+
+    out = []
+    for s in spec.steps:
+        query = s.with_.get("query")
+        if s.use != "sql" or not isinstance(query, str):
+            continue
+        used = duck.tables(query)
+        if used is None:
+            continue
+        for name in sorted(used - set(s.inputs)):
+            out.append(
+                Finding(
+                    "AE009",
+                    "error",
+                    f"step '{s.id}': sql reads table '{name}', which is not one of its inputs "
+                    f"({', '.join(s.inputs) or 'none'}).{_did_you_mean(name, s.inputs)}",
+                    *pos.step(s.id),
+                    f"add '{name}' to input" if name in {x.id for x in spec.steps} else None,
+                )
+            )
+    return out
+
+
 def check_text(
     text: str,
     file: str = "<pipeline>",
@@ -555,6 +582,7 @@ def check_text(
             graph.order(spec)
         except SpecError as e:
             findings.append(Finding("AE007", "error", str(e), *pos.of(("steps",))))
+        findings += _sql_errors(spec, pos)
     if spec is not None:
         spec.base_dir = base_dir
         if warnings:

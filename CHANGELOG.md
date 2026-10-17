@@ -9,6 +9,15 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
+  or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
+  `params` are bound as values; the query cannot touch files, the network or extensions unless
+  `allow_files: true`. Errors name the step and suggest step ids; `agentl validate` reports tables
+  that are not inputs (AE009). The `duckdb` extra now installs `duckdb` and `pyarrow`, and `duckdb`
+  is in `all` and `dev`.
+
 ## [0.11.0] - 2026-10-17
 
 Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for
