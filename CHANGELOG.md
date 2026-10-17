@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `archive.read` (#193): extract zip, tar or gz members whose path matches a regex `pattern`
+  (with `password` for ZipCrypto zips), streamed to disk with zip-slip, member count and size
+  limits; no match fails listing the members. `csv.read`, `json.read`, `txt.read` and `file.read`
+  take `encoding` as a list of attempts or `auto` (UTF-8, then Latin-1) and record the one used in
+  `_encoding`.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless
