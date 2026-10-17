@@ -7,8 +7,8 @@ import decimal
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-from ..registry import arrow_writer, connector, require, stream_reader, stream_writer
-from ._util import check_update_columns, single, upsert_options
+from ..registry import Rejects, arrow_writer, connector, require, stream_reader, stream_writer
+from ._util import check_update_columns, null_keys, single, upsert_options
 
 MODES = ("append", "replace", "upsert")
 
@@ -103,6 +103,7 @@ def postgres_write_chunks(
 
     cols: list[str] = []
     written = inserted = updated = 0
+    rejected: list[dict] = []
     with psycopg.connect(dsn) as conn, conn.transaction():
         if mode == "replace":
             conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(tbl))
@@ -147,6 +148,8 @@ def postgres_write_chunks(
                 written += len(rows)
                 continue
             check_update_columns("postgres.write", upd, cols)
+            rows, bad = null_keys("postgres.write", rows, keys)
+            rejected.extend(bad)
             stmt = _insert(sql, tbl, cols, keys, conflict, upd)
             with conn.cursor() as cur:
                 for i in range(0, len(rows), batch_size):
@@ -168,7 +171,7 @@ def postgres_write_chunks(
     out: dict[str, Any] = {"table": table, "written": written, "mode": mode}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
-    return [out]
+    return Rejects([out], rejected) if rejected else [out]
 
 
 def _insert(

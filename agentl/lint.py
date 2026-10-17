@@ -62,6 +62,7 @@ RULES = {
     "AL006": "cursor never used",
     "AL007": "unknown top-level field (ignored when the pipeline runs)",
     "AL008": "agent step sees fields before they are protected",
+    "AL010": "cast without locale reads numbers that look en-US",
 }
 
 
@@ -468,6 +469,7 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                     'pass it to the source, e.g. `params: { since: "{cursor}" }`',
                 )
             )
+    out += _locale_hints(spec, pos)
     known = set(PipelineSpec.model_fields) | {"extract", "transform", "load", "lint"}
     for key in raw_text_tree if isinstance(raw_text_tree, dict) else {}:
         if key not in known:
@@ -489,6 +491,77 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
 
 
 # ---------------------------------------------------------------- entry points
+_NUMERIC_TYPES = {"int", "decimal", "float", "money", "percent"}
+# 1,234.56 or 1.050 (en-US 1.05, but 1050 under the pt-BR default)
+_EN_US_NUMBER = re.compile(r"^[-+(]?\D{0,4}\s*(\d{1,3}(,\d{3})+\.\d+|\d+\.\d{3})\)?$")
+
+
+def _sample_csv(path: Path, limit: int = 200) -> list[dict]:
+    import csv
+
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            text = f.read(256_000)
+        lines = text.splitlines()[: limit + 1]
+        try:
+            dialect: Any = csv.Sniffer().sniff(lines[0]) if lines else csv.excel
+        except csv.Error:
+            dialect = csv.excel
+        return list(csv.DictReader(lines, dialect=dialect))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return []
+
+
+def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """AL010: a `cast` step with no `locale` (so pt-BR) whose numeric fields come from a local CSV
+    where the first values read like en-US numbers."""
+    from .connectors.transforms import _cast_spec
+
+    out: list[Finding] = []
+    by_id = {s.id: s for s in spec.steps}
+    base = Path(spec.base_dir or ".")
+    for s in spec.steps:
+        if s.use != "cast" or "locale" in s.with_ or not isinstance(s.with_.get("fields"), dict):
+            continue
+        numeric = []
+        for f, t in s.with_["fields"].items():
+            try:
+                if _cast_spec(t)[0] in _NUMERIC_TYPES:
+                    numeric.append(str(f))
+            except ValueError:
+                continue
+        if not numeric:
+            continue
+        hits: dict[str, str] = {}
+        for a in sorted(_ancestors(spec, s.id)):
+            src = by_id[a]
+            path = src.with_.get("path")
+            if src.use != "csv.read" or not isinstance(path, str) or "$" in path or "*" in path:
+                continue
+            p = Path(path) if Path(path).is_absolute() else base / path
+            rows = _sample_csv(p) if p.is_file() else []
+            for f in numeric:
+                values = [str(r.get(f) or "").strip() for r in rows]
+                example = next((v for v in values if _EN_US_NUMBER.match(v)), None)
+                if example:
+                    hits.setdefault(f, example)
+        if hits:
+            pairs = [f"{f} ({v!r})" for f, v in hits.items()]
+            line, col = pos.step(s.id)
+            out.append(
+                Finding(
+                    "AL010",
+                    "warning",
+                    f"step '{s.id}' casts numbers with the default locale pt-BR, but "
+                    f"{', '.join(pairs)} look like en-US numbers",
+                    line,
+                    col,
+                    "set `locale: en-US` in its `with` (or `locale: pt-BR` to keep the default)",
+                )
+            )
+    return out
+
+
 def _env_errors(text: str, pos: _Positions, env: Any) -> list[Finding]:
     """`${VAR}` with no default and not set. Only names are checked; values never reach a
     finding. Secret references are left to `--connect`, which may call cloud APIs."""
