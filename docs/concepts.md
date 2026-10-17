@@ -110,6 +110,10 @@ load:
 `${VAR}` is replaced from the environment when the file is loaded. `${VAR:-default}` provides a
 fallback. A missing variable without a default is an error.
 
+Values that change from run to run (a date, an input file) are better declared as
+[run parameters](orchestration.md#run-parameters): `${params.day}`, typed and checked before the
+run starts.
+
 ## Incremental loading: cursor
 
 A source that should only read what changed since the last run keeps a cursor:
