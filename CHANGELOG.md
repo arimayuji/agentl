@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Pipeline chaining under `agentl serve` (#203): `on_success` / `on_failure` / `after` actions
+  start another pipeline with parameters (`${outputs.<step>}`, `${trigger.<field>}`) or emit an
+  event to a webhook (idempotent by run id), gated by `when` over run metrics (`all_ok`,
+  `rows_changed`, `outcome`); an `after: <pipeline>` trigger; parent and child runs are linked;
+  cycles are rejected at start.
 - `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
   or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
   `params` are bound as values; the query cannot touch files, the network or extensions unless

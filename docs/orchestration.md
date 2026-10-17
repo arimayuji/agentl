@@ -60,10 +60,42 @@ agentl serve pipelines/invoices.yaml pipelines/sales.yaml --host 0.0.0.0 --port 
 | `webhook` | the JSON body as records (an object is one record). `secret` accepts `Authorization: Bearer <secret>` or an HMAC-SHA256 of the body in `X-Signature-256` / `X-Hub-Signature-256` (`sha256=<hex>`). Answers 202 once queued |
 | `every` (on its own) | `[{started_at}]`. Runs again `every` after the last one started, never two at once; for queue consumers |
 | `files` | one record per new or changed file: `path`, `name`, `size`, `modified`. The cursor is kept in the run store, so a restart does not reprocess old files, and files are marked as seen only after a successful run |
+| `after: <pipeline>` | `[{pipeline, run_id, status, error}]` of the finished run. `status: succeeded` (default), `failed` or `any` |
 
 Runs of one pipeline never overlap: they queue. Different pipelines run side by side. `GET
 /health` lists the pipelines served. A `use: trigger` step outside `agentl serve` returns no
 records, so the same file still runs with `agentl run`.
+
+### Chaining pipelines and after-run actions
+
+`on_success`, `on_failure` and `after` (either outcome) list what to do when a run ends: start
+another served pipeline with `trigger:`, or POST an event with `emit:`. `when:` keeps an action
+only if the run metrics match.
+
+```yaml
+name: extract_orders
+trigger: [{ cron: "0 6 * * *" }]
+steps: [...]
+on_success:
+  - trigger: process_orders            # its `use: trigger` step gets one record: `with`
+    with: { rows: "${outputs.extract}", day: "${trigger.day}" }
+  - emit: { url: "${EVENTS_URL}", topic: orders.ready, payload: { run: "${run.id}" }, secret: "${EVENTS_SECRET}" }
+    when: all_ok and rows_changed > 0
+on_failure:
+  - trigger: cleanup
+```
+
+- References: `${outputs.<step>}` (that step's records), `${trigger.<field>}` (first record that
+  started this run), `${run.id}`, `${run.pipeline}`, `${run.status}`, `${run.error}`.
+- `when` reads `outcome` / `status`, `all_ok` (succeeded with nothing rejected), `failed`,
+  `rows_changed` (inserted + updated by upserts), `records`, `rejected`, `cost_usd`, combined with
+  comparisons, `and`, `or`, `not`.
+- `emit` posts `{id, topic, pipeline, run_id, status, payload}`; `id` and the `Idempotency-Key`
+  header are `<run_id>:<topic>`, so receivers can drop repeats. `secret` adds `X-Signature-256`.
+- A child run gets a `chain.parent` event and its parent a `chain.child` event (with the child's
+  status), shown in the dashboard's event list.
+- Every chained pipeline must be passed to `agentl serve`; a pipeline only started by others needs
+  no `trigger:`. Cycles (`a -> b -> a`) are rejected when the service starts.
 
 `agentl serve` is one process. If you already have cron, Airflow or GitHub Actions, keep them:
 they bring retries, history and high availability that a single process does not. Put a reverse
