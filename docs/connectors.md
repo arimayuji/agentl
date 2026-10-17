@@ -833,13 +833,37 @@ time through the private-network guard. Sitemaps that declare a DTD or entities 
 
 | Connector | Parameters |
 |---|---|
-| `email.read` | `host`, `user`, `password`, `port` (993), `ssl` (true), `folder`, `search` (IMAP syntax, default `UNSEEN`), `limit` (newest N), `attachments` (true), `explode`, `extensions`, `mark_seen` (false) |
+| `email.read` | `host`, `user`, `password`, `port` (993), `ssl` (true), `folder`, `search` (IMAP syntax, default `UNSEEN`), `limit` (newest N), `attachments` (true, or `{name_regex}`), `explode`, `extensions`, `mark_seen` (false), `provider` (`imap` or `msgraph`), `since` |
 | `email.mark` | same connection settings; `seen` (true), `flags`, `move_to`. Takes upstream records with `uid` and `folder` |
 
 Each message record has `uid`, `folder`, `message_id`, `from`, `to`, `cc`, `subject`, `date`,
 `text`, `html` and `attachments` (`path`, `filename`, `content_type`, `size`). Messages are read
 without changing their flags. Attachment names come from the sender, so only a safe base name is
 kept and files are saved under the run's temporary folder. Standard library only.
+
+### Microsoft 365 (Graph)
+
+Where IMAP is turned off, read the mailbox through Microsoft Graph. The app registration needs the
+`Mail.Read` application permission (`Mail.ReadWrite` for `mark_seen`); credentials come from
+`MS_ACCESS_TOKEN`, or `MS_TENANT_ID`, `MS_CLIENT_ID` and `MS_CLIENT_SECRET`.
+
+```yaml
+- id: emails
+  use: email.read
+  with:
+    provider: msgraph            # imap (default) | msgraph
+    mailbox: reports@example.com
+    folder: "Reports/Weekly"     # resolved level by level; Inbox, Archive... work at the top
+    since: 7d                    # or an ISO date; also works with IMAP
+    attachments: { name_regex: '^Weekly .*\.xlsx$' }
+    explode: true
+```
+
+Extra parameters: `mailbox`, `since`, `filter` (OData, ANDed with `since`), `access_token`,
+`tenant`, `api_url`, `token_url`. Records have the same fields as IMAP (`uid` is the Graph message
+id, `message_id` the Internet Message-ID) plus `received_at`; exploded records also have `name`.
+Pages (`@odata.nextLink`) are followed until `limit`, and throttled requests (429) wait for
+`Retry-After`. Only file attachments are saved. `email.mark` is IMAP only for now.
 
 ## PostgreSQL
 
