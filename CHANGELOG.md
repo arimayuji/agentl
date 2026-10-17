@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `nfe.read` (#161): NF-e (model 55) and NFC-e (model 65) XML to records, one per invoice
+  (`level: note`) or per item (`level: item`), from `nfeProc` or bare `NFe` files, globs, remote
+  storage and zips. Numbers for money, digits-only CNPJ/CPF, cancellation events mark their note,
+  broken files go to the rejected records, and `validate: true` checks the `chave` check digit and
+  orphan events.
 - Hybrid agent steps (#124, #195): `rules:` on an agent step (`compute`, `cast` or `fn`, in order)
   handles each record first; only records where a rule fails or an `output:` field is missing or
   invalid go to the llm. Output keeps the input order, each record carries `_path` (`rules` or

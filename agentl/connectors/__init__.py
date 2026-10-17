@@ -12,6 +12,7 @@ from . import (  # noqa: F401  (registers connectors)
     files,
     http,
     mail,
+    nfe,
     postgres,
     protect,
     queues,

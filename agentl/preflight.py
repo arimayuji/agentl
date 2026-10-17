@@ -30,6 +30,7 @@ SAFE = {
     "parquet.read",
     "txt.read",
     "xml.read",
+    "nfe.read",
     "html.read",
     "html.select",
     "pdf.read",
