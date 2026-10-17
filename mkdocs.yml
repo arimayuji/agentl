@@ -111,8 +111,8 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra:
-  version_label: v0.10
-  version_headline: Messages to 12 channels, ready-made templates and connector help
+  version_label: v0.11
+  version_headline: Clean types, reshaping, a quarantine for bad records and safe upserts
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/arimayuji/agentl

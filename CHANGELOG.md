@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-17
+
+Data cleaning and safe re-runs: typed `cast`, expressions, reshaping, a quarantine for rejected
+records with retry, and upserts that report what changed.
+
 ### Added
 
 - Upsert options for `postgres.write` and `sqlite.write` (#183): `on_conflict: update|do_nothing|error`
@@ -507,7 +512,8 @@ They are always listed under **Changed** or **Removed**.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/arimayuji/agentl/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/arimayuji/agentl/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/arimayuji/agentl/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/arimayuji/agentl/compare/v0.8.0...v0.8.1
