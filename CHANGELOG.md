@@ -9,12 +9,6 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-10-17
-
-Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for
-rejected records with retry, upserts that report what changed, field-level encryption, and MQTT,
-Kinesis and Event Hubs sources with time windows.
-
 ### Added
 
 - Schema contracts on any step (#122): `schema:` checks every record a step outputs with the
@@ -25,6 +19,15 @@ Kinesis and Event Hubs sources with time windows.
   rejected records through a writer, and checks take `rejected_rate: "< 1%"`. Unknown types fail
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
+
+## [0.11.0] - 2026-10-17
+
+Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for
+rejected records with retry, upserts that report what changed, field-level encryption, and MQTT,
+Kinesis and Event Hubs sources with time windows.
+
+### Added
+
 - `kinesis.read` and `eventhubs.consume` (#226): micro-batches from every Kinesis shard or Event
   Hubs partition, with checkpoints (sequence number per shard or partition) kept in the run store
   and advanced only when the run succeeds. Kinesis reads closed parent shards before their
