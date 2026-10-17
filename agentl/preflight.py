@@ -32,6 +32,7 @@ SAFE = {
     "xml.read",
     "nfe.read",
     "html.read",
+    "html.select",
     "pdf.read",
     "doc.read",
     "docx.read",
