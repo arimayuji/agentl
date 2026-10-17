@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `sql` step (#121): query the previous steps as tables in an in-process DuckDB (`sql:` on a step,
+  or `use: sql` with `query` or `file`). Inputs on the Arrow fast path are scanned without a copy;
+  `params` are bound as values; the query cannot touch files, the network or extensions unless
+  `allow_files: true`. Errors name the step and suggest step ids; `agentl validate` reports tables
+  that are not inputs (AE009). The `duckdb` extra now installs `duckdb` and `pyarrow`, and `duckdb`
+  is in `all` and `dev`.
 - Schema contracts on any step (#122): `schema:` checks every record a step outputs with the
   `cast` types (`int`, `{money: BRL}`, `{enum: [...]}`, `email?` for optional fields). `on_bad:
   reject` (default) sends bad records to the step's rejected set and the quarantine with the
