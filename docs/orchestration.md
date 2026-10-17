@@ -166,6 +166,69 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 ```
 
+## Run parameters
+
+A pipeline started by a scheduler usually needs an argument: the day to load, the file to read.
+Declare them under `params:` and use them as `${params.name}`:
+
+```yaml
+name: daily_sales
+params:
+  day: date                                  # required: no default
+  path: {type: str, default: reports/latest.xlsx}
+  limit: {type: int, default: 1000, help: max rows per run}
+steps:
+  - {id: raw, use: excel.read, with: {path: "${params.path}"}}
+  - {id: out, use: json.write, input: raw, with: {path: "out/sales-${params.day}.json"}}
+```
+
+Types are `str` (the default), `int`, `float`, `bool` and `date` (ISO `YYYY-MM-DD`). A param
+with no default is required. A string that is exactly `${params.limit}` keeps its type (an int
+stays an int); inside a longer string the value is written as text.
+
+Pass values from any entry point:
+
+```bash
+agentl run daily_sales.yaml --param day=2026-10-15 --param path=reports/2026-10-15.xlsx
+agentl serve daily_sales.yaml --param day=2026-10-15   # applied to every run it starts
+```
+
+```python
+import agentl
+
+result = agentl.run("daily_sales.yaml", params={"day": "2026-10-15"})
+result.summary()  # {"status": ..., "records": {...}, "rejected": {...}, "cost_usd": ...}
+```
+
+Unknown, missing and mistyped values raise `SpecError` (exit code 2 on the CLI) before any step
+runs. `agentl lint` checks the declarations and reports `${params.x}` references to names that
+are not declared (AE010).
+
+## Backfill
+
+`agentl backfill` reprocesses history: one run per file or per period, each passed as a run
+parameter.
+
+```bash
+# one run per file; s3://, gs://... globs need agentl-etl[remote]
+agentl backfill daily_sales.yaml --glob 'reports/**/*.xlsx' --param-name path --param day=2026-10-15 --concurrency 4
+
+# one run per day (or --every week | month)
+agentl backfill daily_sales.yaml --from 2026-01-01 --to 2026-03-31 --param-name day
+```
+
+- `--param-name` is the param that gets each file or date. Without it, agentl uses the only
+  `str` param (files) or the only `date` param (periods), and stops if there is not exactly one.
+- Every item is validated before the first run, so a bad date stops the backfill up front.
+- After each successful run the item is recorded in the run store (`--db`). Start the same
+  command again after an interruption and finished items are skipped; failed ones run again.
+  `--redo` runs everything.
+- The final report lists succeeded, skipped and failed items (`--json` for a machine-readable
+  one); the exit code is 1 if any item failed.
+
+From Python: `agentl.backfill.backfill(path, items, param="day", concurrency=4)` with
+`agentl.backfill.periods("2026-01-01", "2026-03-31")` or `agentl.backfill.files("reports/*.xlsx")`.
+
 ## Celery
 
 `pip install 'agentl-etl[celery]'`
@@ -177,10 +240,11 @@ from agentl.integrations.celery import register
 app = Celery("etl", broker="redis://localhost:6379/0")
 run_pipeline = register(app)  # task "agentl.run", retries PipelineFailed with backoff (max 3)
 
-run_pipeline.delay("pipelines/sales.yaml", vars={"DAY": "2026-10-13"})
+run_pipeline.delay("pipelines/sales.yaml", params={"day": "2026-10-13"})
 ```
 
-Schedule it with Celery beat like any task. Pass task options to `register(app, max_retries=5, ...)`.
+The task returns the run summary. A failed run raises `PipelineFailed` and is retried; bad
+params raise `SpecError`, which is not retried. Schedule it with Celery beat like any task. Pass task options to `register(app, max_retries=5, ...)`.
 
 ## Temporal
 
@@ -202,7 +266,7 @@ class DailySales:
     async def run(self, day: str) -> dict:
         return await workflow.execute_activity(
             run_pipeline,
-            RunInput(pipeline="pipelines/sales.yaml", vars={"DAY": day}),
+            RunInput(pipeline="pipelines/sales.yaml", params={"day": day}),
             start_to_close_timeout=timedelta(hours=1),
         )
 
@@ -223,10 +287,11 @@ worker = Worker(
 ```python
 from agentl.integrations.airflow import AgentlOperator
 
-AgentlOperator(task_id="sales", pipeline="pipelines/sales.yaml", vars={"DAY": "{{ ds }}"})
+AgentlOperator(task_id="sales", pipeline="pipelines/sales.yaml", run_params={"day": "{{ ds }}"})
 ```
 
-`pipeline` and `vars` are templated; the run summary goes to XCom.
+`pipeline`, `vars` and `run_params` are templated; the run summary goes to XCom. The argument is
+`run_params` because `params` is Airflow's own DAG-level parameters.
 
 ## Prefect
 

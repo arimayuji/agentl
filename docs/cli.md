@@ -1,7 +1,9 @@
 # CLI and dashboard
 
 ```text
-agentl run PIPELINE [--no-cache] [--no-check] [--show STEP]
+agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
+agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
+                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
 agentl preview PIPELINE STEP [-n 5]
@@ -16,7 +18,7 @@ agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]
-agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071]
+agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
 agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
@@ -26,6 +28,9 @@ agentl dashboard [--host 127.0.0.1] [--port 7070]
 
 Every command accepts `--db` to choose the run store: a SQLite path or a `postgresql://` URL
 (default: `$AGENTL_DB`, then `.agentl/agentl.db`).
+
+Run parameters and `agentl backfill` are described in
+[Scheduling and orchestration](orchestration.md#run-parameters).
 
 ## Validate and lint
 
