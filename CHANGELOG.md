@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `email.read` with `provider: msgraph` (#186): read a Microsoft 365 mailbox through Microsoft
+  Graph (client credentials from `MS_*` env vars), with folder paths like `Reports/Weekly`, `since`,
+  an OData `filter`, paging and `Retry-After` on throttling. `attachments: {name_regex: ...}` filters
+  attachments on both providers; records now carry `received_at`.
 - `select` and `cast` say what they do (#276, #277): `select` `fields` accept output names (after
   `rename`) as well as input names, and a listed field no record has fails the step instead of
   becoming nulls; `cast` with `on_bad: fail` stops on a missing or null field unless its type is
