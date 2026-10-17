@@ -484,7 +484,7 @@ Rules, so nothing is guessed silently:
   `int?` (quote it inside `{ }`), or `{ type: int, optional: true }` (`nullable: true` is the
   same). With `reject` and `keep`, a missing field stays null as before.
 - **The locale defaults to pt-BR.** For English data set `locale: en-US`; `agentl lint` warns
-  (AL009) when a `cast` without `locale` reads a local CSV whose numbers look en-US.
+  (AL010) when a `cast` without `locale` reads a local CSV whose numbers look en-US.
 - **Dates are read in one order per column.** A value like `25/02` means the column is day first,
   `02/25` month first; a column with both fails. When nothing tells (`01/02`), the locale decides
   (pt-BR day first, en-US month first), or `strict: true` stops instead.

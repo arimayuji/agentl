@@ -151,9 +151,9 @@ steps:
 """
     (tmp_path / "p.yaml").write_text(pipe, encoding="utf-8")
     codes = [f.code for f in lint.check_file(tmp_path / "p.yaml").findings]
-    assert "AL009" in codes
+    assert "AL010" in codes
     (tmp_path / "p.yaml").write_text(
         pipe.replace("    with:\n      fields", "    with:\n      locale: en-US\n      fields"),
         encoding="utf-8",
     )
-    assert "AL009" not in [f.code for f in lint.check_file(tmp_path / "p.yaml").findings]
+    assert "AL010" not in [f.code for f in lint.check_file(tmp_path / "p.yaml").findings]

@@ -62,7 +62,7 @@ RULES = {
     "AL006": "cursor never used",
     "AL007": "unknown top-level field (ignored when the pipeline runs)",
     "AL008": "agent step sees fields before they are protected",
-    "AL009": "cast without locale reads numbers that look en-US",
+    "AL010": "cast without locale reads numbers that look en-US",
 }
 
 
@@ -513,7 +513,7 @@ def _sample_csv(path: Path, limit: int = 200) -> list[dict]:
 
 
 def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
-    """AL009: a `cast` step with no `locale` (so pt-BR) whose numeric fields come from a local CSV
+    """AL010: a `cast` step with no `locale` (so pt-BR) whose numeric fields come from a local CSV
     where the first values read like en-US numbers."""
     from .connectors.transforms import _cast_spec
 
@@ -550,7 +550,7 @@ def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
             line, col = pos.step(s.id)
             out.append(
                 Finding(
-                    "AL009",
+                    "AL010",
                     "warning",
                     f"step '{s.id}' casts numbers with the default locale pt-BR, but "
                     f"{', '.join(pairs)} look like en-US numbers",
