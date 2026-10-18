@@ -4,7 +4,12 @@ labels: ["bug", "triage"]
 body:
   - type: markdown
     attributes:
-      value: Thanks for reporting. Please remove secrets and real data from anything you paste.
+      value: |
+        Thanks for reporting. Please remove secrets and real data from anything you paste.
+
+        Tip: `agentl report --pipeline pipeline.yaml` fills this form for you (secrets masked, nothing
+        sent). Fixing it with an AI coding agent? See
+        [CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md).
   - type: textarea
     id: what
     attributes:

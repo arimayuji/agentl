@@ -9,6 +9,13 @@ Thanks for your interest. Bug reports, connector ideas and pull requests are wel
   Small fixes (typos, docs, obvious bugs) can go straight to a pull request.
 - Security problems: do **not** open a public issue. See [SECURITY.md](SECURITY.md).
 
+## Contributing with an AI agent
+
+Hit an error in your own project? `agentl report --pipeline pipeline.yaml` prints a ready-to-paste
+bug report and a prefilled issue URL (it sends nothing). To go from there to a fix with Claude
+Code, Cursor or another coding agent, point it at
+[.github/CONTRIBUTING_AI.md](.github/CONTRIBUTING_AI.md).
+
 ## Credit
 
 Every merged pull request counts: you show up in the README's Contributors section (built from the

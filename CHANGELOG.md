@@ -22,6 +22,17 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl report [RUN_ID] --pipeline p.yaml`: a ready-to-paste bug report (version, Python and
+  OS, failing step, error and traceback, doctor findings, the pipeline YAML with secrets and
+  `${VAR:-default}` defaults masked, a minimal repro suggestion) as markdown matching the Bug report
+  form plus a prefilled GitHub issue URL; `--crash` for the last CLI crash, `-o FILE`, `--json`.
+  It never sends anything. Also a read-only `report` tool in `agentl mcp`.
+- A one-line "Looks like an agentl bug" hint after an unexpected CLI crash or a run failing with an
+  internal error type outside `fn:` code; silence it with `AGENTL_NO_REPORT_HINT=1`. `step.failed`
+  events now carry the end of the traceback (`traceback`, at most 3000 characters).
+- `.github/CONTRIBUTING_AI.md`: a guide for AI coding agents from error to issue to fix pull request,
+  linked from `CONTRIBUTING.md`, the bug-report form and the docs.
+
 - `agentl cost` attributes compute cost per pipeline, step and model (#309), for a Lambda function
   or a shared EC2, ECS or k8s host that runs many pipelines: `--usd-per-hour X` prices each run's
   wall time, `--lambda-memory-mb MB` uses the Lambda formula (GB-seconds plus the request fee,
@@ -238,7 +249,8 @@ They are always listed under **Changed** or **Removed**.
 ### Fixed
 
 - `html.select` keeps upstream `url` and `source_url` on each extracted record without overwriting
-  selected fields with the same names, including when `items` selects multiple elements.
+  selected fields with the same names, including when `items` selects multiple elements (#287,
+  thanks @dannyward630).
 - Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
   send a record whose key field is null or missing to the step's rejected records with the reason
   (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index

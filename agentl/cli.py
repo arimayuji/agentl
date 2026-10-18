@@ -163,6 +163,49 @@ def _exit_code(spec: Any, result: Any) -> int:
     return int(spec.outcomes.exit_code(result.outcome))
 
 
+def _bug_hint(store: Any, spec: Any, result: Any) -> None:
+    """One line after a failed run whose error looks like an agentl bug (not a config error)."""
+    from . import report
+
+    if result.status != "failed":
+        return
+    found = assist.diagnose(store, result.run_id)
+    step = next((s for s in spec.steps if s.id == found["failed_step"]), None)
+    error = (found.get("failure") or {}).get("error") or found.get("error")
+    if report.likely_bug(error, "fn" if step is not None and step.fn else None):
+        line = report.hint(result.run_id)
+        if line:
+            print(line, file=sys.stderr)
+
+
+def _report(a: argparse.Namespace) -> int:
+    from . import report
+
+    crash = None
+    run_id = a.run_id
+    if a.crash:
+        path = Path(report.CRASH_FILE)
+        if not path.is_file():
+            print(f"no saved crash ({report.CRASH_FILE})", file=sys.stderr)
+            return 2
+        crash = path.read_text(encoding="utf-8")
+        built = report.build(None, None, a.pipeline, crash)
+    else:
+        with open_store(a.db) as store:
+            run_id = run_id or next((r["id"] for r in assist.failures(store, 1)), None)
+            if run_id is None:
+                print("no failed runs in this store (use --crash for a CLI crash)", file=sys.stderr)
+                return 2
+            built = report.build(store, run_id, a.pipeline)
+    if a.output:
+        Path(a.output).write_text(built["markdown"], encoding="utf-8")
+    if a.json:
+        print(json.dumps(built, indent=2, default=str))
+    else:
+        print(report.text(built, a.output))
+    return 0
+
+
 def _gaps(a: argparse.Namespace) -> int:
     from . import gaps
 
@@ -523,6 +566,13 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--write", metavar="PATCHED.yaml", help="write the patched YAML to this new file")
     rp.add_argument("--json", action="store_true", help="print the result as JSON")
 
+    rb = cmd("report", "a ready-to-paste bug report and prefilled issue URL (prints only, sends nothing)")
+    rb.add_argument("run_id", nargs="?", help="default: the latest failed run")
+    rb.add_argument("--pipeline", help="the pipeline file the run used (secrets are masked)")
+    rb.add_argument("--crash", action="store_true", help="report the last CLI crash instead of a run")
+    rb.add_argument("-o", "--output", help="also write the markdown to this file")
+    rb.add_argument("--json", action="store_true", help="print the report as JSON")
+
     st = cmd("stats", "success rate, durations, cost and failures by reason, per pipeline")
     st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
     st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
@@ -680,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
             with open_store(a.db) as store:
                 runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
                 result = runner.run()
+                _bug_hint(store, spec, result)
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return _exit_code(spec, result)
@@ -900,6 +951,8 @@ def main(argv: list[str] | None = None) -> int:
                 if proposal.get("written"):
                     print(f"wrote {a.write} (the pipeline file is unchanged)")
             return 0 if proposal["valid"] else 1
+        if a.cmd == "report":
+            return _report(a)
         if a.cmd == "stats":
             from . import stats
             from .checks import parse_duration
@@ -1049,6 +1102,20 @@ def main(argv: list[str] | None = None) -> int:
     except (SpecError, KeyError, FileNotFoundError, FileExistsError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    except Exception:
+        if a.cmd == "report":
+            raise
+        import traceback
+
+        from . import report as bug_report
+
+        trace = traceback.format_exc()
+        print(trace, end="", file=sys.stderr)
+        bug_report.save_crash(list(argv if argv is not None else sys.argv[1:]), trace)
+        line = bug_report.hint()
+        if line:
+            print(line, file=sys.stderr)
+        return 1
     return 0
 
 
