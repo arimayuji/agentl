@@ -5,14 +5,6 @@ on:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-    # A pull request that only changes these skips CI; main still runs everything after the merge.
-    paths-ignore:
-      - "docs/**"
-      - "media/**"
-      - "mkdocs.yml"
-      - "CHANGELOG.md"
-      - "CODE_OF_CONDUCT.md"
-      - "SECURITY.md"
 
 permissions:
   contents: read
@@ -22,23 +14,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  # A pull request that only changes docs or media skips the heavy steps. The jobs still run and
+  # pass, so required checks report instead of waiting forever (paths-ignore would skip the whole
+  # workflow and leave them pending). main always runs everything.
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          other=$(git diff --name-only "$BASE"...HEAD | grep -Ev '^(docs/|media/|mkdocs\.yml$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$)' || true)
+          if [ -n "$other" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+
+  lint:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install -e '.[dev]'
+      - if: needs.changes.outputs.code == 'true'
+        run: ruff check .
+      - if: needs.changes.outputs.code == 'true'
+        run: ruff format --check .
+      - if: needs.changes.outputs.code == 'true'
+        run: mypy
 
   test:
+    needs: changes
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
     strategy:
@@ -50,33 +71,45 @@ jobs:
           && '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"}]'
           || '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.11"},{"os":"ubuntu-latest","python":"3.12"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"},{"os":"macos-latest","python":"3.13"}]') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
-      - run: pytest --cov --cov-report=term-missing
-      - run: agentl validate examples/quickstart.yaml
-      - run: agentl run examples/quickstart.yaml
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install -e '.[dev]'
+      - if: needs.changes.outputs.code == 'true'
+        run: pytest --cov --cov-report=term-missing
+      - if: needs.changes.outputs.code == 'true'
+        run: agentl validate examples/quickstart.yaml
+      - if: needs.changes.outputs.code == 'true'
+        run: agentl run examples/quickstart.yaml
 
   build:
+    needs: changes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check --strict dist/*
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install build twine
+      - if: needs.changes.outputs.code == 'true'
+        run: python -m build
+      - if: needs.changes.outputs.code == 'true'
+        run: twine check --strict dist/*
 
   postgres:
     # Slow, rarely touched: after the merge on main, or on a pull request labeled full-ci.
