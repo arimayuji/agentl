@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release workflow: when a draft release for the tag already exists (Release Drafter), it now
+  publishes the draft on the built commit instead of only attaching files to it.
+
 ## [0.12.0] - 2026-10-18
 
 Agents that check each other and a project that is easy to join: critic, router and jury
