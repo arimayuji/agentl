@@ -111,6 +111,9 @@ class Store:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)")}
         if "outcome" not in cols:  # stores created before #188
             self._conn.execute("ALTER TABLE runs ADD COLUMN outcome TEXT")
+        if "labels" not in cols:  # stores created before run labels (#295)
+            self._conn.execute("ALTER TABLE runs ADD COLUMN labels TEXT")
+            self._conn.commit()
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache)")}
         if "expires" not in cols:  # stores created before cache TTLs
             self._conn.execute("ALTER TABLE cache ADD COLUMN expires REAL")
@@ -143,11 +146,24 @@ class Store:
     def _load(value: Any) -> Any:
         return json.loads(value) if isinstance(value, str) else value
 
-    def start_run(self, run_id: str, pipeline: str, diagram: str) -> None:
+    def start_run(
+        self, run_id: str, pipeline: str, diagram: str, labels: dict[str, str] | None = None
+    ) -> None:
         self._exec(
-            "INSERT INTO {runs} (id, pipeline, status, started, diagram) VALUES (?, ?, 'running', ?, ?)",
-            (run_id, pipeline, time.time(), diagram),
+            "INSERT INTO {runs} (id, pipeline, status, started, diagram, labels) "
+            "VALUES (?, ?, 'running', ?, ?, ?)",
+            (run_id, pipeline, time.time(), diagram, json.dumps(labels or {}, sort_keys=True)),
         )
+
+    def _with_labels(self, rows: list[dict], filters: dict[str, str] | None = None) -> list[dict]:
+        from .labels import matches
+
+        out = []
+        for r in rows:
+            r = {**r, "labels": self._load(r.get("labels")) or {}}
+            if matches(r["labels"], filters):
+                out.append(r)
+        return out
 
     def finish_run(
         self, run_id: str, status: str, error: str | None = None, outcome: str | None = None
@@ -352,19 +368,27 @@ class Store:
         self._exec(f"DELETE FROM {{seen}}{where}", tuple(v for v in (scope, key) if v is not None))
         return len(rows)
 
-    def runs(self, limit: int = 20) -> list[dict]:
-        return self._query(
-            "SELECT id, pipeline, status, outcome, started, finished, error FROM {runs} "
-            "ORDER BY started DESC LIMIT ?",
-            (limit,),
+    def runs(self, limit: int = 20, labels: dict[str, str] | None = None) -> list[dict]:
+        """The latest runs, newest first; with `labels`, only runs carrying all of them."""
+        cols = "id, pipeline, status, outcome, started, finished, error, labels"
+        if not labels:
+            rows = self._query(f"SELECT {cols} FROM {{runs}} ORDER BY started DESC LIMIT ?", (limit,))
+            return self._with_labels(rows)
+        # Labels are JSON text: filter in Python, reading a bounded window of recent runs.
+        rows = self._query(
+            f"SELECT {cols} FROM {{runs}} ORDER BY started DESC LIMIT ?", (max(limit * 50, 1000),)
         )
+        return self._with_labels(rows, labels)[:limit]
 
-    def history(self, since: float, pipeline: str | None = None) -> list[dict]:
+    def history(
+        self, since: float, pipeline: str | None = None, labels: dict[str, str] | None = None
+    ) -> list[dict]:
         """Every run started at or after `since` (epoch seconds), oldest first."""
         where = "started >= ?" + (" AND pipeline = ?" if pipeline else "")
         params: tuple = (since, pipeline) if pipeline else (since,)
-        cols = "id, pipeline, status, outcome, started, finished, error"
-        return self._query(f"SELECT {cols} FROM {{runs}} WHERE {where} ORDER BY started", params)
+        cols = "id, pipeline, status, outcome, started, finished, error, labels"
+        rows = self._query(f"SELECT {cols} FROM {{runs}} WHERE {where} ORDER BY started", params)
+        return self._with_labels(rows, labels)
 
     def recent_runs(self, pipeline: str, limit: int) -> list[dict]:
         """The latest runs of one pipeline, newest first."""
@@ -443,7 +467,7 @@ class Store:
 
     def run(self, run_id: str) -> dict | None:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
-        return rows[0] if rows else None
+        return self._with_labels(rows)[0] if rows else None
 
     def events(self, run_id: str) -> list[dict]:
         rows = self._query(
@@ -497,6 +521,7 @@ class PostgresStore(Store):
         for stmt in POSTGRES_SCHEMA:
             self._conn.execute(stmt)
         self._conn.execute("ALTER TABLE agentl_runs ADD COLUMN IF NOT EXISTS outcome TEXT")
+        self._conn.execute("ALTER TABLE agentl_runs ADD COLUMN IF NOT EXISTS labels TEXT")
 
     def _sql(self, sql: str) -> str:
         return super()._sql(sql).replace("?", "%s")

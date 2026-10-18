@@ -43,10 +43,14 @@ def _pct(values: list[float], q: float) -> float | None:
 
 
 def compute(
-    store: Any, since: float, pipeline: str | None = None, now: float | None = None
+    store: Any,
+    since: float,
+    pipeline: str | None = None,
+    now: float | None = None,
+    labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     now = now or time.time()
-    runs = store.history(since, pipeline)
+    runs = store.history(since, pipeline, labels)
     ids = {r["id"] for r in runs}
     failing: dict[str, dict] = {}
     cost: dict[str, float] = {}
@@ -97,6 +101,7 @@ def compute(
         if status in ("succeeded", "failed"):
             d[status] += 1
         p["last_run"], p["last_status"], p["last_started"] = r["id"], r["status"], r["started"]
+        p["labels"] = r.get("labels") or {}  # the latest run's labels
         if status == "failed":
             ev = failing.get(r["id"])
             step = ev["step"] if ev else None

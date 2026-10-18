@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError, create_model
 
 from . import checks, contracts, graph, llm, registry, waits
+from . import labels as run_labels
 from .notify import Notifier
 from .spec import DROP, LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
@@ -2132,7 +2133,7 @@ class Runner:
     def _not_run(self, run_id: str, status: str, reason: str) -> RunResult:
         """A run that did not start because another one holds its concurrency key."""
         result = RunResult(run_id=run_id, status=status, error=reason)
-        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
+        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
         self.store.finish_run(run_id, status, reason)
         self._emit(run_id, f"run.{status}", seconds=0.0, reason=reason)
         return result
@@ -2141,7 +2142,7 @@ class Runner:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
         self._source_records = {}
-        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec))
+        self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()
         failure: BaseException | None = None
