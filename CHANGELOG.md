@@ -217,6 +217,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Changed
 
+- The launch video on the home page is re-rendered in the brand palette.
 - The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
   feature clips on the docs site are re-rendered in the brand palette.
 - Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
