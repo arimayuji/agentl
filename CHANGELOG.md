@@ -9,30 +9,7 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-### Added
-
-- `if_changed` and `on_unchanged` on the file readers that take a `url` (`file.read`,
-  `archive.read`, `csv.read`, `json.read`, `txt.read`, `excel.read`, `parquet.read`) (#279): the
-  same ETag / Last-Modified / Content-Length / page stamp / hash check as `http.get`, so an
-  unchanged file ends the run as `no_change` (or gives no records) instead of being downloaded
-  and read again.
-
-### Changed
-
-- `on_drift: remap` on a check (#178) no longer stops the run: it hands the new layout to the
-  `map_schema` steps that read the check, which reuse a stored or pinned mapping or infer a new
-  one, and stop for review when they have `review: required`. The new layout is recorded only
-  once it has been mapped. A check with `on_drift: remap` now needs such a step.
-### Docs
-
-- Docs search: hint and empty-state text that name real connectors and commands, matches inside
-  dotted names (`html.select`, `on_drift`), a share link, and a brand-styled panel with a blue focus
-  ring and highlighted matches.
-
-### Fixed
-
-- Release workflow: when a draft release for the tag already exists (Release Drafter), it now
-  publishes the draft on the built commit instead of only attaching files to it.
+Unreleased changes live as fragments in [`changes/`](https://github.com/arimayuji/agentl/tree/main/changes) until the next release.
 
 ## [0.12.0] - 2026-10-18
 

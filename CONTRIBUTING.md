@@ -19,7 +19,7 @@ Code, Cursor or another coding agent, point it at
 ## Credit
 
 Every merged pull request counts: you show up in the README's Contributors section (built from the
-repository's commit history) and the CHANGELOG entry for your change credits you by GitHub handle.
+repository's commit history) and the changelog entry for your change credits you by GitHub handle.
 
 ## Development setup
 
@@ -48,7 +48,9 @@ pytest --cov
   heavy libraries go behind an extra in `pyproject.toml` and import them with `registry.require`.
 - **Tests never hit the network or a real LLM.** Use the `echo` provider, a fake provider or `monkeypatch`.
 - **Secrets only through environment variables.** Never commit keys, tokens or `.env` files.
-- **Public API changes** need docs in the README and an entry in `CHANGELOG.md` under `[Unreleased]`.
+- **User-facing changes** need docs and a changelog fragment: add `changes/<short-slug>.<section>.md`
+  (section: `added`, `changed`, `fixed`, `removed`, `security` or `docs`) holding the bullet text.
+  Do not edit `CHANGELOG.md`; see [`changes/README.md`](changes/README.md).
 - Keep pull requests focused. One feature or fix per PR.
 
 ## Commit messages
@@ -110,7 +112,8 @@ request code.
 
 ## Releases (maintainers)
 
-1. Move the `[Unreleased]` entries in `CHANGELOG.md` to a new version section.
+1. In the release PR, run `python tools/changelog.py build --version X.Y.Z` (check first with
+   `python tools/changelog.py preview`). It writes the fragments into `CHANGELOG.md` and deletes them.
 2. Bump `__version__` in `agentl/__init__.py`.
 3. Merge to `main`, then tag: `git tag v0.2.0 && git push origin v0.2.0`.
 4. The `release` workflow builds, publishes to PyPI and creates the GitHub release.

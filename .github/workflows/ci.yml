@@ -32,8 +32,19 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" != "pull_request" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          other=$(git diff --name-only "$BASE"...HEAD | grep -Ev '^(docs/|media/|mkdocs\.yml$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$)' || true)
+          other=$(git diff --name-only "$BASE"...HEAD | grep -Ev '^(docs/|media/|changes/|mkdocs\.yml$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$)' || true)
           if [ -n "$other" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+      # Reminder only, never fails: a change under agentl/ usually needs a changes/ fragment.
+      - name: Changelog fragment reminder
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then exit 0; fi
+          files=$(git diff --name-only --diff-filter=d "$BASE"...HEAD)
+          if echo "$files" | grep -q '^agentl/' && ! echo "$files" | grep -Eq '^changes/[^/]+\.(added|changed|fixed|removed|security|docs)\.md$'; then
+            echo "::warning::This PR changes agentl/ without a changelog fragment. If it is user-facing, add changes/<slug>.<section>.md (see changes/README.md)."
+          fi
 
   lint:
     needs: changes
