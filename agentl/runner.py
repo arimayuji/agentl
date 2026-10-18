@@ -208,7 +208,7 @@ class CheckFailed(RuntimeError):
 
 
 class SchemaDrift(CheckFailed):
-    """A check step with `on_drift: fail` or `remap` found that its input changed layout."""
+    """A check step with `on_drift: fail` found that its input changed layout."""
 
 
 class WaitTimeout(RuntimeError):
@@ -217,6 +217,11 @@ class WaitTimeout(RuntimeError):
 
 class BudgetExceeded(RuntimeError):
     """The run reached `budget.max_tokens` or `budget.max_usd`."""
+
+
+def remap_targets(spec: PipelineSpec, check_id: str) -> list[str]:
+    """The map_schema steps that read check `check_id` (`on_drift: remap`, #178)."""
+    return [s.id for s in spec.steps if s.use == "map_schema" and check_id in s.inputs]
 
 
 def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
@@ -375,6 +380,9 @@ class Runner:
         self._provider_lock = threading.Lock()
         self._arrow_out: set[str] = set()
         self._reject_stats: dict[str, list[int]] = {}  # step id -> [rejected, seen], for checks
+        # on_drift: remap (#178): map_schema step id -> (signature key, new layout) to record
+        # once that step has mapped the new layout
+        self._remap: dict[str, list[tuple[str, dict]]] = {}
         self._polars_fed: set[str] = set()
         # router id -> target step id -> the records routed to it this run (#299)
         self._routed: dict[str, dict[str, Records]] = {}
@@ -1434,14 +1442,22 @@ class Runner:
             return res.value
 
         name = self.spec.name
+        params = dict(step.with_)
+        pending = self._remap.pop(step.id, [])
+        if pending:
+            # a check upstream found a new layout and hands it here: infer a mapping for it (or
+            # reuse one stored for that layout, or the pinned `mapping:`) instead of failing
+            params["on_drift"] = "infer"
         out, new = mapping.run(
             list(data or []),
             load=lambda: self.store.mapping_get(name, step.id),
             save=lambda value: self.store.mapping_set(name, step.id, value),
             ask=ask,
             where=f"{name} {step.id}",
-            **step.with_,
+            **params,
         )
+        for memory, layout in pending:  # mapped: the new layout becomes the one on record
+            self.store.cache_set(memory, layout)
         if new is not None:
             self._emit(
                 run_id,
@@ -1599,8 +1615,10 @@ class Runner:
     def _check_drift(self, run_id: str, step: StepSpec, data: Any) -> None:
         """Compares the input's layout with the one recorded for this pipeline and step (#178).
         The first run records it. On drift emits `schema.drift`; `warn` accepts the new layout,
-        `fail` stops, `remap` stops and hands the new layout over for a reviewed mapping. An empty
-        input says nothing about the layout and is skipped."""
+        `fail` stops, `remap` passes the data on and hands the new layout to the map_schema steps
+        that read this check: they infer (or reuse) a mapping for it, and the new layout is put on
+        record only once they have mapped it. An empty input says nothing about the layout and is
+        skipped."""
         if not _is_table(data) and not data:
             return
         memory = _hash("schema-signature", self.spec.name, step.id)
@@ -1612,18 +1630,19 @@ class Runner:
         d = drift.diff(before, now)
         if d is None:
             return
-        layout = {"previous": before, "current": now} if step.on_drift == "remap" else {}
+        layout: dict[str, Any] = {}
+        if step.on_drift == "remap":
+            targets = remap_targets(self.spec, step.id)
+            layout = {"previous": before, "current": now, "remap": targets}
+            for t in targets:
+                self._remap.setdefault(t, []).append((memory, now))
         self._emit(run_id, "schema.drift", step.id, source=step.check, on_drift=step.on_drift, **d, **layout)
         if step.on_drift == "warn":
             self.store.cache_set(memory, now)
             return
-        what = drift.summary(d)
         if step.on_drift == "remap":
-            raise SchemaDrift(
-                f"'{step.check}' changed layout ({what}); it needs a new reviewed mapping "
-                "(the schema.drift event carries the previous and current layout)"
-            )
-        raise SchemaDrift(f"'{step.check}' changed layout: {what}")
+            return  # the map_schema steps reading this check map the new layout
+        raise SchemaDrift(f"'{step.check}' changed layout: {drift.summary(d)}")
 
     def _run_rules(
         self, run_id: str, step: StepSpec, records: Records, result: RunResult
