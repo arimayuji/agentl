@@ -6,9 +6,12 @@
         secret: ${INVOICES_HOOK_SECRET}
       - files: "inbox/*.csv"                      # new or changed files, local or remote glob
         every: 1m
+      - after: extract_orders                     # when that pipeline finishes (`status`)
 
 A `use: trigger` step gets what started the run: the webhook body as records, one record per new
-file (`path`, `name`, `size`, `modified`), or `{scheduled_at}` for a schedule. Runs of the same
+file (`path`, `name`, `size`, `modified`), `{scheduled_at}` for a schedule, or the finished
+parent run (`pipeline`, `run_id`, `status`, `error`) for `after`. `on_success` / `on_failure` /
+`after` actions chain pipelines and emit events (see agentl.chain). Runs of the same
 pipeline never overlap: they queue one after the other. Standard library only."""
 
 from __future__ import annotations
@@ -212,10 +215,18 @@ class Service:
         self.routes: dict[str, tuple[Any, Any]] = {}
         self.next_cron: dict[tuple[str, int], _dt.datetime] = {}
         self.next_files: dict[tuple[str, int], float] = {}
+        self.schedules: dict[tuple[str, int], Any] = {}
+        self.next_cycle: dict[tuple[str, int], tuple[_dt.date, _dt.datetime] | None] = {}
+        self.open_cycle: dict[tuple[str, int], _dt.date] = {}  # last cycle fired, until it closes
+        self.on_late: Callable[[Any, _dt.date, _dt.datetime], None] | None = None
         self.pending: dict[tuple[str, int], set[str]] = {}  # files handed to a run not finished yet
         self._stop = threading.Event()
+        from . import chain
+
+        chain.check(specs)
+        chained = {a.trigger for s in specs for a in [*s.on_success, *s.on_failure, *s.after]}
         for spec in specs:
-            if not spec.trigger:
+            if not spec.trigger and spec.name not in chained:
                 raise ValueError(f"pipeline '{spec.name}' has no trigger; add one under `trigger:`")
             for i, t in enumerate(spec.trigger):
                 if t.webhook:
@@ -224,6 +235,12 @@ class Service:
                     self.routes[t.webhook] = (spec, t)
                 if t.cron:
                     self.next_cron[(spec.name, i)] = Cron(t.cron).next_after(_now(t.timezone))
+                if t.schedule:
+                    from .schedule import Schedule
+
+                    sch = self.schedules[(spec.name, i)] = Schedule(t.schedule)
+                    nxt = sch.next_firings(_dt.datetime.now(_dt.timezone.utc), 1)
+                    self.next_cycle[(spec.name, i)] = nxt[0] if nxt else None
 
     def _default_run(self, spec: Any, records: list[dict], kind: str) -> Any:
         from .runner import Runner
@@ -231,19 +248,27 @@ class Service:
         return Runner(spec, store=self.store, trigger=records).run()
 
     def submit(
-        self, spec: Any, records: list[dict], kind: str, after: Callable[[bool], None] | None = None
+        self,
+        spec: Any,
+        records: list[dict],
+        kind: str,
+        after: Callable[[bool], None] | None = None,
+        parent: dict | None = None,
+        chain: tuple[str, ...] = (),
     ) -> None:
-        """Queue a run; runs of one pipeline go one at a time in its own worker thread."""
+        """Queue a run; runs of one pipeline go one at a time in its own worker thread. `parent`
+        and `chain` are set when another pipeline's run started this one."""
         q = self.queues.get(spec.name)
         if q is None:
             q = self.queues[spec.name] = queue.Queue()
             threading.Thread(target=self._worker, args=(q,), daemon=True, name=f"agentl-{spec.name}").start()
-        q.put((spec, records, kind, after))
+        q.put((spec, records, kind, after, parent, chain))
 
     def _worker(self, q: queue.Queue) -> None:
         while True:
-            spec, records, kind, after = q.get()
+            spec, records, kind, after, parent, chain = q.get()
             ok = False
+            result = None
             try:
                 result = self._run(spec, records, kind)
                 ok = getattr(result, "status", "succeeded") == "succeeded"
@@ -261,7 +286,53 @@ class Service:
             finally:
                 if after:
                     after(ok)
+                try:
+                    self._link(spec, result, parent)
+                    self._then(spec, records, result, (*chain, spec.name))
+                except Exception:
+                    log.exception("%s: after-run actions failed", spec.name)
                 q.task_done()
+
+    def _link(self, spec: Any, result: Any, parent: dict | None) -> None:
+        """Record parent <-> child on both runs, so the dashboard shows where a run came from."""
+        run_id = getattr(result, "run_id", None)
+        if not parent or not run_id or not hasattr(self.store, "event"):
+            return
+        status = getattr(result, "status", "failed")
+        self.store.event(run_id, "chain.parent", None, parent)
+        self.store.event(
+            parent["run_id"], "chain.child", None, {"pipeline": spec.name, "run_id": run_id, "status": status}
+        )
+
+    def _then(self, spec: Any, records: list[dict], result: Any, chain: tuple[str, ...]) -> None:
+        """Run the `on_success` / `on_failure` / `after` actions and start `after:` triggers."""
+        from . import chain as ch
+
+        m = ch.metrics(result)
+        ctx = ch.context(spec, result, records)
+        parent = {"pipeline": spec.name, "run_id": ctx["run"]["id"], "status": m["status"]}
+        actions = [*(spec.on_success if m["status"] == "succeeded" else spec.on_failure), *spec.after]
+        for a in actions:
+            if a.when and not ch.evaluate(a.when, m):
+                continue
+            if a.emit:
+                try:
+                    ch.emit(a.emit, ctx)
+                except Exception as e:  # an unreachable receiver must not stop the service
+                    log.warning("%s: emit %s failed: %s", spec.name, a.emit.topic, e)
+            elif a.trigger:
+                self._start(a.trigger, [ch.resolve(a.with_, ctx)], parent, chain)
+        for name, other in self.specs.items():
+            for t in other.trigger:
+                if t.after == spec.name and t.status in (m["status"], "any"):
+                    rec = {**parent, "error": ctx["run"]["error"]}
+                    self._start(name, [rec], parent, chain)
+
+    def _start(self, name: str, records: list[dict], parent: dict, chain: tuple[str, ...]) -> None:
+        if name in chain:  # checked when the service starts; this is the runtime backstop
+            log.error("%s: not started, it would chain in a cycle: %s", name, " -> ".join([*chain, name]))
+            return
+        self.submit(self.specs[name], records, "chain", parent=parent, chain=chain)
 
     def tick(self, now: float | None = None) -> None:
         """Start the runs that are due: schedules whose time came, and file triggers with new files.
@@ -277,6 +348,8 @@ class Service:
                     if current >= due:
                         self.next_cron[(name, i)] = Cron(t.cron).next_after(current)
                         self.submit(spec, [{"scheduled_at": due.isoformat()}], "cron")
+                elif t.schedule:
+                    self._tick_schedule(spec, i, wall)
                 elif t.kind == "every":
                     q = self.queues.get(name)
                     running = q is not None and q.unfinished_tasks > 0
@@ -297,6 +370,61 @@ class Service:
                     if files:
                         busy.update(f["path"] for f in files)
                         self.submit(spec, files, "files", after=self._seen(name, i, t.files, files))
+
+    def _cycle_key(self, name: str, i: int, d: _dt.date) -> str:
+        return f"schedule-cycle:{name}:{i}:{d.isoformat()}"
+
+    def cycle_succeeded(self, name: str, i: int, d: _dt.date) -> bool:
+        return bool(self.store.cache_get(self._cycle_key(name, i, d)))
+
+    def _tick_schedule(self, spec: Any, i: int, wall: float) -> None:
+        """Fire the schedule's due poll, skip polls of a cycle that already succeeded
+        (`stop_when: success_in_cycle`) and raise a lateness alert when a window closes empty."""
+        key, sch = (spec.name, i), self.schedules[(spec.name, i)]
+        current = _dt.datetime.fromtimestamp(wall, _dt.timezone.utc)
+        opened = self.open_cycle.get(key)
+        q = self.queues.get(spec.name)
+        busy = q is not None and q.unfinished_tasks > 0
+        if opened is not None and current > sch.window_end(opened) and not busy:
+            del self.open_cycle[key]
+            if not self.cycle_succeeded(spec.name, i, opened):
+                self._late(spec, opened, sch.start_of(opened))
+        nxt = self.next_cycle.get(key)
+        if nxt is None or current < nxt[1]:
+            return
+        d, due = nxt
+        later = sch.next_firings(current, 1)
+        self.next_cycle[key] = later[0] if later else None
+        if opened is not None and opened != d and not self.cycle_succeeded(spec.name, i, opened):
+            self.open_cycle.pop(key, None)
+            self._late(spec, opened, sch.start_of(opened))
+        self.open_cycle[key] = d
+        stop = spec.trigger[i].schedule.poll and spec.trigger[i].schedule.poll.stop_when
+        if stop and self.cycle_succeeded(spec.name, i, d):
+            return
+        if stop and busy:
+            return  # a poll of this pipeline is still running; the next one decides
+
+        def done(ok: bool) -> None:
+            if ok:
+                self.store.cache_set(self._cycle_key(spec.name, i, d), True)
+
+        record = {
+            "scheduled_at": due.isoformat(),
+            "cycle": d.isoformat(),
+            "expected_at": sch.start_of(d).isoformat(),
+        }
+        self.submit(spec, [record], "schedule", after=done)
+
+    def _late(self, spec: Any, d: _dt.date, expected: _dt.datetime) -> None:
+        log.warning(
+            "%s: late: cycle %s (expected %s) had no successful run in its window",
+            spec.name,
+            d,
+            expected.isoformat(),
+        )
+        if self.on_late:
+            self.on_late(spec, d, expected)
 
     def _seen(self, name: str, i: int, pattern: str, files: list[dict]) -> Callable[[bool], None]:
         def done(ok: bool) -> None:
@@ -368,10 +496,13 @@ class Service:
             print(f"agentl serve: webhooks on http://{host}:{port} ({', '.join(sorted(self.routes))})")
         for name, spec in self.specs.items():
             kinds = ", ".join(
-                t.cron or t.webhook or (f"files {t.files}" if t.files else f"every {t.every}")
+                t.cron
+                or (f"schedule {t.schedule.tz}" if t.schedule else None)
+                or t.webhook
+                or (f"files {t.files}" if t.files else f"after {t.after}" if t.after else f"every {t.every}")
                 for t in spec.trigger
             )
-            print(f"  {name}: {kinds}")
+            print(f"  {name}: {kinds or 'chained'}")
         try:
             while not self._stop.wait(interval):
                 self.tick()

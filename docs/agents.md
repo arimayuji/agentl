@@ -351,7 +351,8 @@ One record per call: not with `mode: batch`, `records_per_call` or `llm: [a, b]`
 ### Rules first, the agent for the rest
 
 Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
-record first; only the records they cannot handle are sent to the llm:
+record first; only the records they cannot handle are sent to the llm. (On a `check` step,
+`rules:` holds per-row check rules instead; see [Data checks](checks.md#row-rules-and-the-daily-digest).)
 
 ```yaml
 - id: parse_address
