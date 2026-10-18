@@ -194,6 +194,12 @@ They are always listed under **Changed** or **Removed**.
   `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
   limit together and the run stops after the same number of calls every time.
 
+### Changed
+
+- Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
+  the dashboard keeps green and red only for run status, and the social preview and X banner are
+  blue with a white wordmark and the yellow dot.
+
 ## [0.11.0] - 2026-10-17
 
 Data cleaning, safe re-runs and IoT: typed `cast`, expressions, reshaping, a quarantine for

@@ -1,23 +1,22 @@
 /* agentl docs theme on top of Material. Dark first; the brand colors match the videos and the dashboard. */
 
 /* ---------------------------------------------------------------- tokens */
-/* Carioca palette: white first, Rio sea blue as the main color, canary yellow, Arpoador sunset
-   orange and palm green around it. Text colors are darker variants that pass WCAG AA on white. */
+/* Brand palette: blue, yellow and white (Brazil). Blue is the main color, yellow the accent (the
+   dot), white the surface. Text colors are darker variants that pass WCAG AA on white. Green and red
+   are status colors only (dashboard), never brand accents. */
 :root {
   --agt-primary: #0070c9;       /* mar */
   --agt-primary-ink: #005ea8;
   --agt-sun: #ffd400;           /* canarinho */
   --agt-sun-ink: #8f7500;
-  --agt-sunset: #ff6b3d;        /* pôr do sol no Arpoador */
-  --agt-sunset-ink: #c8461c;
-  --agt-palm: #009c3b;          /* palmeira, bandeira */
-  --agt-palm-ink: #007a2f;
-  --agt-teal: var(--agt-palm);
+  --agt-deep: #003f7d;          /* azul profundo, second accent */
+  --agt-deep-ink: #003f7d;
+  --agt-teal: var(--agt-primary);
   --agt-amber: var(--agt-sun);
   --agt-violet: var(--agt-primary);
   --agt-indigo: var(--agt-primary);
   --agt-radius: 14px;
-  --agt-grad: linear-gradient(90deg, var(--agt-primary), var(--agt-palm) 50%, var(--agt-sunset));
+  --agt-grad: linear-gradient(90deg, var(--agt-primary), var(--agt-deep) 60%, var(--agt-sun));
 }
 
 [data-md-color-scheme="default"] {
@@ -60,8 +59,7 @@
   --agt-glow: rgba(0, 0, 0, .35);
   --agt-primary-ink: #5cb8ff;
   --agt-sun-ink: #ffd400;
-  --agt-sunset-ink: #ff8a63;
-  --agt-palm-ink: #3fd07a;
+  --agt-deep-ink: #9fd0f5;
 }
 
 /* ---------------------------------------------------------------- chrome */
@@ -139,7 +137,7 @@
 .agt-hero { position: relative; padding: 5rem 0 2.5rem; text-align: center; overflow: hidden; }
 .agt-hero::before { content: ""; position: absolute; inset: -30% -10% auto; height: 120%; pointer-events: none;
   background: radial-gradient(40rem 22rem at 30% 20%, var(--agt-glow), transparent 70%),
-              radial-gradient(36rem 20rem at 75% 30%, rgba(45, 212, 191, .10), transparent 70%); }
+              radial-gradient(36rem 20rem at 75% 30%, rgba(0, 112, 201, .10), transparent 70%); }
 .agt-hero > .agt-wrap { position: relative; }
 .agt-pill { display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem .3rem .3rem; border-radius: 99px;
   border: 1px solid var(--agt-line); background: var(--agt-surface); font-size: .68rem; color: var(--md-default-fg-color--light); }
@@ -165,7 +163,7 @@
 .agt-meta { font-size: .65rem; color: var(--md-default-fg-color--lighter); }
 
 .agt-stage { padding: 1rem 0 3rem; }
-.agt-video-frame { position: relative; border-radius: 20px; padding: 1px; background: linear-gradient(140deg, #6366f155, #1f2233 40%, #2dd4bf44);
+.agt-video-frame { position: relative; border-radius: 20px; padding: 1px; background: linear-gradient(140deg, #0070c955, #1f2233 40%, #ffd40044);
   box-shadow: 0 30px 90px var(--agt-glow); }
 .agt-video-frame video { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 19px; background: #07070b; }
 .agt-logos { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 1.4rem; margin-top: 2rem;
@@ -240,9 +238,9 @@
 .agt-hero::before {
   background:
     radial-gradient(22rem 16rem at 8% 18%, rgba(255, 194, 26, .30), transparent 70%),
-    radial-gradient(20rem 15rem at 92% 22%, rgba(255, 90, 78, .22), transparent 70%),
-    radial-gradient(24rem 16rem at 80% 95%, rgba(10, 165, 200, .18), transparent 70%),
-    radial-gradient(22rem 16rem at 15% 95%, rgba(0, 168, 107, .20), transparent 70%);
+    radial-gradient(20rem 15rem at 92% 22%, rgba(0, 112, 201, .14), transparent 70%),
+    radial-gradient(24rem 16rem at 80% 95%, rgba(0, 112, 201, .16), transparent 70%),
+    radial-gradient(22rem 16rem at 15% 95%, rgba(255, 212, 0, .22), transparent 70%);
 }
 .agt-pill-tag { background: var(--agt-primary); color: #fff; }
 .agt-grad {
@@ -255,34 +253,34 @@
 .agt-dollar { color: var(--agt-primary); }
 
 .agt-video-frame { padding: 0; background: none; border-radius: 20px;
-  box-shadow: 10px 10px 0 var(--agt-sun), 20px 20px 0 var(--agt-sunset); }
+  box-shadow: 10px 10px 0 var(--agt-sun), 20px 20px 0 var(--agt-primary); }
 .agt-video-frame video { border-radius: 20px; }
 
 .agt-kicker { background: none; -webkit-text-fill-color: currentColor; color: var(--agt-primary-ink); }
-.agt-section:nth-of-type(3n) .agt-kicker { color: var(--agt-sunset-ink); }
-.agt-section:nth-of-type(3n+1) .agt-kicker { color: var(--agt-palm-ink); }
+.agt-section:nth-of-type(3n) .agt-kicker { color: var(--agt-sun-ink); }
+.agt-section:nth-of-type(3n+1) .agt-kicker { color: var(--agt-deep-ink); }
 
 .agt-code, .agt-terminal { box-shadow: 8px 8px 0 var(--agt-line); }
 .agt-split .agt-code { box-shadow: 8px 8px 0 var(--agt-sun); }
-.agt-split .agt-terminal { box-shadow: 8px 8px 0 var(--agt-palm); }
+.agt-split .agt-terminal { box-shadow: 8px 8px 0 var(--agt-sun); }
 .agt-code .k { color: #7cc4ff; }
 
 .agt-feature { border-top: 4px solid var(--agt-primary); }
 .agt-feature:nth-child(4n+2) { border-top-color: var(--agt-sun); }
-.agt-feature:nth-child(4n+3) { border-top-color: var(--agt-sunset); }
-.agt-feature:nth-child(4n+4) { border-top-color: var(--agt-palm); }
+.agt-feature:nth-child(4n+3) { border-top-color: var(--agt-sun); }
+.agt-feature:nth-child(4n+4) { border-top-color: var(--agt-deep); }
 .agt-feature:hover { box-shadow: 8px 8px 0 var(--agt-sun); }
 
 .agt-stats strong { background: none; -webkit-text-fill-color: currentColor; }
 .agt-stats > div:nth-child(1) strong { color: var(--agt-primary-ink); }
-.agt-stats > div:nth-child(2) strong { color: var(--agt-sunset-ink); }
-.agt-stats > div:nth-child(3) strong { color: var(--agt-palm-ink); }
+.agt-stats > div:nth-child(2) strong { color: var(--agt-sun-ink); }
+.agt-stats > div:nth-child(3) strong { color: var(--agt-deep-ink); }
 .agt-stats > div:nth-child(4) strong { color: var(--agt-sun-ink); }
 
 .agt-card { border-left: 4px solid var(--agt-primary); }
 .agt-card:nth-child(2) { border-left-color: var(--agt-sun); }
-.agt-card:nth-child(3) { border-left-color: var(--agt-sunset); }
-.agt-card:nth-child(4) { border-left-color: var(--agt-palm); }
+.agt-card:nth-child(3) { border-left-color: var(--agt-sun); }
+.agt-card:nth-child(4) { border-left-color: var(--agt-deep); }
 .agt-prompt { border: 2px dashed var(--agt-primary); }
 .md-typeset .feature-clip { box-shadow: 8px 8px 0 var(--agt-sun); }
 [data-md-color-scheme="default"] .agt-logos img { filter: none; opacity: .75; }

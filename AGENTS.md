@@ -40,3 +40,7 @@ Postgres tests run only with `AGENTL_TEST_PG_DSN=postgresql://...` set.
    links, no "Generated with" footers.
 8. Everything in the repository is in English: code, identifiers, examples, sample data, docs,
    commits and PRs. No Portuguese pipeline names, step ids, field names or data values.
+9. Brand colors: blue `#0070c9` (main), yellow `#ffd400` (accent, the dot after the name) and white
+   (surfaces), with navy `#0b1b2b` for text. The logo is a white `a` with a yellow dot on blue.
+   Green and red are status colors only (success, failure), never brand accents. Brand images come
+   from `media/brand/build.py`.

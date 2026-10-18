@@ -16,10 +16,10 @@ PAGE = """<!doctype html>
 <title>agentl dashboard</title>
 <style>
 :root{--bg:#f5f8fb;--panel:#ffffff;--panel2:#eef3f8;--line:#e2e9f0;--fg:#0b1b2b;--muted:#3d5266;--faint:#8aa0b4;
---violet:#0070c9;--indigo:#005ea8;--teal:#009c3b;--green:#009c3b;--red:#d93a2b;--amber:#c99700;--blue:#0070c9;--sun:#ffd400;--sunset:#ff6b3d;
+--violet:#0070c9;--indigo:#005ea8;--teal:#003f7d;--green:#009c3b;--red:#d93a2b;--amber:#c99700;--blue:#0070c9;--sun:#ffd400;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root{--bg:#08131f;--panel:#0d1a28;--panel2:#112134;--line:#1b2d42;--fg:#f2f6fa;--muted:#9fb3c6;--faint:#5a7189;
---violet:#4aa8ff;--indigo:#2f8fe6;--teal:#2fc46a;--green:#2fc46a;--red:#ff7a6b;--amber:#ffd400;--blue:#4aa8ff}}
+--violet:#4aa8ff;--indigo:#2f8fe6;--teal:#9fd0f5;--green:#2fc46a;--red:#ff7a6b;--amber:#ffd400;--blue:#4aa8ff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(900px 600px at 15% -10%,#0070c91f,transparent 70%),radial-gradient(800px 600px at 100% 110%,#ffd40026,transparent 70%)}
 header{position:relative;display:flex;align-items:center;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line)}
@@ -55,7 +55,7 @@ svg text{font-family:Inter,system-ui,sans-serif}
 .graph{overflow:auto;display:flex;justify-content:center;padding:8px 0}
 .grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:20px;margin-top:20px}@media (max-width:1200px){.grid2{grid-template-columns:1fr}}
 .bar{display:grid;grid-template-columns:110px 1fr 90px;gap:10px;align-items:center;margin:10px 0;font-size:13px}
-.bar .track{height:10px;border-radius:5px;background:var(--panel2);overflow:hidden}.bar .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--teal),var(--violet))}
+.bar .track{height:10px;border-radius:5px;background:var(--panel2);overflow:hidden}.bar .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--violet),var(--sun))}
 .bar .n{font-family:var(--mono);color:var(--muted);text-align:right;font-size:12px}
 .events{max-height:420px;overflow:auto;font-size:13px}
 .ev{display:grid;grid-template-columns:64px 128px 92px 1fr;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line);align-items:baseline}
