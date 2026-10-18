@@ -91,6 +91,8 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `list_runs`, `get_run` | Recent runs; one run with its events |
 | `list_failures` | Recent failed runs with the failing step and error |
 | `doctor` | Why a run failed, as text |
+| `repair` | Paid option: a fix for a failed run as a checked unified diff, never applied |
+| `report` | A bug report draft for a failed run: issue-form markdown, prefilled issue URL, secrets masked |
 | `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline |
 | `list_connectors` | Installed connectors, one line each |
 | `describe_connector` | One connector's `with:` parameters, types, defaults and notes |
@@ -110,6 +112,20 @@ before side effects ask before running a pipeline or writing a file. It runs wit
   commands) unless you start the server with `agentl mcp --allow-code`;
 - `validate` and `diagram` see `${VAR}` and secret references as placeholders, so their answers
   never carry a value from your environment back to the model.
+
+## Report a bug or fix it with your agent
+
+When agentl itself fails (an internal error, a missing connector, a confusing message), ask your
+agent to draft the issue: the `report` MCP tool, or `agentl report --pipeline p.yaml` in a terminal,
+builds it locally and sends nothing. To go on to a fix pull request, point the agent at
+[CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md):
+setup, where connectors and steps live, how to add a test, the checks and the rules.
+
+```text
+agentl failed with an error that looks like a bug. Use the agentl `report` tool for the latest
+failed run with pipeline.yaml, shrink the repro to the smallest pipeline with made-up data, show
+me the issue before filing it, then follow CONTRIBUTING_AI.md to propose a fix.
+```
 
 ## Prompts
 

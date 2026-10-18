@@ -201,6 +201,20 @@ class Server:
             required=["run_id", "pipeline"],
         )
         add(
+            "report",
+            "Draft a bug report for a failed run that looks like an agentl problem: environment, "
+            "failing step, error and traceback, doctor findings, the pipeline YAML with secrets "
+            "masked, a minimal repro suggestion, the issue-form markdown and a prefilled GitHub "
+            "issue URL. Calls no LLM and sends nothing: show it to the user, who decides to file it. "
+            "To fix it too, follow .github/CONTRIBUTING_AI.md in the agentl repository.",
+            {
+                "run_id": {"type": "string", "description": "default: the latest failed run"},
+                "pipeline": {"type": "string", "description": "path to the pipeline YAML file"},
+            },
+            self.report,
+            required=[],
+        )
+        add(
             "list_connectors",
             "Installed connectors, one line each. For one connector's with: parameters, types and "
             "defaults use describe_connector.",
@@ -375,6 +389,16 @@ class Server:
     def doctor(self, args: dict) -> str:
         with open_store(self.db) as store:
             return assist.explain(assist.diagnose(store, args["run_id"]))
+
+    def report(self, args: dict) -> dict:
+        from . import report
+
+        path = str(self._path(args, "report")) if args.get("pipeline") else None
+        with open_store(self.db) as store:
+            run_id = args.get("run_id") or next((r["id"] for r in assist.failures(store, 1)), None)
+            if run_id is None:
+                raise ValueError("no failed runs in this store")
+            return report.build(store, run_id, path)
 
     def repair(self, args: dict) -> dict:
         from . import repair
