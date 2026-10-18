@@ -2,7 +2,7 @@
 cost grouped over many runs. Read from the runs and events the store already keeps (#209).
 
     agentl runs show RUN_ID [--json]
-    agentl cost [--since 30d] [--by pipeline,model] [--json]"""
+    agentl cost [--since 30d] [--by pipeline,model] [--usd-per-hour X | --lambda-memory-mb MB] [--json]"""
 
 from __future__ import annotations
 
@@ -83,64 +83,191 @@ def show_text(ledger: dict) -> str:
     return "\n".join(lines)
 
 
-def cost(store: Any, since: float, by: list[str], now: float | None = None) -> dict[str, Any]:
+LAMBDA_USD_PER_GB_SECOND = 0.0000166667
+LAMBDA_USD_PER_REQUEST = 0.0000002
+NO_MODEL = "-"
+
+
+def compute_price(
+    usd_per_hour: float | None = None,
+    lambda_memory_mb: float | None = None,
+    bill_usd: float | None = None,
+    usd_per_gb_second: float = LAMBDA_USD_PER_GB_SECOND,
+    usd_per_request: float = LAMBDA_USD_PER_REQUEST,
+) -> dict[str, Any] | None:
+    """The compute pricing for `cost`, from at most one of the three ways to price a host. None
+    when none is given (LLM cost only)."""
+    given = [
+        k
+        for k, v in (
+            ("usd_per_hour", usd_per_hour),
+            ("lambda_memory_mb", lambda_memory_mb),
+            ("bill_usd", bill_usd),
+        )
+        if v is not None
+    ]
+    if len(given) > 1:
+        raise ValueError(f"pick one compute price, got {', '.join(given)}")
+    if not given:
+        return None
+    value = float(
+        {"usd_per_hour": usd_per_hour, "lambda_memory_mb": lambda_memory_mb, "bill_usd": bill_usd}[given[0]]
+        or 0
+    )
+    if value < 0:
+        raise ValueError(f"{given[0]} must not be negative")
+    if given[0] == "usd_per_hour":
+        return {"kind": "hourly", "usd_per_hour": value}
+    if given[0] == "bill_usd":
+        return {"kind": "bill", "bill_usd": value}
+    return {
+        "kind": "lambda",
+        "memory_mb": value,
+        "usd_per_gb_second": usd_per_gb_second,
+        "usd_per_request": usd_per_request,
+    }
+
+
+def _run_compute(price: dict[str, Any], seconds: dict[str, float]) -> dict[str, float]:
+    """Compute cost of each run from its wall seconds:
+
+    - hourly: seconds / 3600 * usd_per_hour (a host, task or pod price);
+    - lambda: seconds * memory_mb / 1024 * usd_per_gb_second + usd_per_request;
+    - bill: a known bill for a shared host, split over the runs in proportion to wall seconds."""
+    if price["kind"] == "hourly":
+        return {r: s / 3600 * price["usd_per_hour"] for r, s in seconds.items()}
+    if price["kind"] == "lambda":
+        gb = price["memory_mb"] / 1024
+        return {r: s * gb * price["usd_per_gb_second"] + price["usd_per_request"] for r, s in seconds.items()}
+    total = sum(seconds.values())
+    if not total:
+        return dict.fromkeys(seconds, 0.0)
+    return {r: price["bill_usd"] * s / total for r, s in seconds.items()}
+
+
+def cost(
+    store: Any,
+    since: float,
+    by: list[str],
+    now: float | None = None,
+    compute: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """LLM calls, tokens and cost of every run started at or after `since`, grouped by `by` (any of
-    pipeline, step, model, day). Steps from before per-model spend was recorded count as model "?"."""
+    pipeline, step, model, day). Steps from before per-model spend was recorded count as model "?".
+
+    With `compute` (from `compute_price`), each run's compute cost is attributed too: the run's
+    share goes to its steps in proportion to their seconds, and a step's share to its models in
+    proportion to their LLM calls (model "-" for steps without LLM calls). A run with no finished
+    step keeps its compute under step "-"."""
     import datetime as _dt
 
     bad = [k for k in by if k not in COST_KEYS]
     if bad or not by:
         raise ValueError(f"--by takes {', '.join(COST_KEYS)}; got {', '.join(bad) or 'nothing'}")
     now = now or time.time()
-    pipelines = {r["id"]: r["pipeline"] for r in store.history(since)}
+    runs = store.history(since)
+    pipelines = {r["id"]: r["pipeline"] for r in runs}
     groups: dict[tuple, dict] = {}
+
+    def group(run_id: str, step: str, model: str, ts: float) -> dict:
+        day = _dt.datetime.fromtimestamp(ts).date().isoformat()
+        fields = {"pipeline": pipelines[run_id], "step": step, "model": model, "day": day}
+        key = tuple(fields[k] for k in by)
+        g = groups.setdefault(
+            key,
+            {
+                **{k: fields[k] for k in by},
+                "_runs": set(),
+                "llm_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                **({"compute_usd": 0.0} if compute else {}),
+            },
+        )
+        g["_runs"].add(run_id)
+        return g
+
+    steps: dict[str, list[tuple[dict, float, dict]]] = {}
     for e in store.events_of(since, STEP_END):
         if e["run_id"] not in pipelines:
             continue
         data = e["data"] or {}
+        if compute:
+            steps.setdefault(e["run_id"], []).append((e, float(data.get("seconds") or 0), data))
         if not data.get("llm_calls"):
             continue
         models = data.get("models") or {
             "?": {k: data.get(k, 0) for k in ("llm_calls", "input_tokens", "output_tokens", "cost_usd")}
         }
-        day = _dt.datetime.fromtimestamp(e["ts"]).date().isoformat()
         for model, m in models.items():
-            fields = {"pipeline": pipelines[e["run_id"]], "step": e["step"], "model": model, "day": day}
-            key = tuple(fields[k] for k in by)
-            g = groups.setdefault(
-                key,
-                {
-                    **{k: fields[k] for k in by},
-                    "_runs": set(),
-                    "llm_calls": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cost_usd": 0.0,
-                },
-            )
-            g["_runs"].add(e["run_id"])
+            g = group(e["run_id"], e["step"], model, e["ts"])
             for k in ("llm_calls", "input_tokens", "output_tokens"):
                 g[k] += int(m.get(k) or 0)
             g["cost_usd"] += float(m.get("cost_usd") or 0)
+
+    compute_total = 0.0
+    if compute:
+        wall = {r["id"]: max(0.0, r["finished"] - r["started"]) for r in runs if r["finished"]}
+        for rid, usd in _run_compute(compute, wall).items():
+            compute_total += usd
+            mine = steps.get(rid) or []
+            secs = sum(s for _, s, _ in mine)
+            if not mine or not secs:
+                run = next(r for r in runs if r["id"] == rid)
+                group(rid, NO_MODEL, NO_MODEL, run["started"])["compute_usd"] += usd
+                continue
+            for e, s, data in mine:
+                share = usd * s / secs
+                models = data.get("models") or (
+                    {"?": {"llm_calls": data["llm_calls"]}} if data.get("llm_calls") else {}
+                )
+                calls = sum(int(m.get("llm_calls") or 0) for m in models.values())
+                if not calls:
+                    group(rid, e["step"], NO_MODEL, e["ts"])["compute_usd"] += share
+                    continue
+                for model, m in models.items():
+                    part = share * int(m.get("llm_calls") or 0) / calls
+                    group(rid, e["step"], model, e["ts"])["compute_usd"] += part
+
     rows = []
     for g in groups.values():
         g["runs"] = len(g.pop("_runs"))
         g["cost_usd"] = round(g["cost_usd"], 6)
+        if compute:
+            g["compute_usd"] = round(g["compute_usd"], 6)
+            g["total_usd"] = round(g["cost_usd"] + g["compute_usd"], 6)
         rows.append(g)
-    rows.sort(key=lambda g: (-g["cost_usd"], *(str(g[k]) for k in by)))
-    total = round(sum(g["cost_usd"] for g in rows), 6)
-    return {"since": since, "until": now, "by": by, "total_usd": total, "groups": rows}
+    key = "total_usd" if compute else "cost_usd"
+    rows.sort(key=lambda g: (-g[key], *(str(g[k]) for k in by)))
+    llm = round(sum(g["cost_usd"] for g in rows), 6)
+    report: dict[str, Any] = {"since": since, "until": now, "by": by, "total_usd": llm, "groups": rows}
+    if compute:
+        report["compute"] = compute
+        report["llm_usd"] = llm
+        report["compute_usd"] = round(compute_total, 6)
+        report["total_usd"] = round(llm + compute_total, 6)
+    return report
 
 
 def cost_text(report: dict) -> str:
     if not report["groups"]:
-        return "no LLM calls in this period"
+        return "no LLM calls in this period" if "compute" not in report else "no runs in this period"
     lines = []
     for g in report["groups"]:
         label = "  ".join(str(g[k]) for k in report["by"])
-        lines.append(
+        line = (
             f"{label}  {g['llm_calls']} calls in {g['runs']} runs, "
             f"{g['input_tokens']} in / {g['output_tokens']} out tokens, ${g['cost_usd']:.4f}"
         )
-    lines.append(f"total ${report['total_usd']:.4f}")
+        if "compute_usd" in g:
+            line += f" + compute ${g['compute_usd']:.4f} = ${g['total_usd']:.4f}"
+        lines.append(line)
+    if "compute" in report:
+        lines.append(
+            f"total ${report['total_usd']:.4f} (LLM ${report['llm_usd']:.4f}, "
+            f"compute ${report['compute_usd']:.4f}, {report['compute']['kind']})"
+        )
+    else:
+        lines.append(f"total ${report['total_usd']:.4f}")
     return "\n".join(lines)

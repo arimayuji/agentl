@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl cost` attributes compute cost per pipeline, step and model (#309), for a Lambda function
+  or a shared EC2, ECS or k8s host that runs many pipelines: `--usd-per-hour X` prices each run's
+  wall time, `--lambda-memory-mb MB` uses the Lambda formula (GB-seconds plus the request fee,
+  `--usd-per-gb-second` and `--usd-per-request` override the prices) and `--bill-usd X` splits a
+  known bill over the period's runs by wall time. Groups gain `compute_usd` and `total_usd`; without
+  a compute flag the report is unchanged. Python: `ledger.cost(..., compute=ledger.compute_price(...))`.
 - `agentl repair RUN_ID --pipeline p.yaml` (#299): asks the pipeline's llm (or `--llm NAME`) for a
   fix to a failed run as a diagnosis plus a unified diff, applies it in memory, parses and lints the
   result, retries once with the errors and otherwise shows the diagnosis only. Never changes the
