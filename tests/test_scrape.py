@@ -157,6 +157,23 @@ def test_html_select_keeps_source_url_absent_when_upstream_omits_it():
     assert "source_url" not in out[0]
 
 
+@pytest.mark.parametrize("field", ["url", "source_url"])
+def test_html_select_selected_url_fields_take_precedence_over_upstream_metadata(field):
+    out = get("html.select")(
+        [
+            {
+                "html": '<a href="/product">Product</a>',
+                "url": "https://example.org/detail",
+                "source_url": "https://example.org/list",
+            }
+        ],
+        fields={field: {"select": "a", "attr": "href"}},
+    )
+
+    assert out[0][field] == "/product"
+    assert out[0]["_source"] == "https://example.org/detail"
+
+
 def test_bad_type_names_the_field():
     with pytest.raises(ValueError, match="'qty'"):
         get("html.select")([{"html": "<b>many</b>"}], fields={"qty": {"select": "b", "type": "int"}})

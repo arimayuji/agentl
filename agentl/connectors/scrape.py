@@ -166,7 +166,7 @@ def extract(
                 values.append(_convert(name, v, spec, locale, source))
             rec[name] = values if spec.get("all") else values[0]
         if keep:
-            out.append({**rec, **metadata, "_source": source})
+            out.append({**metadata, **rec, "_source": source})
     return out
 
 

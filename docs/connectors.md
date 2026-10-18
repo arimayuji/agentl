@@ -741,7 +741,8 @@ The HTML comes from `url`, `path`, or the `html` field of upstream records (`bro
 tag, `#id`, `.class`, `[attr]`, `[attr=v]` (and `^=`, `$=`, `*=`, `~=`), `:first-child`,
 `:last-child`, `:nth-child(n)`, `:nth-of-type(n)`, descendant and `>` combinators, and groups
 with commas. When the HTML comes from upstream records, each result also keeps that page's `url`
-and `source_url` when those keys are present, including when `items` produces several records.
+and `source_url` when those keys are present, including when `items` produces several records. If a
+selected field uses one of those names, its extracted value takes precedence.
 XPath is not supported.
 
 **Tables.** `html.read` takes `select` (a CSS selector for the tables to read), `header_rows: N`
