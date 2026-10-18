@@ -9,6 +9,7 @@ without the font installed. PNGs are rendered with Playwright.
 
 from __future__ import annotations
 
+import base64
 import glob
 from pathlib import Path
 
@@ -108,19 +109,30 @@ def avatar(size: int = 512) -> str:
     )
 
 
-def _wide(width: int, height: int, title: float, tagline: str, x_center: float) -> str:
+def _cube_image(x: float, y: float, size: float) -> str:
+    """The 3D cube logo (rendered by cube.py) as an embedded image, or nothing if it is missing."""
+    png = OUT / "agentl-cube-onblue-1024.png"  # lighter front face, readable on the blue
+    if not png.exists():
+        return ""
+    data = base64.b64encode(png.read_bytes()).decode()
+    return f'<image x="{x:.1f}" y="{y:.1f}" width="{size:.1f}" height="{size:.1f}" href="data:image/png;base64,{data}"/>'
+
+
+def _wide(width: int, height: int, title: float, tagline: str, x_center: float, cube: bool = False) -> str:
     d, w, top, bottom = outline("agentl", title)
     r = title * 0.075
     full = w + r * 2.6
-    gx = x_center - full / 2
+    cube_size = title * 1.9 if cube else 0.0
+    gx = x_center - full / 2 + cube_size * 0.42
     gy = height / 2 - title * 0.2 - (top + bottom) / 2
     tag, tw, _t, _b = outline(tagline, title * 0.16, TEXT_FONT, 0.01)
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
         f'<rect width="{width}" height="{height}" fill="{BLUE}"/>'
         f"{_shade(width, height)}"
-        f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, title)}</g>'
-        f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{WHITE}" '
+        + (_cube_image(gx - cube_size * 0.95, gy + top - cube_size * 0.28, cube_size) if cube else "")
+        + f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, title)}</g>'
+        f'<path transform="translate({gx + full / 2 - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{WHITE}" '
         'fill-opacity=".85"/>'
         "</svg>"
     )
@@ -188,6 +200,7 @@ def main() -> None:
         "agentl-wordmark-light.svg",
         "agentl-icon-180.png",
         "agentl-social-1280x640.png",
+        "agentl-cube-256.png",
     ):
         (docs / name).write_bytes((OUT / name).read_bytes())
     (docs / "favicon.svg").write_text(files["agentl-icon.svg"])
