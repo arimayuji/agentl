@@ -11,6 +11,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `critic:` on agent steps (#299): a reviewer llm approves each answer against `criteria` or
+  sends it back with feedback for the step's llm to regenerate, up to `max_rounds` (1 to 5,
+  default 2); records never approved go to the quarantine. Calls count for budget and spend,
+  verdicts and regenerations are cached, and each round logs a `critic.round` event.
 - Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
   and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
   accuracy per field (numbers within a tolerance), cost and the records that differ.
