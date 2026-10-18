@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from . import assist, graph, registry
+from .labels import parse_filters
 from .runner import Runner
 from .spec import PipelineSpec, SpecError, load
 from .store import open_store
+
+LABEL_HELP = "only runs with this label, key=value (repeatable)"
 
 
 def _print_event(event: dict) -> None:
@@ -470,6 +473,12 @@ def main(argv: list[str] | None = None) -> int:
     ru.add_argument("action", nargs="?", choices=["list", "show"], default="list")
     ru.add_argument("run_id", nargs="?", help="show: the run id")
     ru.add_argument("--json", action="store_true", help="show: print the ledger as JSON")
+    ru.add_argument(
+        "--label",
+        action="append",
+        metavar="KEY=VALUE",
+        help="only runs with this label, key=value (repeatable)",
+    )
 
     ct = cmd("cost", "LLM calls, tokens and cost over recent runs, grouped by pipeline, step, model or day")
     ct.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
@@ -518,6 +527,12 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
     st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
     st.add_argument("--json", action="store_true", help="print the report as JSON")
+    st.add_argument(
+        "--label",
+        action="append",
+        metavar="KEY=VALUE",
+        help="only runs with this label, key=value (repeatable)",
+    )
 
     sa = cmd("state", "cursors of incremental steps: show them, or reset to load from the start")
     sa.add_argument("action", choices=["show", "reset"])
@@ -640,7 +655,17 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--json", action="store_true", help="print the final report as JSON")
     _param_arg(bf)
 
-    ds = cmd("dashboard", "open the local dashboard")
+    ds = cmd("dashboard", "open the local dashboard, or export it as static files for a bucket")
+    ds.add_argument("action", nargs="?", choices=["serve", "export"], default="serve")
+    ds.add_argument("out_dir", nargs="?", help="export: folder to write index.html and JSON into")
+    ds.add_argument("--since", default="30d", help="export: how far back (default 30d)")
+    ds.add_argument(
+        "--label",
+        action="append",
+        metavar="KEY=VALUE",
+        help="only runs with this label, key=value (repeatable)",
+    )
+    ds.add_argument("--max-runs", type=int, default=200, help="export: runs with full detail")
     ds.add_argument("--port", type=int, default=7070)
     ds.add_argument("--host", default="127.0.0.1")
 
@@ -797,11 +822,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "runs":
             with open_store(a.db) as store:
-                runs = store.runs()
+                runs = store.runs(labels=parse_filters(a.label))
             for run in runs:
                 outcome = run.get("outcome") or "-"
                 status = f"{run['status']:<10} {outcome:<9}"
-                print(f"{run['id']}  {status} {run['pipeline']}  {run['error'] or ''}")
+                tags = " ".join(f"{k}={v}" for k, v in sorted(run["labels"].items()))
+                tags = f"  [{tags}]" if tags else ""
+                print(f"{run['id']}  {status} {run['pipeline']}{tags}  {run['error'] or ''}")
             return 0
         if a.cmd == "connectors":
             print(registry.describe(a.name) if a.name else "\n".join(registry.names()))
@@ -878,7 +905,12 @@ def main(argv: list[str] | None = None) -> int:
             from .checks import parse_duration
 
             with open_store(a.db) as store:
-                report = stats.compute(store, time.time() - parse_duration(a.since), a.pipeline)
+                report = stats.compute(
+                    store,
+                    time.time() - parse_duration(a.since),
+                    a.pipeline,
+                    labels=parse_filters(a.label),
+                )
             print(json.dumps(report, indent=2, default=str) if a.json else stats.text(report))
             return 0
         if a.cmd == "state":
@@ -991,6 +1023,23 @@ def main(argv: list[str] | None = None) -> int:
                 serve_mcp(a.db, a.root, a.allow_code)
                 return 0
             return _mcp_install(a)
+        if a.cmd == "dashboard" and a.action == "export":
+            from .checks import parse_duration
+            from .dashboard import export
+
+            if not a.out_dir:
+                print("agentl dashboard export needs an output folder", file=sys.stderr)
+                return 2
+            with open_store(a.db) as store:
+                done = export(
+                    store,
+                    a.out_dir,
+                    time.time() - parse_duration(a.since),
+                    parse_filters(a.label),
+                    max_runs=a.max_runs,
+                )
+            print(f"wrote {done['dir']}/index.html: {done['runs']} runs, {done['details']} with detail")
+            return 0
         if a.cmd == "dashboard":
             from .dashboard import serve
 

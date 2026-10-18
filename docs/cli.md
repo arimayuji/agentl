@@ -18,13 +18,15 @@ agentl connectors [NAME]
 agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
-agentl stats [PIPELINE] [--since 30d] [--json]
+agentl stats [PIPELINE] [--since 30d] [--label KEY=VALUE ...] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
 agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
 agentl dashboard [--host 127.0.0.1] [--port 7070]
+agentl dashboard export OUT_DIR [--since 30d] [--label KEY=VALUE ...] [--max-runs 200]
+agentl runs [--label KEY=VALUE ...]
 ```
 
 Every command accepts `--db` to choose the run store: a SQLite path or a `postgresql://` URL
@@ -509,3 +511,66 @@ flowchart LR
 `agentl dashboard` serves a local page, refreshed every second: recent runs, the pipeline graph with
 live status, records, duration and cost per step, KPIs, spend per step and the event timeline. It is
 self-contained (no CDN) and follows the newest run until you pick one. It binds to `127.0.0.1` by default. Do not expose it publicly: it has no authentication.
+
+### Labels and groups
+
+Pipelines that share a store (a SQLite file or Postgres via `--db`) all show up in one dashboard.
+Labels organize them. A pipeline can carry a free-form `labels:` map of strings:
+
+```yaml
+name: orders_daily
+labels: {team: sales-data, domain: orders}
+steps: ...
+```
+
+Every run also gets two inferred labels, so grouping works with no spec changes: `source` (the
+connectors of `use:` steps with no input, e.g. `postgres`) and `sink` (the connectors of `use:`
+steps that feed nothing, e.g. `csv`). Several connectors are joined with commas; a spec label with
+the same key wins. There is no fixed hierarchy: team, domain and source type are all labels.
+
+The labels are stored with each run. In the dashboard, **Groups** groups pipelines by any label key
+(group, then pipelines, then their runs) and shows per group: pipelines, how many are failing (latest
+run failed), runs, records written, and spend over 7 and 30 days. The filter box takes
+`team=sales-data, domain=orders`; the choice is kept in the URL hash. The same filter works in
+`agentl runs --label team=sales-data`, `agentl stats --label ...` and the `labels` argument of the
+MCP `pipeline_stats` tool. Filters must all match; `source=http` matches an inferred `source: csv,http`.
+
+### Static export for cloud hosting
+
+```bash
+agentl dashboard export site/ --since 30d --label team=sales-data
+```
+
+writes `index.html` with the data inlined (it works opened straight from disk), plus JSON
+snapshots: `runs.json`, `stats.json`, `groups.json` (per label key) and `runs/<id>.json` for the
+latest `--max-runs` runs. No server and no CDN, so any static host serves it: S3, GCS, Cloudflare R2
+or Pages, Azure Blob. Refresh it by running the export at the end of a pipeline or on a schedule.
+
+The export holds run metadata, stats and events only, never records, samples or rejected rows.
+Event and error text is redacted: keys that look like secrets (`token`, `password`, `api_key`,
+`dsn`, ...) become `***`, credentials in URLs, bearer tokens and API-key-shaped strings are masked.
+Review what you publish all the same.
+
+!!! warning "Authentication is the host's job"
+    The exported site has no login. Keep the bucket private and put access control in front of it:
+    Cloudflare Access on Pages or R2, IAM and signed URLs on S3 or GCS, Entra ID on Azure. The
+    live `agentl dashboard` server still has no authentication and must not be exposed.
+
+Cloudflare Pages (put Cloudflare Access on the project):
+
+```bash
+agentl dashboard export site/
+npx wrangler pages deploy site --project-name agentl-dashboard
+```
+
+Cloudflare R2 or Amazon S3 (private bucket, served through Access, CloudFront with signed URLs, or
+presigned links):
+
+```bash
+agentl dashboard export site/
+aws s3 sync site/ s3://my-private-bucket/agentl/ --delete
+# R2 speaks the S3 API: add --endpoint-url https://<account_id>.r2.cloudflarestorage.com
+```
+
+A hosted live dashboard reading a shared Postgres store, with real authentication, is not part of
+agentl yet.
