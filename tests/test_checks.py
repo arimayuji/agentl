@@ -315,3 +315,45 @@ def test_severity_spec_errors():
     with pytest.raises(Exception, match="vs_runs"):
         check(expect={"vs_runs": {"last": 0, "rows": "10%"}})
     assert check(expect={"rows": {"min": 1}}, severity={"rows": "warn"}).steps[1].severity == {"rows": "warn"}
+
+
+def test_rule_results_in_stats_and_dashboard(tmp_path, capsys):
+    from agentl import stats
+    from agentl.cli import main
+    from agentl.dashboard import PAGE, run_detail
+
+    spec = pipeline({"rows": {"min": 5}, "not_null": ["order_id"]})
+    spec.steps[1].severity = {"rows": "warn"}
+    with Store(tmp_path / "s.db") as store:
+        DATA["rows"] = sales(3)
+        warned = Runner(spec, store=store).run()
+        DATA["rows"] = sales(10)
+        Runner(spec, store=store).run()
+        DATA["rows"] = sales(10, r1={"order_id": None})
+        failed = Runner(spec, store=store).run()
+        assert failed.status == "failed"
+        detail = run_detail(store, warned.run_id)
+        report = stats.compute(store, 0)
+    assert detail["checks"] == [
+        {"step": "verify", "rule": "rows", "result": "warn"},
+        {"step": "verify", "rule": "not_null", "result": "passed"},
+    ]
+    assert "d.checks" in PAGE
+    rows = {c["rule"]: c for c in report["pipelines"][0]["checks"]}
+    assert rows["rows"] == {
+        "step": "verify",
+        "rule": "rows",
+        "runs": 3,
+        "passed": 2,
+        "warn": 1,
+        "reject": 0,
+        "failed": 0,
+        "last": "passed",
+    }
+    nn = rows["not_null"]
+    assert (nn["passed"], nn["failed"], nn["last"]) == (2, 1, "failed")
+    assert main(["stats", "--since", "3650d", "--db", str(tmp_path / "s.db")]) == 0
+    out = capsys.readouterr().out
+    assert "  checks (passed/warn/reject/failed, last):" in out
+    assert "    [verify] rows: 2/1/0/0, last passed" in out
+    assert "    [verify] not_null: 2/0/0/1, last failed" in out

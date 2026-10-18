@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Checks: each rule's result (`passed`, `warn`, `reject`, `failed`) is shown per run in a
+  Checks card on the dashboard, and `agentl stats` counts the results per check step and rule
+  with the latest one (`checks` in `--json`).
+
 ### Fixed
 
 - Release workflow: when a draft release for the tag already exists (Release Drafter), it now

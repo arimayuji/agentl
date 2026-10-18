@@ -72,6 +72,8 @@ svg text{font-family:Inter,system-ui,sans-serif}
 .tabs button.on{color:var(--fg);background:var(--panel2)}
 .ps{padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px}.ps .row{display:flex;justify-content:space-between;gap:8px}.ps .rate{font-family:var(--mono)}.ps .why{color:var(--muted);font-size:12px;margin-top:4px;overflow-wrap:anywhere}
 .ps .track{height:6px;border-radius:3px;background:var(--red);overflow:hidden;margin-top:6px}.ps .ok{height:100%;background:var(--green)}
+.ck{display:grid;grid-template-columns:140px 1fr auto;gap:10px;align-items:center;padding:5px 4px;border-bottom:1px solid var(--line);font-size:13px}.ck .st{color:var(--violet);font-family:var(--mono);font-size:12px}
+.r-passed{color:var(--green);background:#009c3b1a}.r-failed{color:var(--red);background:#d93a2b1a}.r-warn,.r-reject{color:var(--amber);background:#e8a3001a}
 .empty{color:var(--muted);padding:40px;text-align:center}.empty code{color:var(--fg)}
 .ctl{display:flex;gap:6px;margin-bottom:10px}.ctl select,.ctl input{flex:1;min-width:0;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font:inherit;font-size:12px}
 .grp{border-left:3px solid var(--sun);padding:6px 0 6px 10px;margin:8px 0}.grp .gh{display:flex;justify-content:space-between;gap:8px}.grp .gh b{color:var(--indigo)}
@@ -135,6 +137,7 @@ function render(d){
   ${kpi('Records out',num(out))}${kpi('Rejected',num(rejected),rejected?'color:var(--amber)':'')}${kpi('Tokens',num(sp.total.input_tokens+sp.total.output_tokens))}${kpi('Cost',usd(sp.total.cost_usd))}</div>
   ${run.error?`<div class="card err">${esc(run.error)}</div>`:''}
   <div class="card"><h2>Pipeline</h2><div class="graph">${graph(d)}</div></div>
+  ${(d.checks||[]).length?`<div class="card" style="margin-top:20px"><h2>Checks</h2>${d.checks.map(c=>`<div class="ck"><span class="st">${esc(c.step)}</span><span>${esc(c.rule)}</span><span class="pill r-${esc(c.result)}">${esc(c.result)}</span></div>`).join('')}</div>`:''}
   <div class="grid2"><div class="card"><h2>Spend per step</h2>${steps.length?steps.map(([k,v])=>`<div class="bar"><span>${esc(k)}</span>
     <div class="track"><div class="fill" style="width:${100*(v.cost_usd||v.input_tokens+v.output_tokens)/max}%"></div></div><span class="n">${v.cost_usd?usd(v.cost_usd):num(v.input_tokens+v.output_tokens)+' tok'}</span></div>`).join(''):'<div class="empty">No agent steps in this run.</div>'}</div>
   <div class="card"><div style="display:flex;align-items:center"><h2 style="margin:0">Events</h2><div class="tabs"><button class="${filter==='all'?'on':''}" onclick="filter='all';tick()">All</button><button class="${filter==='issues'?'on':''}" onclick="filter='issues';tick()">Issues</button></div></div>
@@ -208,7 +211,18 @@ def run_detail(store: Store, run_id: str) -> dict | None:
         "steps": step_stats(events, g),
         "events": events,
         "spend": spend(events),
+        "checks": check_results(events),
     }
+
+
+def check_results(events: list[dict]) -> list[dict]:
+    """Each check rule's result in this run (passed, warn, reject or failed), per check step."""
+    return [
+        {"step": e["step"], "rule": rule, "result": result}
+        for e in events
+        if e["type"] in ("check.passed", "check.failed")
+        for rule, result in (e["data"].get("rules") or {}).items()
+    ]
 
 
 _NODE = re.compile(r'^\s*(\w+)\W*"(\w+)<br/><small>(.*?)</small>"')

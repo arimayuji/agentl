@@ -15,6 +15,8 @@ from typing import Any
 FAILURE_EVENTS = ("step.failed", "check.failed", "budget.exceeded")
 END_EVENTS = ("run.succeeded", "run.failed", "run.skipped")
 STEP_EVENTS = ("step.succeeded", "item.rejected")
+CHECK_EVENTS = ("check.passed",)  # with check.failed: each carries `rules`, rule -> result
+RESULTS = ("passed", "warn", "reject", "failed")
 
 _NOISE = [
     (re.compile(r"https?://\S+"), "<url>"),
@@ -57,9 +59,14 @@ def compute(
     run_pipeline = {r["id"]: r["pipeline"] for r in runs}
     rejected: dict[tuple[str, str], int] = {}
     done_steps: list[dict] = []
-    for e in store.events_of(since, FAILURE_EVENTS + END_EVENTS + STEP_EVENTS):
+    checks: dict[tuple[str, str, str], dict] = {}
+    for e in store.events_of(since, FAILURE_EVENTS + END_EVENTS + STEP_EVENTS + CHECK_EVENTS):
         if e["run_id"] not in ids:
             continue
+        if e["type"] in ("check.passed", "check.failed"):
+            _count_rules(checks, run_pipeline[e["run_id"]], e)
+            if e["type"] == "check.passed":
+                continue
         if e["type"] == "item.rejected":
             k = (e["run_id"], e["step"])
             rejected[k] = rejected.get(k, 0) + int((e["data"] or {}).get("count") or 0)
@@ -116,6 +123,7 @@ def compute(
     pipelines = []
     for p in out.values():
         p["agents"] = agents.get(p["pipeline"], [])
+        p["checks"] = [row for (name, _, _), row in checks.items() if name == p["pipeline"]]
         secs = sorted(p.pop("_secs"))
         done = p["succeeded"] + p["failed"]
         p["success_rate"] = round(p["succeeded"] / done, 4) if done else None
@@ -127,6 +135,19 @@ def compute(
         pipelines.append(p)
     pipelines.sort(key=lambda p: -p["last_started"])
     return {"since": since, "until": now, "pipelines": pipelines}
+
+
+def _count_rules(out: dict[tuple[str, str, str], dict], pipeline: str, e: dict) -> None:
+    """One row per check step and rule: how many runs gave each result, and the latest one."""
+    for rule, result in ((e["data"] or {}).get("rules") or {}).items():
+        row = out.setdefault(
+            (pipeline, e["step"] or "", rule),
+            {"step": e["step"], "rule": rule, "runs": 0, **dict.fromkeys(RESULTS, 0), "last": None},
+        )
+        row["runs"] += 1
+        if result in RESULTS:
+            row[result] += 1
+        row["last"] = result
 
 
 def _per(cost: float, n: int) -> float | None:
@@ -217,6 +238,11 @@ def text(report: dict, top: int = 5) -> str:
                     f" {_usd(a['cost_per_accepted'])}/accepted ({a['accepted']} of {a['records']}),"
                     f" {a['cache_hits']} cache hits{saved}"
                 )
+        if p.get("checks"):
+            lines.append("  checks (passed/warn/reject/failed, last):")
+            for c in p["checks"]:
+                counts = "/".join(str(c[k]) for k in RESULTS)
+                lines.append(f"    [{c['step']}] {c['rule']}: {counts}, last {c['last']}")
         if p["failures"]:
             lines.append("  failures by reason:")
             for g in p["failures"][:top]:

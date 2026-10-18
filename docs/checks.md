@@ -108,7 +108,9 @@ it per rule:
 | `reject` | the failing rows are dropped and quarantined like rejected records (`item.rejected`); only for `not_null`, `unique`, `accepted` and `range` |
 
 `review` takes `fail` or `warn` too. The `check.passed` and `check.failed` events carry `rules`,
-the result of each rule in this run: `passed`, `failed`, `warn` or `reject`.
+the result of each rule in this run: `passed`, `failed`, `warn` or `reject`. The dashboard shows them
+per run in a **Checks** card, and `agentl stats` counts them per rule over the period, with the
+latest result (see [Track record](cli.md#track-record)).
 
 ## Agent review
 
