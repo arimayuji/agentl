@@ -172,7 +172,7 @@ def read_pdf(p: Path, **_: Any) -> Records:
     pypdf = require("pypdf", "pdf")
     reader = pypdf.PdfReader(str(p))
     pages = [page.extract_text() or "" for page in reader.pages]
-    return [{"path": str(p), "pages": len(pages), "text": "\n".join(pages)}]
+    return [{"path": str(p), "pages": len(pages), "text": "\f".join(pages)}]
 
 
 def read_docx(p: Path, **_: Any) -> Records:

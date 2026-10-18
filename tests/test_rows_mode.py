@@ -138,3 +138,91 @@ def test_parse_and_overlap_helpers():
 def test_rows_mode_rejects_incompatible_options(extra):
     with pytest.raises((SpecError, ValueError), match="output_mode rows"):
         pipeline(**extra)
+
+
+SEEN: list[str] = []
+
+
+class PerPage:
+    """Answers one row per page it is given; a page named 'bad' gives a short row."""
+
+    def __init__(self, spec):
+        pass
+
+    def rows(self, instruction, record, columns, previous):
+        text = record.get("text", "none")
+        SEEN.append(text)
+        pages = text if isinstance(text, list) else text.split("\f")
+        lines = ['["bad"]' if p == "bad" else f'["{p}", {len(p)}]' for p in pages]
+        return RowsChunk("\n".join(lines), False, 5, 5)
+
+    def text(self, instruction, content):
+        return ""
+
+
+register_provider("rows-pages", PerPage)
+
+
+def doc(input=None):
+    return [{"text": "p1\fp2\fp3\fbad\fp5"}, {"text": ["q1", "q2"]}, {"other": 1}]
+
+
+def paged(**step):
+    return parse(
+        {
+            "name": "paged",
+            "llm": {"default": {"provider": "rows-pages", "model": "m"}},
+            "steps": [
+                {"id": "src", "fn": "tests.test_rows_mode:doc"},
+                {
+                    "id": "rows",
+                    "input": "src",
+                    "agent": "extract",
+                    "output_mode": "rows",
+                    "output": {"item": "str", "value": "float"},
+                    **step,
+                },
+            ],
+        }
+    )
+
+
+def test_chunk_by_page_asks_once_per_group_of_pages(tmp_path):
+    SEEN.clear()
+    res = Runner(paged(chunk={"by": "page", "size": 2}), store=Store(tmp_path / "s.db")).run()
+    assert res.status == "succeeded", res.error
+    # 5 pages in groups of 2; the list of 2 pages fits one group; a record without the field goes whole
+    assert SEEN[:3] == ["p1\fp2", "p3\fbad", "p5"]
+    assert SEEN[3] == ["q1", "q2"]
+    assert [r["item"] for r in res.outputs["rows"]] == ["p1", "p2", "p3", "p5", "q1", "q2", "none"]
+    (reject,) = [r for r in res.rejected["rows"] if "_row" in r]
+    assert reject["_pages"] == [3, 4] and reject["_source"] == 0
+    assert res.spend["rows"]["llm_calls"] == 5
+
+
+def test_without_chunk_the_record_goes_whole(tmp_path):
+    SEEN.clear()
+    Runner(paged(), store=Store(tmp_path / "s.db")).run()
+    assert SEEN[0] == "p1\fp2\fp3\fbad\fp5"
+
+
+def test_chunk_needs_rows_mode():
+    with pytest.raises(SpecError, match="chunk belongs"):
+        parse(
+            {
+                "name": "x",
+                "llm": {"default": {"provider": "echo", "model": "m"}},
+                "steps": [
+                    {"id": "src", "fn": "tests.test_rows_mode:doc"},
+                    {
+                        "id": "a",
+                        "input": "src",
+                        "agent": "x",
+                        "output": {"a": "str"},
+                        "chunk": {"by": "page"},
+                    },
+                ],
+            }
+        )
+    with pytest.raises(SpecError):
+        paged(chunk={"by": "line"})

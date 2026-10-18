@@ -9,6 +9,18 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `chunk: {by: page, size: N}` on agent steps with `output_mode: rows` (#215): each input record
+  is split into groups of `size` pages (the items of `field`, default `text`, when it is a list,
+  or its text split on form feeds) and asked once per group, so a long document does not hit the
+  output limit in one answer. Rejected rows carry `_pages`.
+
+### Changed
+
+- `pdf.read` joins the text of its pages with a form feed (`\f`) instead of a newline, so
+  `chunk: {by: page}` can split it again.
+
 ### Fixed
 
 - Release workflow: when a draft release for the tag already exists (Release Drafter), it now

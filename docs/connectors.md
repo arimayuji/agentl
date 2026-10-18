@@ -72,7 +72,7 @@ the old behavior and adds no field.
 | XLSX, XLSM | `excel.read` (`sheet`, `header_row`) | one record per row | `excel` |
 | XLS (legacy Excel) | `excel.read` | one record per row | `xls` |
 | Parquet | `parquet.read` (`columns`) | one record per row | `parquet` |
-| PDF | `pdf.read` | `path`, `pages`, `text` | `pdf` |
+| PDF | `pdf.read` | `path`, `pages`, `text` (pages separated by `\f`) | `pdf` |
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |

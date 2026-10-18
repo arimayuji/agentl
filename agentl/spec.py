@@ -308,6 +308,19 @@ class AttemptSpec(BaseModel):
     on_invalid: Literal["quarantine"] = "quarantine"
 
 
+class ChunkSpec(BaseModel):
+    """`chunk: {by: page, size: 3}` on a rows-mode agent step (#215): split each input record into
+    groups of `size` pages and ask once per group, so a long document does not hit the output
+    limit in one answer. Pages are the items of `field` when it is a list, or its text split on
+    form feeds (the page separator of the pdf reader)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Literal["page"]
+    size: int = Field(default=1, ge=1, le=1000)
+    field: str = "text"
+
+
 class CriticSpec(BaseModel):
     """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
     step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
@@ -414,6 +427,7 @@ class StepSpec(BaseModel):
     output_mode: Literal["records", "rows"] = "records"
     on_truncated: Literal["continue", "fail"] = "continue"  # rows mode: answer cut by max_tokens
     max_continuations: int = Field(default=4, ge=0, le=50)
+    chunk: ChunkSpec | None = None  # rows mode: split each record by page, one call per group
     mode: Literal["sync", "batch"] = "sync"
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
@@ -578,6 +592,8 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.chunk is not None and self.output_mode != "rows":
+            raise ValueError(f"step '{self.id}': chunk belongs to agent steps with output_mode rows")
         if self.output_mode == "rows":
             if not self.agent:
                 raise ValueError(f"step '{self.id}': output_mode rows belongs to agent steps")
