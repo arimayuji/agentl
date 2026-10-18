@@ -40,12 +40,13 @@ def store(target):
     s.close()
 
 
-def test_cache_ttl_expires(store):
+def test_cache_ttl_expires(store, monkeypatch):
     k = f"ttl:{uuid.uuid4().hex}"
-    store.cache_set(k, [1], ttl=0.2)
+    store.cache_set(k, [1], ttl=60)
     store.cache_set(k + ":forever", [2])
     assert store.cache_get(k) == [1]
-    time.sleep(0.3)
+    now = time.time()
+    monkeypatch.setattr("agentl.store.time.time", lambda: now + 61)  # no sleep: slow runners stay green
     assert store.cache_get(k) is None
     assert store.cache_get(k + ":forever") == [2]
 
