@@ -16,9 +16,20 @@ They are always listed under **Changed** or **Removed**.
   only from `main` or a `v*` tag, release version input validated, a dependency review check on
   pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
   contributions" section in `CONTRIBUTING.md`.
+### Docs
+
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
 
 ### Added
 
+- Run labels and a grouped, exportable dashboard (#295): a free-form `labels:` map of strings in
+  the pipeline spec, plus inferred `source` and `sink` labels from the connector steps, stored with
+  each run. The dashboard groups pipelines by any label key with per-group pipelines, failing count,
+  runs, records written and spend over 7 and 30 days, and filters by label values. `agentl runs
+  --label k=v`, `agentl stats --label k=v` and the MCP `pipeline_stats` tool (`labels`) take the
+  same filter. `agentl dashboard export OUT_DIR [--since 30d] [--label k=v]` writes a static,
+  self-contained page plus JSON snapshots for S3, GCS, Cloudflare R2/Pages or Azure Blob, with run
+  metadata, stats and redacted events only. Authentication is left to the host.
 - `agentl repair RUN_ID --pipeline p.yaml` (#299): asks the pipeline's llm (or `--llm NAME`) for a
   fix to a failed run as a diagnosis plus a unified diff, applies it in memory, parses and lints the
   result, retries once with the errors and otherwise shows the diagnosis only. Never changes the

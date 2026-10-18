@@ -91,7 +91,7 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `list_runs`, `get_run` | Recent runs; one run with its events |
 | `list_failures` | Recent failed runs with the failing step and error |
 | `doctor` | Why a run failed, as text |
-| `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline |
+| `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline; `labels` filters runs by label |
 | `list_connectors` | Installed connectors, one line each |
 | `describe_connector` | One connector's `with:` parameters, types, defaults and notes |
 
