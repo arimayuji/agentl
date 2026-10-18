@@ -37,7 +37,7 @@ h2{margin:0 0 12px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
 .run b{font-size:15px}.meta{display:flex;gap:10px;color:var(--muted);font-size:12px;margin-top:4px;font-variant-numeric:tabular-nums}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em}
 .pill:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.s-succeeded{color:var(--green);background:#009c3b1a}.s-failed{color:var(--red);background:#d93a2b1a}.s-running{color:var(--blue);background:#0070c91a}
+.s-succeeded{color:var(--green);background:#009c3b1a}.s-failed{color:var(--red);background:#d93a2b1a}.s-running{color:var(--blue);background:#0070c91a}.s-skipped,.s-no_change{color:var(--muted);background:#8881}.s-partial{color:var(--amber);background:#e8a3001a}.s-success{color:var(--green);background:#009c3b1a}
 .s-running:before{animation:blink 1s infinite}@keyframes blink{50%{opacity:.25}}
 .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:20px}@media (max-width:1200px){.kpis{grid-template-columns:repeat(3,1fr)}}
 .kpi{padding:14px 16px}.kpi .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:700 24px/1.2 Outfit,Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;margin-top:4px}.kpi .l{color:var(--muted);font-size:12px}
@@ -104,7 +104,7 @@ function render(d){
   const kpi=(l,v,c='')=>`<div class="card kpi"><div class="l">${l}</div><div class="v" style="${c}">${v}</div></div>`;
   const evs=d.events.filter(e=>filter==='all'||/failed|rejected|exceeded/.test(e.type));
   const steps=Object.entries(sp.steps),max=Math.max(1e-9,...steps.map(([,v])=>v.cost_usd||v.input_tokens+v.output_tokens));
-  $('#detail').innerHTML=`<div class="title"><h1>${esc(run.pipeline)}</h1><span class="pill s-${run.status}">${run.status}</span><code>${esc(run.id)}</code></div>
+  $('#detail').innerHTML=`<div class="title"><h1>${esc(run.pipeline)}</h1><span class="pill s-${run.status}">${run.status}</span>${run.outcome&&run.outcome!=='success'&&run.outcome!=='failed'?`<span class="pill s-${run.outcome}">${run.outcome}</span>`:''}<code>${esc(run.id)}</code></div>
   <div class="kpis">${kpi('Duration',dur(secs))}${kpi('Steps',`${Object.values(d.steps).filter(s=>s.status==='succeeded').length}/${d.graph.nodes.length}`)}
   ${kpi('Records out',num(out))}${kpi('Rejected',num(rejected),rejected?'color:var(--amber)':'')}${kpi('Tokens',num(sp.total.input_tokens+sp.total.output_tokens))}${kpi('Cost',usd(sp.total.cost_usd))}</div>
   ${run.error?`<div class="card err">${esc(run.error)}</div>`:''}
@@ -118,7 +118,7 @@ function render(d){
 async function tick(){
   const runs=await (await fetch('/api/runs')).json();$('#count').textContent=runs.length;
   if(!pinned&&runs.length)sel=runs[0].id;  // follow the newest run until the user picks one
-  $('#runs').innerHTML=runs.map(r=>`<div class="run ${r.id===sel?'sel':''}" onclick="sel='${r.id}';pinned=true;tick()"><div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(r.pipeline)}</b><span class="pill s-${r.status}">${r.status}</span></div>
+  $('#runs').innerHTML=runs.map(r=>`<div class="run ${r.id===sel?'sel':''}" onclick="sel='${r.id}';pinned=true;tick()"><div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(r.pipeline)}</b><span class="pill s-${r.outcome||r.status}">${r.outcome||r.status}</span></div>
     <div class="meta"><span>${ago(r.started)}</span><span>${dur(r.finished?r.finished-r.started:null)}</span></div></div>`).join('')||'<div class="empty">No runs yet.<br><br><code>agentl run pipeline.yaml</code></div>';
   if(!sel){$('#detail').innerHTML='<div class="card empty">Run a pipeline and it shows up here live.</div>';return}
   const r=await fetch('/api/runs/'+sel);if(r.ok)render(await r.json());

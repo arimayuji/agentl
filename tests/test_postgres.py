@@ -80,6 +80,73 @@ def test_upsert_options_are_validated():
         write([{"id": 1}], dsn=DSN, table="x", mode="upsert", key="id", on_conflict="merge")
 
 
+def test_scd2_versions_rows(table):
+    import datetime as dt
+
+    write = get("postgres.write")
+
+    def scd2(rows, as_of, **kw):
+        return write(rows, dsn=DSN, table=table, mode="scd2", key="id", as_of=as_of, **kw)[0]
+
+    def hist():
+        q = f'SELECT * FROM "{table}" ORDER BY id, valid_from'
+        return get("postgres.read")(None, dsn=DSN, query=q)
+
+    def counts(out):
+        return out["inserted"], out["versioned"], out["unchanged"]
+
+    first = [{"id": 1, "city": "Lima", "meta": {"a": 1}}, {"id": 2, "city": "Oslo", "meta": None}]
+    assert counts(scd2(first, "2026-01-01T21:00:00-03:00")) == (2, 0, 0)
+    out = scd2(
+        [{"id": 1, "city": "Lima", "meta": {"a": 1}}, {"id": 2, "city": "Rome", "meta": None}, {"id": 3}],
+        "2026-02-01T00:00:00Z",
+    )
+    assert counts(out) == (1, 1, 1)
+    got = hist()
+    assert [(r["id"], r["city"], r["is_current"]) for r in got] == [
+        (1, "Lima", True),
+        (2, "Oslo", False),
+        (2, "Rome", True),
+        (3, None, True),
+    ]
+    utc = dt.timezone.utc
+    assert got[0]["valid_from"] == dt.datetime(2026, 1, 2, tzinfo=utc)
+    assert got[1]["valid_to"] == got[2]["valid_from"] == dt.datetime(2026, 2, 1, tzinfo=utc)
+    before = hist()
+    again = scd2(
+        [{"id": 1, "city": "Lima", "meta": {"a": 1}}, {"id": 2, "city": "Rome", "meta": None}, {"id": 3}],
+        "2026-03-01T00:00:00Z",
+    )
+    assert counts(again) == (0, 0, 3)
+    assert hist() == before
+    out = scd2(
+        [{"id": 1, "city": "Lima"}, {"id": 1, "city": "Pisa"}], "2026-04-01T00:00:00Z", on_missing="close"
+    )
+    assert counts(out) == (0, 1, 0) and out["closed"] == 2
+    assert [(r["id"], r["city"]) for r in hist() if r["is_current"]] == [(1, "Pisa")]
+    with pytest.raises(ValueError, match="before the start"):
+        scd2([{"id": 1, "city": "Bern"}], "2026-01-15T00:00:00Z")
+
+
+def test_sql_write_scd2_on_postgres(table):
+    pytest.importorskip("sqlalchemy")
+    url = DSN.replace("postgresql://", "postgresql+psycopg://", 1)
+    write = get("sql.write")
+    kw = {"url": url, "table": table, "mode": "scd2", "key": "id"}
+    write([{"id": 1, "v": "a"}], as_of="2026-01-01T00:00:00-03:00", **kw)
+    out = write([{"id": 1, "v": "b"}, {"id": 2, "v": "c"}], as_of="2026-02-01T00:00:00Z", **kw)[0]
+    assert (out["inserted"], out["versioned"], out["unchanged"]) == (1, 1, 0)
+    again = write([{"id": 1, "v": "b"}, {"id": 2, "v": "c"}], as_of="2026-03-01T00:00:00Z", **kw)[0]
+    assert again["unchanged"] == 2
+    rows = sorted(read(table), key=lambda r: (r["id"], r["valid_from"]))
+    assert [(r["id"], r["v"], r["is_current"]) for r in rows] == [
+        (1, "a", False),
+        (1, "b", True),
+        (2, "c", True),
+    ]
+    assert rows[0]["valid_from"].isoformat() == "2026-01-01T03:00:00+00:00"
+
+
 def test_append_creates_typed_table(table):
     rows = [{"id": 1, "name": "Ana", "score": 9.5, "ok": True, "meta": {"a": 1}}, {"id": 2, "name": None}]
     out = get("postgres.write")(rows, dsn=DSN, table=table)
@@ -267,6 +334,43 @@ def test_rejected_records_are_kept_and_retried_on_postgres():
         result = retry_rejected(spec, store)
         assert result is not None and result.status == "succeeded"
         assert store.rejected_get(row["id"])["retried_by"] == result.run_id
+
+
+def test_leases_and_single_flight_across_workers():
+    """Two connections act as two hosts: one lease holder, one computation (#204)."""
+    import threading
+    import time
+
+    from agentl.store import PostgresStore
+
+    a, b = PostgresStore(DSN), PostgresStore(DSN)
+    try:
+        lock = f"run:{uuid.uuid4().hex}"
+        assert a.lock_acquire(lock, "host-a", 0.3)
+        assert not b.lock_acquire(lock, "host-b", 0.3)
+        time.sleep(0.4)  # host-a died without releasing
+        assert b.lock_acquire(lock, "host-b", 5)
+        b.lock_release(lock, "host-b")
+
+        key, calls, out = f"sf:{uuid.uuid4().hex}", [], []
+
+        def compute():
+            calls.append(1)
+            time.sleep(0.3)
+            return [{"ok": True}]
+
+        threads = [
+            threading.Thread(target=lambda s=s: out.append(s.cache_compute(key, compute))) for s in (a, b)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(calls) == 1 and out == [[{"ok": True}]] * 2
+        a.cache_clear(key)
+    finally:
+        a.close()
+        b.close()
 
 
 def test_upsert_rejects_null_keys(table):

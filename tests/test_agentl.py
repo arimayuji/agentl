@@ -161,7 +161,7 @@ def test_failed_step_marks_run_failed(store):
     result = Runner(spec, store=store).run()
     assert result.status == "failed" and "nope.csv" in result.error
     types = [e["type"] for e in store.events(result.run_id)]
-    assert types == ["run.started", "step.started", "step.failed", "run.failed"]
+    assert types == ["run.started", "step.started", "step.failed", "run.alert", "run.failed"]
 
 
 def test_schema_model_types():

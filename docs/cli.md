@@ -3,7 +3,7 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
-                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo] [--json]
+                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
 agentl preview PIPELINE STEP [-n 5]
@@ -20,6 +20,7 @@ agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
+agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
@@ -80,6 +81,7 @@ set. Exit code 2 when there are errors.
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
+| AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 | AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
@@ -150,6 +152,77 @@ agentl schema > pipeline.schema.json
 name: tickets
 ```
 
+## Snapshots
+
+`agentl snapshot` runs a pipeline and compares each step's output with the JSON saved in
+`snapshots/<pipeline name>/<step>.json`. Records are matched by `--key`, not by order, and a change
+is shown field by field:
+
+```bash
+agentl snapshot pipeline.yaml --key id             # exit 1 when a step differs or has no snapshot
+agentl snapshot pipeline.yaml --key id -u          # show the diff and ask before accepting
+agentl snapshot pipeline.yaml --step clean --key id,date -u --yes   # accept without asking (CI)
+```
+
+```text
+clean: ~ [42]
+    total: 10.5 -> 12.0
+clean: + {"id": 43, "total": 3}
+clean: - {"id": 7, "total": 1}
+```
+
+Without `--key` a record is either identical or added/removed. Snapshots are written sorted by key
+so their diffs in git stay small. Without a terminal, `-u` needs `--yes`.
+
+## Test against a golden file
+
+`agentl test` runs a pipeline on fixture files and compares what each writer would write with an
+expected JSON file. Nothing leaves the machine: source steps read the fixtures, every LLM uses the
+offline `echo` provider, writers (and `rejected_to`) become pass-through steps, notifications and
+budgets are off and the run uses a throwaway store.
+
+```bash
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json --update
+agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+- `--fixture PATH` when the pipeline has one source step, `--fixture STEP=PATH` otherwise (repeat
+  it). The file is read with `file.read`, so CSV, JSON, Excel, Parquet and the other formats work.
+  Sources that read local files may run without a fixture; any other source needs one.
+- The golden file is a list of records (one writer) or `{"writer_step": [records]}`. With no writer,
+  the last step is compared. `--update` writes it from the current run.
+- Rows are matched by position, or by a field with `--key id`. `_file` and `_archive` are left out;
+  `--ignore FIELD` leaves out more.
+- Exit code 0 when everything matches, 1 on a difference or a failed run, 2 on a usage error. The
+  diff names each changed field:
+
+```text
+FAIL save: expected 3 record(s), got 2
+  ~ row 1
+      amount: expected 31, got 30
+  - missing row 2: {"id": 9, "amount": 99}
+```
+
+In GitHub Actions:
+
+```yaml
+name: pipelines
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install agentl-etl
+      - run: agentl test orders.yaml --fixture tests/stubs/orders.csv --expect tests/golden/orders.json
+```
+
+Agent steps get `echo` answers (fields copied from the record), so the golden file checks the
+pipeline's plumbing, not the model. A dry diff of inserts and updates against the destination
+(`agentl diff`) is planned.
+
 ## Run store
 
 The run store keeps run history, events and the per-record agent cache.
@@ -167,6 +240,33 @@ agentl dashboard                     # sees every run
 In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store.open_store(url)`.
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
+
+Cached results can be dropped by key, by prefix or all at once:
+
+```bash
+agentl cache clear catalog:north     # one key (a `cache` step's `key`)
+agentl cache clear 'catalog:*'       # every key starting with catalog:
+agentl cache clear --all             # everything, agent answers included
+```
+
+## Seen files
+
+`skip_seen` lets a pipeline run by hand or by a scheduler handle each file once: it drops the
+records whose key an earlier successful run already let through. Keys are stored in the run store,
+per scope, and marked only when the whole run succeeds, so a failed run handles the same files
+again next time.
+
+```yaml
+- id: new_files
+  use: skip_seen
+  input: attachments
+  with: { key: sha256, scope: weekly-reports }   # key: sha256 | path | a field
+```
+
+```bash
+agentl seen list [--scope weekly-reports]
+agentl seen forget --scope weekly-reports [KEY]  # reprocess one key, or the whole scope
+```
 
 ## Column mappings
 
@@ -271,6 +371,49 @@ rejected), by its accepted answers (records not rejected) and by the records an 
 `agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
 `cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
 their events and show up as model `unknown`.
+
+## Gaps
+
+A freshness check says the latest data is late; it does not say a day in the middle is missing.
+Declare the partitions the destination should hold under a top-level `expect:` block and
+`agentl gaps` lists the missing ones:
+
+```yaml
+expect:
+  partitions:
+    every: 1d              # or 1h
+    from: "2025-01-01"
+    skip: weekends         # weekends, weekdays or ISO dates; a list is fine
+    field: ref_date        # the column holding the partition value
+  present_in:
+    use: postgres.read     # any reader: sqlite.read, sql.read (SQLAlchemy)...
+    with: { dsn: "${DATABASE_URL}", query: "select distinct ref_date from facts" }
+```
+
+Files instead of a table: `present_in: { files: "out/{date:%Y-%m-%d}/*.parquet" }` is formatted
+once per expected period (relative to the YAML file) and the period is present when the glob
+matches anything. Composite partitions add `keys: { source: [web, store] }`: every key combination
+is expected for every period; the reader rows need a `source` column, and the glob can use
+`{source}`.
+
+```bash
+agentl gaps pipeline.yaml                         # 3 of 290 partitions missing, as ranges
+agentl gaps pipeline.yaml --since 2025-06-01 --until 2025-06-30
+agentl gaps pipeline.yaml --json                  # missing periods, ranges and commands
+agentl gaps pipeline.yaml --commands              # also print `agentl backfill` lines
+agentl gaps pipeline.yaml --fail                  # exit 1 when something is missing
+```
+
+`to:` defaults to the last complete period (yesterday, or the previous hour), in UTC. Values read
+from the destination are normalised (dates, datetimes and ISO strings) to `format:`, by default
+`%Y-%m-%d` or `%Y-%m-%dT%H`.
+
+`--commands` prints one `agentl backfill pipeline.yaml --from A --to B` line per contiguous run of
+missing days (with `--param key=value` for composite keys), for the `agentl backfill` command and
+run params of [#182](https://github.com/arimayuji/agentl/issues/182). Hourly gaps and custom
+formats get no lines. Running only the missing periods automatically (`--fill`, within request
+budgets) is not part of this release; for a scheduled check, run `agentl gaps --fail` from cron or
+CI and alert on the exit code.
 
 ## Diagram
 
