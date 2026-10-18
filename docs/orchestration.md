@@ -88,7 +88,19 @@ trigger:
 
 Each cycle fires at `at`, then on the cadence until its window (the sum of the `for`s) ends. The
 `trigger` step gets `[{scheduled_at, cycle, expected_at}]`. When a window closes with no
-successful run, `agentl serve` logs a lateness warning (`late: cycle ... had no successful run`).
+successful run, `agentl serve` logs a lateness warning and emits a `schedule.late` event with
+`cycle` and `expected_at`, which `notify:` routes like any other event (once per cycle; polls that
+come due after the window closed are skipped):
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+  rules:
+    - on: schedule.late
+      to: [slack]
+```
+
 Successful cycles are kept in the run store, so a restart does not poll them again.
 
 ```bash

@@ -395,6 +395,8 @@ class Service:
         d, due = nxt
         later = sch.next_firings(current, 1)
         self.next_cycle[key] = later[0] if later else None
+        if current > sch.window_end(d):
+            return  # a stale poll (the service slept past the window): the cycle is already closed
         if opened is not None and opened != d and not self.cycle_succeeded(spec.name, i, opened):
             self.open_cycle.pop(key, None)
             self._late(spec, opened, sch.start_of(opened))
@@ -423,6 +425,18 @@ class Service:
             d,
             expected.isoformat(),
         )
+        if spec.notify is not None:
+            from .notify import Notifier
+
+            event = {
+                "run_id": None,
+                "pipeline": spec.name,
+                "ts": time.time(),
+                "type": "schedule.late",
+                "step": None,
+                "data": {"cycle": d.isoformat(), "expected_at": expected.isoformat()},
+            }
+            Notifier(spec.notify, spec.name)(event)  # never raises: a broken channel only logs
         if self.on_late:
             self.on_late(spec, d, expected)
 

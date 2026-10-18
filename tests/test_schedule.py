@@ -164,6 +164,34 @@ def test_lateness_alert_when_window_closes_empty(tmp_path):
     assert late == [dt.date(2026, 10, 13)]  # once per cycle
 
 
+def test_lateness_is_a_notify_event(tmp_path, monkeypatch):
+    from agentl import notify
+
+    sent = []
+    monkeypatch.setitem(notify.CHANNELS, "console", lambda cfg, text, event: sent.append((text, event)))
+    spec = parse(
+        {
+            "name": "pub",
+            "trigger": [{"schedule": BASE}],
+            "notify": {
+                "channels": {"ops": {"type": "console"}},
+                "rules": [{"on": "schedule.late", "to": ["ops"]}],
+            },
+            "steps": [{"id": "a", "use": "trigger"}],
+        }
+    )
+    svc = Service([spec], Store(tmp_path / "s.db"), run=lambda s, r, k: _Res(False))
+    sch = svc.schedules[("pub", 0)]
+    svc.next_cycle[("pub", 0)] = sch.next_firings(dt.datetime(2026, 10, 13, 19, tzinfo=UTC), 1)[0]
+    _at(svc, (16, 0), (16, 46), (16, 50))
+    assert len(sent) == 1
+    text, event = sent[0]
+    assert event["type"] == "schedule.late" and event["pipeline"] == "pub" and event["step"] is None
+    assert event["data"]["cycle"] == "2026-10-13"
+    assert event["data"]["expected_at"].startswith("2026-10-13T16:00")
+    assert "schedule.late" in text and "cycle=2026-10-13" in text
+
+
 def test_cli_schedule_next(tmp_path, capsys):
     p = tmp_path / "p.yaml"
     p.write_text(
