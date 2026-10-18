@@ -93,7 +93,7 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `doctor` | Why a run failed, as text |
 | `repair` | Paid option: a fix for a failed run as a checked unified diff, never applied |
 | `report` | A bug report draft for a failed run: issue-form markdown, prefilled issue URL, secrets masked |
-| `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline |
+| `pipeline_stats` | Success rate, durations, cost and failures by reason per pipeline; `labels` filters runs by label |
 | `list_connectors` | Installed connectors, one line each |
 | `describe_connector` | One connector's `with:` parameters, types, defaults and notes |
 

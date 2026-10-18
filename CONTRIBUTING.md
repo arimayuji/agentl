@@ -16,6 +16,11 @@ bug report and a prefilled issue URL (it sends nothing). To go from there to a f
 Code, Cursor or another coding agent, point it at
 [.github/CONTRIBUTING_AI.md](.github/CONTRIBUTING_AI.md).
 
+## Credit
+
+Every merged pull request counts: you show up in the README's Contributors section (built from the
+repository's commit history) and the CHANGELOG entry for your change credits you by GitHub handle.
+
 ## Development setup
 
 ```bash
@@ -77,6 +82,17 @@ def contacts(input, since=None): ...
 
 Connectors that live outside this repo register through the `agentl.connectors`
 entry point group. Please name third-party packages `agentl-<name>`.
+
+## Security of contributions
+
+- Pull requests from forks run only the read-only checks: `changes`, `lint`, `test`, `build`,
+  docs build, benchmarks perf gate, CodeQL and dependency review. Their `GITHUB_TOKEN` can only
+  read, and none of these jobs pushes, publishes or deploys.
+- Secrets are never exposed to pull request code. Publishing to PyPI, GitHub releases and the docs
+  deploy run only on `main` or a `v*` tag, behind protected environments.
+- Changes to `.github/` (workflows, Dependabot), `pyproject.toml`, `requirements/`, `tools/` and the
+  release config need the owner's review (see `.github/CODEOWNERS`). New dependencies are checked
+  for known vulnerabilities, and third-party actions are pinned to commit SHAs.
 
 ## Releases (maintainers)
 
