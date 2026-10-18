@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Router steps (#299): `routes: {label: step_id | drop}` on an agent step labels each record
+  (answer constrained to the labels) and sends it only to that step; `drop` discards and an
+  invalid label goes to the quarantine. `rules: [{when, route}]` decide first, without an llm
+  call. Answers are cached per record and budgeted; a `route.decided` event counts each label,
+  `route_tag: true` adds `_route`, and diagrams, lint and the dashboard show routed edges.
 - `critic:` on agent steps (#299): a reviewer llm approves each answer against `criteria` or
   sends it back with feedback for the step's llm to regenerate, up to `max_rounds` (1 to 5,
   default 2); records never approved go to the quarantine. Calls count for budget and spend,

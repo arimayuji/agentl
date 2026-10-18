@@ -24,6 +24,7 @@ _SHAPES = {
     "agent": ("{{", "}}"),
     "check": ("[[", "]]"),
     "wait": ("[/", "/]"),
+    "route": ("{", "}"),
 }
 _STATUS_CLASS = {
     "running": "fill:#dbeafe,stroke:#2563eb",
@@ -35,13 +36,18 @@ _STATUS_CLASS = {
 def mermaid(spec: PipelineSpec, status: dict[str, str] | None = None) -> str:
     lines = ["flowchart LR"]
     for s in spec.steps:
-        left, right = _SHAPES[s.kind]
+        router = s.routes is not None
+        left, right = _SHAPES["route" if router else s.kind]
         detail = s.use or s.fn or ("check" if s.check else "wait" if s.wait_until else "agent")
+        detail = "route" if router else detail
         label = f"{s.id}<br/><small>{detail}</small>".replace('"', "'")
         lines.append(f'  {s.id}{left}"{label}"{right}')
+    routed = {r.id: r.targets for r in spec.steps if r.routes is not None}
     for s in spec.steps:
         for ref in s.inputs:
-            lines.append(f"  {ref} --> {s.id}")
+            labels = routed.get(ref, {}).get(s.id)
+            # a router's target edge carries the labels it receives (#299)
+            lines.append(f"  {ref} -->|{' / '.join(labels)}| {s.id}" if labels else f"  {ref} --> {s.id}")
         for ref in s.after:
             if ref not in s.inputs:
                 lines.append(f"  {ref} -.-> {s.id}")
