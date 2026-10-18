@@ -42,5 +42,6 @@ Postgres tests run only with `AGENTL_TEST_PG_DSN=postgresql://...` set.
    commits and PRs. No Portuguese pipeline names, step ids, field names or data values.
 9. Brand colors: blue `#0070c9` (main), yellow `#ffd400` (accent, the dot after the name) and white
    (surfaces), with navy `#0b1b2b` for text. The logo is a white `a` with a yellow dot on blue.
+   Blue surfaces carry the brand shade: a deep blue (`#005ea8`) circle from the top right corner.
    Green and red are status colors only (success, failure), never brand accents. Brand images come
    from `media/brand/build.py`.

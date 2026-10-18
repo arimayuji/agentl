@@ -16,6 +16,8 @@
   --agt-violet: var(--agt-primary);
   --agt-indigo: var(--agt-primary);
   --agt-radius: 14px;
+  /* the brand shade: a deep blue circle from the top right corner of blue surfaces */
+  --agt-shade: radial-gradient(circle at 100% 0, rgba(0, 94, 168, .9) 0 2.2em, transparent 2.25em);
   --agt-grad: linear-gradient(90deg, var(--agt-primary), var(--agt-deep) 60%, var(--agt-sun));
 }
 
@@ -233,7 +235,7 @@
 .md-banner { background: var(--agt-sun); color: #0b1b2b; border-bottom: 0; }
 .md-banner a, .md-banner .md-banner__button { color: #0b1b2b; }
 .md-banner strong { background: none; color: #0b1b2b; -webkit-text-fill-color: currentColor; }
-.md-typeset .md-button--primary { background: var(--agt-primary); border-color: var(--agt-primary); color: #fff; }
+.md-typeset .md-button--primary { background: var(--agt-shade), var(--agt-primary); border-color: var(--agt-primary); color: #fff; }
 
 .agt-hero::before {
   background:
@@ -248,7 +250,7 @@
   -webkit-background-clip: border-box; background-clip: border-box; color: inherit; -webkit-text-fill-color: currentColor;
   padding: 0 .08em;
 }
-.agt-btn-primary { background: var(--agt-primary); color: #fff !important; }
+.agt-btn-primary { background: var(--agt-shade), var(--agt-primary); color: #fff !important; }
 .agt-btn-primary:hover { box-shadow: 4px 4px 0 var(--agt-sun); }
 .agt-dollar { color: var(--agt-primary); }
 
