@@ -23,15 +23,13 @@ TEXT_FONT = TTFont(HERE / "font" / "inter-latin-400-normal.woff2")  # supporting
 OUT = HERE / "assets"
 TRACKING = -0.03  # em, slightly tighter than default
 
-# Carioca palette: white first, Rio blue, sun yellow, sunset orange, palm green.
+# Brand palette: blue, yellow and white (Brazil). Green and red appear only as status colors.
 WHITE = "#ffffff"
 BLUE = "#0070c9"
+BLUE_DEEP = "#005ea8"  # depth on blue backgrounds
 SUN = "#ffd400"
-SUNSET = "#ff6b3d"
-PALM = "#009c3b"
 INK = "#0b1b2b"  # text on light backgrounds
 NAVY = "#08131f"  # dark backgrounds
-MUTED = "#3d5266"  # supporting text on light backgrounds
 
 INK_DARK = WHITE  # wordmark on dark backgrounds
 INK_LIGHT = INK  # wordmark on light backgrounds
@@ -102,16 +100,6 @@ def avatar(size: int = 512) -> str:
     )
 
 
-BLOBS = [  # (cx, cy, r, color) of the soft color mesh behind the wide images
-    (0.00, 0.05, 0.24, "#9fd0f5"),  # sky
-    (0.36, -0.14, 0.20, "#fff1a8"),  # sun
-    (0.97, 0.00, 0.24, "#ffc2a8"),  # sunset
-    (1.04, 0.98, 0.26, "#a8e6c0"),  # palm
-    (0.58, 1.16, 0.22, "#fff1a8"),
-    (0.00, 1.04, 0.22, "#9fd0f5"),
-]
-
-
 def _wide(width: int, height: int, title: float, tagline: str, x_center: float) -> str:
     d, w, top, bottom = outline("agentl", title)
     r = title * 0.075
@@ -119,18 +107,13 @@ def _wide(width: int, height: int, title: float, tagline: str, x_center: float) 
     gx = x_center - full / 2
     gy = height / 2 - title * 0.2 - (top + bottom) / 2
     tag, tw, _t, _b = outline(tagline, title * 0.16, TEXT_FONT, 0.01)
-    blobs = "".join(
-        f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r_ * width:.0f}" fill="{col}"/>'
-        for x, y, r_, col in BLOBS
-    )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
-        '<defs><filter id="soft" x="-50%" y="-50%" width="200%" height="200%">'
-        f'<feGaussianBlur stdDeviation="{width * 0.07:.0f}"/></filter></defs>'
-        f'<rect width="{width}" height="{height}" fill="{WHITE}"/>'
-        f'<g filter="url(#soft)" opacity=".85">{blobs}</g>'
-        f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{INK}"/>{_sun(w, 0, title)}</g>'
-        f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{MUTED}"/>'
+        f'<rect width="{width}" height="{height}" fill="{BLUE}"/>'
+        f'<circle cx="{width:.0f}" cy="0" r="{height * 0.62:.0f}" fill="{BLUE_DEEP}" opacity=".55"/>'
+        f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, title)}</g>'
+        f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{WHITE}" '
+        'fill-opacity=".85"/>'
         "</svg>"
     )
 
