@@ -188,6 +188,19 @@ class Server:
         )
         add("doctor", "Explain why a run failed.", {"run_id": {"type": "string"}}, self.doctor)
         add(
+            "repair",
+            "Paid option: ask the pipeline's llm for a fix to a failed run, as a unified diff against "
+            "the pipeline file, checked by applying it in memory and linting. Never changes any file; "
+            "personal data and secrets in samples are masked before the llm sees them.",
+            {
+                "run_id": {"type": "string"},
+                "pipeline": {"type": "string", "description": "path to the pipeline YAML file"},
+                "llm": {"type": "string", "description": "llm name from the pipeline (default: default)"},
+            },
+            self.repair,
+            required=["run_id", "pipeline"],
+        )
+        add(
             "list_connectors",
             "Installed connectors, one line each. For one connector's with: parameters, types and "
             "defaults use describe_connector.",
@@ -362,6 +375,17 @@ class Server:
     def doctor(self, args: dict) -> str:
         with open_store(self.db) as store:
             return assist.explain(assist.diagnose(store, args["run_id"]))
+
+    def repair(self, args: dict) -> dict:
+        from . import repair
+
+        path = self._path(args, "repair")
+        with open_store(self.db) as store:
+            result = repair.propose(
+                store, args["run_id"], path.read_text(encoding="utf-8"), str(path), args.get("llm")
+            )
+        result.pop("patched", None)
+        return result
 
     def connectors(self, args: dict) -> str:
         return assist.catalog()

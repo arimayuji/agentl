@@ -339,6 +339,37 @@ agentl doctor 20261014-091203-ab12cd --suggest --pipeline invoices.yaml
 and the steps that finished. No LLM is called unless you pass `--suggest`, which adds a suggested
 fix (with `--pipeline`, the model also sees the YAML).
 
+## Repair (proposal only)
+
+```bash
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml --write invoices.fixed.yaml
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml --llm strong --json
+```
+
+`repair` asks an llm for a fix to a failed (or partial) run and answers with a diagnosis, a
+confidence, notes and a unified diff against the pipeline YAML. **Nothing is applied**: the diff is
+applied in memory only, the result is parsed and linted, and the command reports whether the patched
+YAML is valid. An invalid diff goes back to the model once with the validation errors; if the second
+answer is still invalid, only the diagnosis is shown. `--write` writes the patched YAML to a new
+file and refuses the pipeline path or an existing file. The exit code is 0 for a valid patch, 1
+otherwise. The same proposal is the read-only `repair` tool of `agentl mcp`.
+
+What is sent to the llm: what `agentl doctor` reads from the run store (failing step, error, check
+findings, rejected-record counts, finished steps), the pipeline YAML as written (`${VAR}`
+references, not their values), lint findings, and at most 3 sample records per input of the failing
+step, from the store's samples. In those samples, values that look like personal data (emails,
+phones, tax ids, cards, IBANs, IPs, names in name-like fields) are replaced by their kind, like
+`<email>`, and long values are cut. Secret values (resolved secret references and environment
+variables with secret-looking names such as `*_TOKEN`, `*_KEY`, `*_DSN`) are masked as `***` in the
+whole payload.
+
+The llm is the pipeline's `default` llm (or `--llm NAME` from its `llm:` section); with a pipeline
+that does not load, `$AGENTL_PROVIDER` / `$AGENTL_MODEL`. A repair costs one or two calls with the
+pipeline YAML and the context as input; the calls, tokens and cost (from the llm's `price:`) are
+printed, the retry is skipped once the pipeline's `budget:` is reached, and a `repair.proposed`
+event with the spend is recorded on the run.
+
 ## Track record
 
 ```bash

@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl repair RUN_ID --pipeline p.yaml` (#299): asks the pipeline's llm (or `--llm NAME`) for a
+  fix to a failed run as a diagnosis plus a unified diff, applies it in memory, parses and lints the
+  result, retries once with the errors and otherwise shows the diagnosis only. Never changes the
+  pipeline file; `--write NEW.yaml` writes the patched YAML elsewhere, `--json` prints the result.
+  Samples sent to the llm have personal data and secrets masked; spend is counted and recorded as a
+  `repair.proposed` event. Also a read-only `repair` tool in `agentl mcp`.
 - `jury:` on agent steps (#299): several llms answer each record independently and `decide:
   majority` (agreement on `fields`, strings normalized; ties are quarantined) or `decide: judge`
   (a judge llm writes the final answer) picks the result. `when: low_confidence` (default) only
