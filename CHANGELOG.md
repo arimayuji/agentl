@@ -9,6 +9,11 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Docs
+
+- Contributors showcase on the community page (who they are and what they shipped), links to
+  @useagentl on X and Instagram in the README and the site footer.
+
 ### Security
 
 - Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the

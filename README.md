@@ -11,7 +11,9 @@
   <a href="https://agentl.com.br/connectors/">Connectors</a> ·
   <a href="https://pypi.org/project/agentl-etl/">PyPI</a> ·
   <a href="https://agentl.com.br/roadmap/">Roadmap</a> ·
-  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
+  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a> ·
+  <a href="https://x.com/useagentl">X</a> ·
+  <a href="https://www.instagram.com/useagentl/">Instagram</a>
 </p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
