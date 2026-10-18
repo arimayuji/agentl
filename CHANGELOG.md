@@ -9,6 +9,13 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Security
+
+- Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the
+  latest release (`# vX.Y.Z`), least-privilege `permissions` per job, docs deploy and release
+  only from `main` or a `v*` tag, release version input validated, a dependency review check on
+  pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
+  contributions" section in `CONTRIBUTING.md`.
 ### Docs
 
 - README: a Contributors section; CONTRIBUTING says how contributors are credited.
