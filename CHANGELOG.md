@@ -217,6 +217,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Changed
 
+- New logo: a blue 3D cube with the white `a` and the yellow dot on its front face. `media/brand/cube.py`
+  renders it (transparent, and avatars on white and on blue). Favicons keep the flat `a.`.
 - The launch video on the home page is re-rendered in the brand palette.
 - The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
   feature clips on the docs site are re-rendered in the brand palette.
