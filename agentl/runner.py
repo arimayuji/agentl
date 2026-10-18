@@ -56,6 +56,8 @@ class RunResult:
     reason: str | None = None  # why the run was skipped (or failed after too many skips)
     # best-effort steps (`required: false`) that failed: {step_id: error}. The run still succeeds.
     best_effort_failed: dict[str, str] = field(default_factory=dict)
+    # steps whose output came from a fallback body (#296): {step_id: "fallback[i]"}
+    fallbacks: dict[str, str] = field(default_factory=dict)
 
     @property
     def partial(self) -> bool:
@@ -261,6 +263,63 @@ def is_transport_error(e: BaseException) -> bool:
             return True
         cur = cur.__cause__ or cur.__context__
     return False
+
+
+def _sleep(seconds: float) -> None:
+    """Waits between step retries; tests monkeypatch it."""
+    time.sleep(seconds)
+
+
+def _jitter() -> float:
+    """A factor in [0.5, 1) applied to each retry wait; tests monkeypatch it."""
+    import random
+
+    return 0.5 + random.random() / 2
+
+
+def _http_status(e: BaseException) -> tuple[int | None, Any]:
+    """(HTTP status, response headers) of the first error in the chain that carries one."""
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        resp = getattr(cur, "response", None)
+        for holder in (cur, resp):
+            code = getattr(holder, "code", None) or getattr(holder, "status_code", None)
+            if isinstance(code, int) and 100 <= code < 600:
+                return code, getattr(holder, "headers", None)
+        cur = cur.__cause__ or cur.__context__
+    return None, None
+
+
+def _retry_matches(e: BaseException, on: list[str]) -> bool:
+    if "any" in on:
+        return True
+    if "transport" in on and is_transport_error(e):
+        return True
+    status = _http_status(e)[0]
+    return status is not None and (
+        ("http_5xx" in on and status >= 500) or ("http_429" in on and status == 429)
+    )
+
+
+def _retry_after(e: BaseException) -> float | None:
+    """Seconds asked by a `Retry-After` header (a number or an HTTP date), if the error has one."""
+    headers = _http_status(e)[1]
+    value = headers.get("Retry-After") if hasattr(headers, "get") else None
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(str(value))
+        return max(0.0, (when - _dt.datetime.now(when.tzinfo or _dt.timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
 
 
 def _hash(*parts: Any) -> str:
@@ -1479,7 +1538,7 @@ class Runner:
             if step.cursor:
                 step = self._with_cursor(step)
             try:
-                out = self._run_step(run_id, step, result.outputs, result)
+                out = self._run_resilient(run_id, step, result)
             finally:
                 self._release_step(step_id)
             if step.schema_ is not None:
@@ -1544,6 +1603,78 @@ class Runner:
         )
         if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
+
+    def _run_retried(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
+        """Runs a step body, retrying it on the errors its `retries.on` lists (#296). A budget stop
+        or NoChange is never retried; a cached result returns without running anything."""
+        r = step.retries
+        attempts = r.attempts if r else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._run_step(run_id, step, result.outputs, result)
+            except (BudgetExceeded, registry.NoChange):
+                raise
+            except Exception as e:
+                if r is None or attempt == attempts or not _retry_matches(e, list(r.on)):
+                    raise
+                cap = checks.parse_duration(r.max_backoff)
+                wait = min(cap, checks.parse_duration(r.backoff) * 2 ** (attempt - 1)) * _jitter()
+                asked = _retry_after(e)
+                if asked is not None:
+                    wait = min(cap, max(wait, asked))
+                self._emit(
+                    run_id, "step.retry", step.id, attempt=attempt, error=_describe(e), wait=round(wait, 3)
+                )
+                _sleep(wait)
+        raise AssertionError("unreachable")
+
+    def _run_resilient(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
+        """The step with its retries, then each `fallback` body in order with the same input."""
+        if not step.fallback:
+            return self._run_retried(run_id, step, result)
+        try:
+            out, source = self._run_retried(run_id, step, result), "main"
+        except (BudgetExceeded, registry.NoChange):
+            raise
+        except Exception as e:
+            error, came_from, out, source = e, step.use or step.fn, None, ""
+            for i, body in enumerate(step.fallback):
+                self._emit(
+                    run_id,
+                    "step.fallback",
+                    step.id,
+                    **{"from": came_from},
+                    to=body.use,
+                    error=_describe(error),
+                )
+                alt = step.model_copy(
+                    update={
+                        "use": body.use,
+                        "fn": None,
+                        "with_": dict(body.with_),
+                        "fallback": [],
+                        "retries": None,
+                    }
+                )
+                try:
+                    out, source = self._run_step(run_id, alt, result.outputs, result), f"fallback[{i}]"
+                    break
+                except (BudgetExceeded, registry.NoChange):
+                    raise
+                except Exception as e2:
+                    error, came_from = e2, body.use
+            if not source:
+                raise error from None
+            with self._spend:
+                result.fallbacks[step.id] = source
+        if step.fallback_tag:
+            if _is_table(out):
+                import pyarrow as pa
+
+                out = out.append_column("_source", pa.array([source] * out.num_rows, pa.string()))
+            else:
+                out = [{**r, "_source": source} if isinstance(r, dict) else r for r in out]
+        return out
 
     def _sample(self, run_id: str, step_id: str, out: Any) -> None:
         """Keep the first records of each step in the store, so an agent can look at what a run
@@ -1858,6 +1989,7 @@ class Runner:
         """Set `result.outcome` from the status and the `outcomes` policy. Too many skipped runs in
         a row fail the run, so an unreachable source does not go unnoticed forever."""
         policy = self.spec.outcomes
+        by_id = {s.id: s for s in self.spec.steps}
         if result.status == "failed":
             result.outcome = "failed"
         elif result.status == "no_change":  # a source raised NoChange
@@ -1867,7 +1999,11 @@ class Runner:
             if policy.max_skipped is not None and self._skipped_streak() + 1 >= policy.max_skipped:
                 result.status, result.outcome = "failed", "failed"
                 result.error = f"{policy.max_skipped} skipped runs in a row; last: {result.reason}"
-        elif result.best_effort_failed or (policy.on_rejected == "partial" and any(result.rejected.values())):
+        elif (
+            result.best_effort_failed
+            or any(by_id[s].fallback_outcome == "partial" for s in result.fallbacks if s in by_id)
+            or (policy.on_rejected == "partial" and any(result.rejected.values()))
+        ):
             result.outcome = "partial"
         elif (
             policy.on_empty == "no_change" and self._source_records and not any(self._source_records.values())

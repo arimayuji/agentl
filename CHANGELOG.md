@@ -15,6 +15,12 @@ They are always listed under **Changed** or **Removed**.
   sends it back with feedback for the step's llm to regenerate, up to `max_rounds` (1 to 5,
   default 2); records never approved go to the quarantine. Calls count for budget and spend,
   verdicts and regenerations are cached, and each round logs a `critic.round` event.
+- Step retries and fallbacks (#296): `retries: {attempts, backoff, max_backoff, on}` on any
+  `use`, `fn` or agent step (exponential backoff with jitter, `Retry-After` honored, `on:
+  [transport, http_5xx, http_429, any]`) and `fallback: [{use, with}, ...]` on `use` and `fn`
+  steps, with `fallback_tag`, `fallback_outcome` and `fallback_writer`. New events `step.retry`
+  and `step.fallback`; a run that used a fallback ends `partial` by default. Lint rule AL011.
+
 - Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
   and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
   accuracy per field (numbers within a tolerance), cost and the records that differ.
