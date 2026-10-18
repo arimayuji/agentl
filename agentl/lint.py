@@ -272,6 +272,22 @@ def _structure_errors(raw: dict, pos: _Positions) -> list[Finding]:
                         f"{key}: {best}" if best else None,
                     )
                 )
+        routes = s.get("routes")
+        for label, target in routes.items() if isinstance(routes, dict) else []:
+            if isinstance(target, str) and target != "drop" and target not in ids:
+                line, col = pos.step(sid, "routes", label)
+                best = suggest(target, ids)
+                out.append(
+                    Finding(
+                        "AE004",
+                        "error",
+                        f"step '{sid}': route '{label}' targets '{target}', which does not exist."
+                        f"{_did_you_mean(target, ids)} Use a step id or drop",
+                        line,
+                        col,
+                        f"{label}: {best}" if best else None,
+                    )
+                )
         if s.get("agent") is not None:
             wanted = s.get("llm", "default")
             for name in wanted if isinstance(wanted, list) else [wanted]:

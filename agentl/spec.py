@@ -327,6 +327,10 @@ class CriticSpec(BaseModel):
         return v
 
 
+DROP = "drop"  # reserved route target: the record is discarded
+ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -368,6 +372,11 @@ class StepSpec(BaseModel):
     attempts: list[AttemptSpec] = Field(default_factory=list)
     # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
     critic: CriticSpec | None = None
+    # Router (#299): an agent step that labels each record with one of these keys and sends it
+    # only to the mapped step (`drop` discards it). Each target reads the router as its input and
+    # receives just its branch. `rules:` items here are {when: expr, route: label}.
+    routes: dict[str, str] | None = None
+    route_tag: bool = False  # add `_route` (the label) to each routed record
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
     # Compact rows (#215): the model answers one JSON array per line in the column order of
@@ -437,6 +446,13 @@ class StepSpec(BaseModel):
             raw = {**rest, "required": value == "required"}
         if isinstance(raw, dict) and isinstance(raw.get("after"), str):
             raw = {**raw, "after": [raw["after"]]}
+        if isinstance(raw, dict) and raw.get("routes") is not None:
+            # A router answers one label per record; its output schema is implicit.
+            if raw.get("output") not in (None, ROUTE_OUTPUT):
+                raise ValueError(
+                    f"step '{raw.get('id')}': a router has no 'output'; it answers a route label"
+                )
+            raw = {**raw, "output": dict(ROUTE_OUTPUT)}
         return raw
 
     @model_validator(mode="after")
@@ -509,7 +525,9 @@ class StepSpec(BaseModel):
                     "row rejected on its own); attempts: works with whole-record answers only"
                 )
 
-        for rule in self.rules if self.agent else []:
+        if self.routes is not None:
+            self._check_router()
+        for rule in self.rules if self.agent and self.routes is None else []:
             if not isinstance(rule, dict):
                 raise ValueError(
                     f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
@@ -612,7 +630,48 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': fallback_tag, fallback_outcome and fallback_writer need a fallback"
             )
+        if self.route_tag and self.routes is None:
+            raise ValueError(f"step '{self.id}': route_tag goes with routes")
         return self
+
+    def _check_router(self) -> None:
+        routes = self.routes or {}
+        if not self.agent:
+            raise ValueError(f"step '{self.id}': routes go on an agent step (the router's question)")
+        if not routes:
+            raise ValueError(f"step '{self.id}': routes is empty; map each label to a step id or drop")
+        for label, target in routes.items():
+            if not label.isidentifier():
+                raise ValueError(f"step '{self.id}': route label '{label}' must be an identifier")
+            if not isinstance(target, str) or not target:
+                raise ValueError(f"step '{self.id}': route '{label}' needs a target step id or drop")
+            if target == self.id:
+                raise ValueError(f"step '{self.id}': route '{label}' points at the router itself")
+        if self.critic is not None or self.output_mode == "rows":
+            raise ValueError(f"step '{self.id}': a router takes no critic and no output_mode rows")
+        from . import expr
+
+        for rule in self.rules:
+            if not (isinstance(rule, dict) and set(rule) == {"when", "route"}):
+                raise ValueError(f"step '{self.id}': a router rule is {{when: <expression>, route: <label>}}")
+            if rule["route"] not in routes:
+                raise ValueError(
+                    f"step '{self.id}': rule route '{rule['route']}' is not a label in routes "
+                    f"({', '.join(routes)})"
+                )
+            try:
+                expr.compile_expr(str(rule["when"]))
+            except expr.ExprError as e:
+                raise ValueError(f"step '{self.id}': rule when: {e}") from None
+
+    @property
+    def targets(self) -> dict[str, list[str]]:
+        """A router's targets: step id -> the labels it receives (`drop` left out)."""
+        out: dict[str, list[str]] = {}
+        for label, target in (self.routes or {}).items():
+            if target != DROP:
+                out.setdefault(target, []).append(label)
+        return out
 
     @property
     def kind(self) -> str:
@@ -1043,6 +1102,7 @@ class PipelineSpec(BaseModel):
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
             raise ValueError(f"duplicate step ids: {sorted(dup)}")
+        self._routers(ids)
         for s in self.steps:
             for ref in s.inputs:
                 if ref not in ids:
@@ -1073,6 +1133,35 @@ class PipelineSpec(BaseModel):
                 if name.startswith("mcp:") and server not in self.mcp:
                     raise ValueError(f"step '{s.id}': tool '{name}' needs an mcp server named '{server}'")
         return self
+
+    def _routers(self, ids: list[str]) -> None:
+        """Router targets (#299): each must exist and read the router (a target with no input gets
+        it), never be the router's ancestor, and take one branch only."""
+        routers = [s for s in self.steps if s.routes is not None]
+        for r in routers:
+            for target in r.targets:
+                if target not in ids:
+                    raise ValueError(f"step '{r.id}': route target '{target}' does not exist (or use drop)")
+                t = self.step(target)
+                if t.input is None and not (t.check or t.wait_until):
+                    t.input = r.id
+                if r.id not in t.inputs:
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must read the router (input: {r.id}); "
+                        "it receives only its branch"
+                    )
+                if t.kind in ("check", "wait"):
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must be a use, fn or agent step"
+                    )
+        if routers:
+            deps = {s.id: set(s.depends) & set(ids) for s in self.steps}
+            done: set[str] = set()
+            while len(done) < len(deps):
+                ready = {i for i in deps if i not in done and deps[i] <= done}
+                if not ready:
+                    raise ValueError(f"cycle between steps: {sorted(set(deps) - done)}")
+                done |= ready
 
     def step(self, step_id: str) -> StepSpec:
         return next(s for s in self.steps if s.id == step_id)

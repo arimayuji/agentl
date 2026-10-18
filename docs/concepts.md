@@ -10,6 +10,7 @@ load are labels, not different machinery.
 | Connector | `use: pdf.read` | Reading and writing files, APIs and databases |
 | Function | `fn: my_module:clean` | Your own deterministic code |
 | Agent | `agent: "..."` + `output:` | Semantic work: classify, extract, normalize, audit |
+| Router | `agent: "..."` + `routes:` | Send each record to one branch ([routing](agents.md#route-each-record-to-one-branch)) |
 
 ## Steps form a graph
 
