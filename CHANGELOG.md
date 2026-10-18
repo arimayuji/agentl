@@ -200,6 +200,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Changed
 
+- The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
+  feature clips on the docs site are re-rendered in the brand palette.
 - Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
   the top right corner of the blue surface, as on the X banner.
 - Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
