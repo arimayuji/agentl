@@ -140,7 +140,7 @@ def _wide(width: int, height: int, title: float, tagline: str, x_center: float, 
 
 def social(width: int = 1280, height: int = 640) -> str:
     """GitHub / Open Graph preview."""
-    return _wide(width, height, 190, "Agentic ETL for Python", width / 2, cube=True)
+    return _wide(width, height, 210, "Agentic ETL for Python", width / 2)
 
 
 def banner(width: int = 1500, height: int = 500) -> str:
