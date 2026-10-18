@@ -369,6 +369,8 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
+    # Layout drift (#178): compare the input's columns and types with the last run's. See drift.py.
+    on_drift: Literal["warn", "fail", "remap"] | None = None
     # `rules:` depends on the step kind (validated in _one_kind):
     # - on a `check` step (#218): per-row rules (RowRuleSpec), with `identity` naming the columns
     #   that identify a finding from one day to the next (default: the rule's column value);
@@ -478,6 +480,16 @@ class StepSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _cascade(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and isinstance(raw.get("check"), dict):
+            # `check: {schema_matches: sheet, on_drift: fail}` is short for check + on_drift
+            short = dict(raw["check"])
+            if set(short) - {"schema_matches", "on_drift"} or "schema_matches" not in short:
+                raise ValueError(
+                    f"step '{raw.get('id')}': check as a mapping takes schema_matches and on_drift"
+                )
+            if raw.get("on_drift") is not None and "on_drift" in short:
+                raise ValueError(f"step '{raw.get('id')}': on_drift is set twice")
+            raw = {**raw, "check": short["schema_matches"], "on_drift": short.get("on_drift", "warn")}
         if isinstance(raw, dict) and "sql" in raw:  # `sql: select ...` is short for `use: sql`
             if raw.get("use") not in (None, "sql"):
                 raise ValueError(f"step '{raw.get('id')}': sql is a step kind; drop 'use'")
@@ -517,8 +529,8 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
-        if self.check and not (self.expect or self.review or self.rules):
-            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or 'rules'")
+        if self.check and not (self.expect or self.review or self.rules or self.on_drift):
+            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review', 'rules' or 'on_drift'")
         if self.identity and not self.check:
             raise ValueError(f"step '{self.id}': identity belongs to check steps (with per-row rules)")
         if self.rules and not (self.check or self.agent):
@@ -528,6 +540,8 @@ class StepSpec(BaseModel):
             )
         if self.check:
             self.rules = [r if isinstance(r, RowRuleSpec) else _row_rule(self.id, r) for r in self.rules]
+        if self.on_drift and not self.check:
+            raise ValueError(f"step '{self.id}': on_drift belongs to check steps")
         unknown = [k for k in self.expect if k not in _EXPECTATIONS]
         if unknown:
             raise ValueError(

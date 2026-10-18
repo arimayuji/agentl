@@ -171,6 +171,41 @@ digest goes out with each run of the check.
 Both emit `check.failed` with `findings` (a list of `{check, detail}`), so any notification rule
 can route them; a passing check emits `check.passed`. Both show on the dashboard's timeline.
 
+## Layout drift
+
+When a supplier changes a file's format, an old parser fails obscurely or writes wrong data. A
+check with `on_drift:` records the layout of its input (columns in order and their types) per
+pipeline and step, and compares each run with the last one:
+
+```yaml
+- id: sheet_ok
+  check: { schema_matches: sheet, on_drift: fail }   # warn | fail | remap
+  input: sheet
+```
+
+`check: sheet` with `on_drift: fail` on the step is the same, and `on_drift` combines with
+`expect` and `review`. The first run records the layout; an empty input is skipped. When the
+layout changes, the step emits `schema.drift` with:
+
+- `added` and `removed`: column names.
+- `renamed`: `[old, new]` pairs, a guess: a removed and an added column of the same type with a
+  similar name or at the same position.
+- `type_changed`: `{column: [old type, new type]}`. Types are `bool`, `int`, `float`, `str`,
+  `date`, `datetime`, `list`, `dict`; mixed columns join them (`int|str`). A column with no values
+  in one of the runs is not a type change.
+
+Then:
+
+- `on_drift: warn`: the data goes on and the new layout becomes the one on record.
+- `on_drift: fail`: the step fails, nothing after it runs, and the old layout stays on record,
+  so every run fails until the source is fixed.
+- `on_drift: remap`: the step fails like `fail`, and the event also carries `previous` and
+  `current` layouts for a new reviewed mapping. To accept the new layout once the mapping is
+  updated, run once with `warn`.
+
+Route it like any event: `notify: { rules: [{ on: schema.drift, to: [ops] }] }`. Inputs on the
+Arrow fast path are read from the Table's schema, without converting it first.
+
 ## Schema contracts
 
 A contract checks each record; a check looks at the whole dataset. Put a `schema:` on the step

@@ -32,6 +32,10 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Layout drift detection (#178): a check with `on_drift: warn | fail | remap` (or `check: {schema_matches:
+  step, on_drift: ...}`) records its input's columns and types per pipeline and step and emits
+  `schema.drift` with the columns added, removed and probably renamed, and the type changes, on
+  records and Arrow inputs. `fail` and `remap` stop the run; `remap` also carries both layouts.
 - `agentl report [RUN_ID] --pipeline p.yaml`: a ready-to-paste bug report (version, Python and
   OS, failing step, error and traceback, doctor findings, the pipeline YAML with secrets and
   `${VAR:-default}` defaults masked, a minimal repro suggestion) as markdown matching the Bug report
