@@ -182,6 +182,11 @@ class Server:
             {
                 "pipeline": {"type": "string", "description": "pipeline name; all when omitted"},
                 "since": {"type": "string", "description": "how far back, e.g. 7d, 12h (default 30d)"},
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": 'only runs with all these labels, e.g. {"team": "sales-data"}',
+                },
             },
             self.pipeline_stats,
             required=[],
@@ -370,7 +375,8 @@ class Server:
 
         since = time.time() - parse_duration(args.get("since") or "30d")
         with open_store(self.db) as store:
-            return stats.compute(store, since, args.get("pipeline"))
+            filters = {str(k): str(v) for k, v in (args.get("labels") or {}).items()}
+            return stats.compute(store, since, args.get("pipeline"), labels=filters)
 
     def doctor(self, args: dict) -> str:
         with open_store(self.db) as store:
