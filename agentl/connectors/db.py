@@ -321,7 +321,7 @@ def _changeset(
     batch_size: int,
 ) -> list[dict]:
     """mode: changeset on any SQLAlchemy database, with the semantics of `sqlite.write`: one
-    SELECT of the table, a diff in Python, then batched DELETEs, UPDATEs and INSERTs."""
+    SELECT of the table, a diff in Python, then batched DELETE, UPDATE and INSERT statements."""
     from .sql import _counts
 
     sa = require("sqlalchemy", "sql")
