@@ -310,3 +310,12 @@ class NoChange(Exception):
     """Raised by a source step that found its source unchanged since the last run (for example
     `http.get` with `if_changed`). The runner ends the run as `no_change` instead of `failed`:
     the steps after it do not run and the run is not an error."""
+
+
+class EmptyRows(list):
+    """No records, but the known columns of the source (a database read), so a `sql` step can
+    still join against it (#288)."""
+
+    def __init__(self, columns: list[str]) -> None:
+        super().__init__()
+        self.columns = list(columns)

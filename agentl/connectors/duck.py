@@ -118,8 +118,11 @@ def run(
     params: dict[str, Any] | None = None,
     allow_files: bool = False,
     base_dir: str | None = None,
+    columns: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """Runs `query` with each input registered as a table named after its step id."""
+    """Runs `query` with each input registered as a table named after its step id. `columns` gives
+    the known columns of inputs that have no records (a database read, a declared `schema:`), so
+    joins against an empty input keep the other side's rows (#288)."""
     sql = read_query(query, file, base_dir)
     duckdb = require("duckdb", _EXTRA)
     con = connect(allow_files)
@@ -127,19 +130,30 @@ def run(
     try:
         for name, rows in inputs.items():
             if not _is_table(rows) and not rows:
+                quoted = name.replace(chr(34), chr(34) * 2)
+                known = (columns or {}).get(name) or getattr(rows, "columns", None)
+                if known:  # a zero-row table with the known columns, so joins against it work
+                    cols = ", ".join(f'NULL AS "{c.replace(chr(34), chr(34) * 2)}"' for c in known)
+                    con.execute(f'CREATE VIEW "{quoted}" AS SELECT {cols} WHERE false')
+                    continue
                 # No records, so no columns: a zero-row placeholder keeps `count(*)` and `select *`
-                # working; a query naming its columns returns no records (below).
-                con.execute(
-                    f'CREATE VIEW "{name.replace(chr(34), chr(34) * 2)}" AS SELECT NULL AS _empty WHERE false'
-                )
+                # working; a query naming its columns returns no records when every input is empty
+                # and fails otherwise (below).
+                con.execute(f'CREATE VIEW "{quoted}" AS SELECT NULL AS _empty WHERE false')
                 empty.append(name)
                 continue
             con.register(name, _arrow(name, rows))
         try:
             res = con.execute(sql, params or None)
-        except duckdb.BinderException:
-            if empty:
+        except duckdb.BinderException as e:
+            if empty and len(empty) == len(inputs):
                 return []
+            if empty:  # a join against it would silently drop the other side's rows (#288)
+                names = ", ".join(f"'{n}'" for n in empty)
+                raise ValueError(
+                    f"sql step '{step}': input {names} has no records and no known columns, so the "
+                    f"query cannot reference its columns ({e}); declare `schema:` on that step"
+                ) from e
             raise
         out = res.to_arrow_table() if hasattr(res, "to_arrow_table") else res.fetch_arrow_table()
         return out.to_pylist()

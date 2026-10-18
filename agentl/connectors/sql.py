@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from ..registry import Rejects, connector, stream_reader, stream_writer
+from ..registry import EmptyRows, Rejects, connector, stream_reader, stream_writer
 from ._util import (
     SCD2_COLUMNS,
     changeset_options,
@@ -25,7 +25,11 @@ from ._util import (
 def sqlite_read(input: Any = None, db: str = "", query: str = "", params: list | None = None) -> list[dict]:
     with closing(sqlite3.connect(db)) as conn, conn:
         conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(query, params or [])]
+        cur = conn.execute(query, params or [])
+        out = [dict(r) for r in cur]
+        if out or not cur.description:
+            return out
+        return EmptyRows([d[0] for d in cur.description])  # keeps the columns for a `sql` step (#288)
 
 
 @stream_reader("sqlite.read")
