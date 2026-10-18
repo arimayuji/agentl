@@ -382,6 +382,49 @@ rejected `max_rounds` times:
     extra calls. Use a cheap reviewer for broad checks, keep `max_rounds` low and try it with
     `agentl eval` on a golden set before turning it on for a large input.
 
+### A jury of llms decides
+
+`jury:` asks several llms the same question for a record, each on its own (same instruction and
+`output:`), and a decision picks the answer:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: { category: str, confidence: float }
+  escalate_below: 0.7
+  jury:
+    llms: [a, b, c]        # at least 2 different entries in `llm:` (3 or more for a real majority)
+    decide: majority       # majority (default) | judge
+    # judge: strong        # required with decide: judge, an entry in `llm:`
+    when: low_confidence   # low_confidence (default) | always
+    fields: [category]     # optional: the fields that must agree (default: every output field)
+  jury_tag: true           # optional: add `_agreement` (share of jurors behind the answer)
+```
+
+- `majority`: answers are grouped by `fields` (strings compared after strip and casefold). The
+  biggest group wins when it has at least two jurors and no other group is as big; its first
+  answer is kept. A tie, or fewer than two agreeing jurors, sends the record to the quarantine
+  with `_error` and `_jury` (each juror's answer).
+- `judge`: when the jurors are not unanimous, the judge llm reads the record and every juror's
+  answer and writes the final answer in the step's schema. Unanimous answers skip the judge.
+- `when: low_confidence`: the step's llm answers first; only records whose `confidence` is below
+  `escalate_below` go to the jury. It needs a `confidence` output field and `escalate_below`
+  (there is no confidence to look at otherwise, so the spec is rejected: use `when: always`).
+  `when: always`: the jurors answer every record and the step's llm is not asked.
+- A juror whose answer is invalid has no vote. The step's spend counts
+  `"jury": {"unanimous", "majority", "judged", "tied"}` and per-model calls; each run logs one
+  `jury.decided` event per step with the same counts (no record data).
+- Juror and judge calls go through the budget. Each juror answer is cached on the record, the
+  juror llm, the instruction and the schema, and the judge on the answers it saw; the decision is
+  cached too, so a re-run pays nothing and changing `decide:` reuses the jurors' answers.
+- With `critic:`, the jury decides first and the critic reviews the decided answer. Works with
+  `rules:` and tools. Not with `output_mode: rows`, `mode: batch` or `records_per_call`.
+
+!!! note "Cost"
+    N jurors cost N calls per record they see, plus one for the judge when they disagree. `when:
+    low_confidence` keeps it cheap: one call for confident records, the jury only for the rest.
+    Use `when: always` on small, high-stakes inputs and check the gain with `agentl eval`.
+
 ### Rules first, the agent for the rest
 
 Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each

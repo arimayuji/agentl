@@ -11,6 +11,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `jury:` on agent steps (#299): several llms answer each record independently and `decide:
+  majority` (agreement on `fields`, strings normalized; ties are quarantined) or `decide: judge`
+  (a judge llm writes the final answer) picks the result. `when: low_confidence` (default) only
+  sends records below `escalate_below`; `jury_tag: true` adds `_agreement`. Calls count for
+  budget and spend, juror and judge answers are cached, the spend counts `jury` outcomes and a
+  `jury.decided` event is logged per step.
 - `critic:` on agent steps (#299): a reviewer llm approves each answer against `criteria` or
   sends it back with feedback for the step's llm to regenerate, up to `max_rounds` (1 to 5,
   default 2); records never approved go to the quarantine. Calls count for budget and spend,

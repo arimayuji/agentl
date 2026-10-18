@@ -224,6 +224,8 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
         ]
     elif step.escalate:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
+    if step.jury is not None:  # the cached answer is the jury's decision
+        llm_key = [llm_key, step.jury.model_dump(), step.jury_tag]
     # records_per_call is not part of the key: the answer per record is the same.
     if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
         return _hash("agent-rows", step.agent, step.output, llm_key, rec)
@@ -874,6 +876,31 @@ class Runner:
                 return done(rec, out, name)
             return None, {**rec, "_error": str(last)}
 
+        jury_counts = {"unanimous": 0, "majority": 0, "judged": 0, "tied": 0}
+
+        def decide(rec: dict) -> tuple[dict | None, dict | None]:
+            """`jury:` (#299): with `when: always` the jurors answer instead of the step's llm;
+            with `low_confidence` only a first answer below `escalate_below` goes to the jury."""
+            jury = step.jury
+            if jury is None:
+                return one(rec)
+            if jury.when == "low_confidence":
+                slot = one(rec)
+                if slot[0] is None or not unsure(slot[0]):
+                    return slot
+            slot, how = self._jury(run_id, step, rec, schema, result, call_tool, tool_defs)
+            with self._spend:
+                jury_counts[how] += 1
+                per = result.spend[step.id].setdefault(
+                    "jury", {"unanimous": 0, "majority": 0, "judged": 0, "tied": 0}
+                )
+                per[how] += 1
+            good = slot[0]
+            if good is not None and cacheable:
+                out = {k: good[k] for k in [*schema.model_fields, "_agreement"] if k in good}
+                self.store.cache_set(key(rec), out, self._ttl(step))
+            return slot
+
         batch_schema = _batch_schema(step.id, schema)
 
         def many(group: list[dict]) -> list[tuple[dict | None, dict | None]]:
@@ -934,12 +961,14 @@ class Runner:
             todo, groups = failed, [[i] for i in failed]
         with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
             if size == 1:
-                answers = pool.map(lambda g: [one(records[g[0]])], groups)
+                answers = pool.map(lambda g: [decide(records[g[0]])], groups)
             else:
                 answers = pool.map(lambda g: many([records[i] for i in g]), groups)
             for g, answer in zip(groups, answers, strict=True):
                 for i, a in zip(g, answer, strict=True):
                     slots[i] = a
+        if step.jury is not None:
+            self._emit(run_id, "jury.decided", step.id, **jury_counts)
         if step.critic is not None:
             answered = [(i, s[0]) for i, s in enumerate(slots) if s is not None and s[0] is not None]
             with ThreadPoolExecutor(max_workers=max(1, step.concurrency)) as pool:
@@ -1059,6 +1088,82 @@ class Runner:
         last = exchange[-1]["feedback"] if exchange else ""
         error = f"critic did not approve after {critic.max_rounds} rounds: {last}"
         return None, {**rec, "_error": error, "_critic": exchange}
+
+    def _jury(
+        self,
+        run_id: str,
+        step: StepSpec,
+        rec: dict,
+        schema: type[BaseModel],
+        result: RunResult,
+        call_tool: llm.ToolCall | None,
+        tool_defs: list[dict],
+    ) -> tuple[tuple[dict | None, dict | None], str]:
+        """Each juror answers the record on its own; then a majority on `fields` or a judge picks
+        the answer. Returns the slot and how it was decided (unanimous, majority, judged, tied).
+        Juror and judge answers are cached, so a re-run pays nothing for them."""
+        jury = step.jury
+        assert jury is not None
+        cacheable = self.use_cache and step.cached
+        instruction = step.agent or ""
+
+        def ask(name: str, kind: str, text: str, payload: dict) -> dict | None:
+            spec = self.spec.llm[name]
+            ckey = _hash(kind, spec.model_dump(exclude={"price"}), text, step.output, step.tools, payload)
+            hit = self.store.cache_get(ckey) if cacheable else None
+            if hit is not None:
+                return hit
+            held = self._check_budget(result, step.id)
+            try:
+                prov = self._provider(name)
+                if call_tool is not None:
+                    res = prov.structured_tools(  # type: ignore[attr-defined]
+                        text, payload, schema, tool_defs, call_tool, step.max_tool_calls
+                    )
+                else:
+                    res = prov.structured(text, payload, schema)
+            except (ValidationError, ValueError, RuntimeError) as e:
+                self._charge(result, step, spec, e, ticket=held)
+                return None
+            self._charge(result, step, spec, res, ticket=held)
+            out: dict = res.value.model_dump()
+            if cacheable:
+                self.store.cache_set(ckey, out, self._ttl(step))
+            return out
+
+        answers = {name: ask(name, "jury", instruction, rec) for name in jury.llms}
+        votes = {n: a for n, a in answers.items() if a is not None}
+        fields = jury.fields or list(schema.model_fields)
+        groups: dict[str, list[str]] = {}
+        for n, a in votes.items():
+            groups.setdefault(_hash([_norm(a.get(f)) for f in fields]), []).append(n)
+        sizes = sorted((len(g) for g in groups.values()), reverse=True)
+        top = sizes[0] if sizes else 0
+        agreement = round(top / len(jury.llms), 2)
+        winner = next((g for g in groups.values() if len(g) == top), [])
+        clear = top >= 2 and (len(sizes) == 1 or sizes[1] < top)
+        how = "unanimous" if top == len(jury.llms) else "majority"
+        out: dict | None = votes[winner[0]] if clear else None
+        if jury.decide == "judge" and how != "unanimous":
+            how = "judged"
+            payload = {"record": rec, "answers": [{"juror": n, "answer": a} for n, a in votes.items()]}
+            assert jury.judge is not None
+            out = ask(jury.judge, "jury-judge", _judge_instruction(instruction), payload) if votes else None
+            if out is None:
+                how = "tied"
+        elif not clear:
+            how = "tied"
+        if out is None:
+            failed = [n for n, a in answers.items() if a is None]
+            why = "the judge gave no valid answer" if jury.decide == "judge" else "no answer has a majority"
+            error = f"jury: {why} on {', '.join(fields)}"
+            if failed:
+                error += f" (no valid answer from {', '.join(failed)})"
+            return (None, {**rec, "_error": error, "_jury": votes}), "tied"
+        good = {**rec, **out}
+        if step.jury_tag:
+            good["_agreement"] = agreement
+        return (good, None), how
 
     def _count_critic(self, result: RunResult, step_id: str, what: str) -> None:
         with self._spend:
@@ -2193,6 +2298,25 @@ def _critic_instruction(criteria: str) -> str:
         "every criterion. When it does not, write feedback as short, concrete sentences saying "
         "which fields are wrong and why, so the answer can be fixed."
     )
+
+
+def _judge_instruction(instruction: str) -> str:
+    return (
+        f"{instruction}\n\nSeveral reviewers answered this task for the same record. The input "
+        "holds the record and their answers. Decide the correct answer from the record, using the "
+        "answers as evidence, and return it in the requested shape."
+    )
+
+
+def _norm(v: Any) -> Any:
+    """Jury votes compare strings after strip and casefold."""
+    if isinstance(v, str):
+        return v.strip().casefold()
+    if isinstance(v, list):
+        return [_norm(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _norm(x) for k, x in v.items()}
+    return v
 
 
 def _regenerate_instruction(instruction: str, previous: dict, feedback: str) -> str:
