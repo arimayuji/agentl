@@ -9,26 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-### Docs
+## [0.12.0] - 2026-10-18
 
-- Contributors showcase on the community page (who they are and what they shipped), links to
-  @useagentl on X and Instagram in the README and the site footer.
-
-### Security
-
-- Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the
-  latest release (`# vX.Y.Z`), least-privilege `permissions` per job, docs deploy and release
-  only from `main` or a `v*` tag, release version input validated, a dependency review check on
-  pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
-  contributions" section in `CONTRIBUTING.md`.
-- Repository bots: a welcome comment on a first issue or pull request, path labels on pull
-  requests (`.github/labeler.yml`), a Release Drafter draft (never published) updated on every
-  merge to `main`, and a `Quality` workflow with the `typos` spell checker (`_typos.toml`) and
-  the `zizmor` workflow security linter. Dependabot waits 7 days before proposing a new release,
-  and the benchmark jobs no longer restore a pip cache (zizmor cache-poisoning).
-### Docs
-
-- README: a Contributors section; CONTRIBUTING says how contributors are credited.
+Agents that check each other and a project that is easy to join: critic, router and jury
+steps, retries and fallbacks, a proposal-only repair agent, compute cost per pipeline, run labels
+with a grouped and exportable dashboard, layout drift detection, `agentl report` for bug reports,
+a hardened CI and a new look. First release with an outside contribution (thanks @dannyward630).
 
 ### Added
 
@@ -260,6 +246,19 @@ They are always listed under **Changed** or **Removed**.
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
 
+### Changed
+
+- New logo: a blue 3D cube with the white `a` and the yellow dot on its front face. `media/brand/cube.py`
+  renders it (transparent, and avatars on white and on blue). Favicons keep the flat `a.`.
+- The launch video on the home page is re-rendered in the brand palette.
+- The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
+  feature clips on the docs site are re-rendered in the brand palette.
+- Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
+  the top right corner of the blue surface, as on the X banner.
+- Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
+  the dashboard keeps green and red only for run status, and the social preview and X banner are
+  blue with a white wordmark and the yellow dot.
+
 ### Fixed
 
 - `html.select` keeps upstream `url` and `source_url` on each extracted record without overwriting
@@ -274,18 +273,24 @@ They are always listed under **Changed** or **Removed**.
   `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
   limit together and the run stops after the same number of calls every time.
 
-### Changed
+### Security
 
-- New logo: a blue 3D cube with the white `a` and the yellow dot on its front face. `media/brand/cube.py`
-  renders it (transparent, and avatars on white and on blue). Favicons keep the flat `a.`.
-- The launch video on the home page is re-rendered in the brand palette.
-- The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
-  feature clips on the docs site are re-rendered in the brand palette.
-- Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
-  the top right corner of the blue surface, as on the X banner.
-- Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
-  the dashboard keeps green and red only for run status, and the social preview and X banner are
-  blue with a white wordmark and the yellow dot.
+- Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the
+  latest release (`# vX.Y.Z`), least-privilege `permissions` per job, docs deploy and release
+  only from `main` or a `v*` tag, release version input validated, a dependency review check on
+  pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
+  contributions" section in `CONTRIBUTING.md`.
+- Repository bots: a welcome comment on a first issue or pull request, path labels on pull
+  requests (`.github/labeler.yml`), a Release Drafter draft (never published) updated on every
+  merge to `main`, and a `Quality` workflow with the `typos` spell checker (`_typos.toml`) and
+  the `zizmor` workflow security linter. Dependabot waits 7 days before proposing a new release,
+  and the benchmark jobs no longer restore a pip cache (zizmor cache-poisoning).
+
+### Docs
+
+- Contributors showcase on the community page (who they are and what they shipped), links to
+  @useagentl on X and Instagram in the README and the site footer.
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
 
 ## [0.11.0] - 2026-10-17
 
@@ -809,7 +814,8 @@ Kinesis and Event Hubs sources with time windows.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/arimayuji/agentl/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/arimayuji/agentl/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/arimayuji/agentl/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/arimayuji/agentl/compare/v0.8.1...v0.9.0

@@ -112,8 +112,8 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra:
-  version_label: v0.11
-  version_headline: Clean types, quarantine, safe upserts, field encryption and IoT sources
+  version_label: v0.12
+  version_headline: Critic, router and jury steps, repair agent, cost per pipeline and a grouped dashboard
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/arimayuji/agentl

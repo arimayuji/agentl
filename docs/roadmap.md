@@ -6,6 +6,12 @@ Priorities change with feedback, so dates are intentionally left out.
 
 ## Released
 
+- **0.12.0**: agents that check each other and a project that is easy to join. `critic:`,
+  router `routes:` and `jury:` on agent steps; step `retries` and `fallback`; `agentl repair`
+  proposes a checked patch for a failed run; `agentl cost` splits compute cost by pipeline, step
+  and model; run `labels:` with a grouped dashboard and `agentl dashboard export`; layout drift
+  detection on checks; `agentl report` drafts a bug report. Also a hardened CI, repository bots and
+  the new blue cube logo.
 - **0.11.0**: data cleaning and safe re-runs. `cast` with semantic types (dates with one day/month
   order per column, money, Brazilian and US documents, phones, enums); `compute` with a safe
   expression language; `aggregate`, `sort`, `limit`, `fill`, `flatten`, `explode`, `pivot`,
