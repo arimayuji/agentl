@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `mode: changeset` on `sqlite.write` (#205): compares with the table and writes only what
+  changed. `deletes: missing` or `partition_replaced` (with `partition_by`) removes rows the source
+  no longer has, `dry_run: true` reports the changeset without writing, and the result has
+  `inserted`, `updated`, `deleted`, `unchanged` and `outcome: no_change`. `deleted` is now a step
+  write count in events and the run summary. Null keys are rejected, as in upsert (#281).
 - Check steps take per-row `rules:` with `on_fail: drop | flag | fail` (a broken rule never stops the run) and emit a `check.digest` event with new, resolved and ongoing findings by `identity` against the previous day, including an all-clear heartbeat (#218). `rules:` is validated by step kind: per-row check rules on `check` steps, hybrid rules (#124) on `agent` steps.
 - Schedules by publication cycle (#201): a `schedule:` trigger with a required `tz`, expected
   `days` and `at`, built-in `us_federal` and `br_national` holiday calendars plus an exceptions

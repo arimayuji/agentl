@@ -48,7 +48,8 @@ class RunResult:
     tool_calls: int = 0
     cost_usd: float = 0.0
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
-    # per upsert or scd2 step: {"inserted": n, "updated": n, "unchanged": n} (scd2: versioned, closed)
+    # per upsert, changeset or scd2 step: {"inserted": n, "updated": n, "deleted": n, "unchanged": n}
+    # (scd2 also: versioned, closed)
     writes: dict[str, dict[str, int]] = field(default_factory=dict)
     # success, no_change, skipped, partial or failed (#188); see `outcome_status` for the mapping
     outcome: str | None = None
@@ -73,7 +74,7 @@ class RunResult:
 
 
 SAMPLE_ROWS = 5
-UPSERT_COUNTS = ("inserted", "updated", "unchanged", "versioned", "closed")
+UPSERT_COUNTS = ("inserted", "updated", "deleted", "unchanged", "versioned", "closed")
 SAMPLE_CHARS = 200
 
 

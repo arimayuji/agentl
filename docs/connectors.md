@@ -208,7 +208,7 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert` or `scd2` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `dry_run` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
 | `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `batch_size`, `create` (extra `postgres`) |
 
@@ -950,6 +950,41 @@ type. A record with a null or missing key field cannot be matched to a row: `pos
 `sqlite.write` and `sql.write` send it to the step's rejected records (`_error` names the key)
 instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
 `step.succeeded` event of a writer reports the rows written in `records` and `written`.
+
+### Changeset writes
+
+`mode: changeset` on `sqlite.write` compares the source with the table and writes only what
+changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
+A table with triggers or versioning sees no write at all when nothing changed.
+
+```yaml
+load:
+  - id: save
+    use: sqlite.write
+    input: rows
+    with:
+      db: out/facts.db
+      table: facts
+      key: [country, month, product]
+      mode: changeset
+      partition_by: month
+      deletes: { when: partition_replaced }
+```
+
+| Option | Meaning |
+|---|---|
+| `deletes: none` | Default. Rows missing from the source stay. |
+| `deletes: missing` | Delete rows whose key is not in the source (the source is the whole table). |
+| `deletes: partition_replaced` | Delete missing rows only in the partitions (`partition_by` values) the source has. |
+| `partition_by: month` | Also report `partitions` and `partitions_unchanged` (partitions with no insert, update or delete). |
+| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column. |
+
+All chunks are staged in a temp table first and the diff runs as a few set-based statements in
+one transaction, so it stays fast on large loads; the last record of a repeated key wins. The
+result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_change` when
+nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
+in the run summary, so a notification rule can use `when: "deleted > 0"`. A record with a null
+key field is rejected, as in upsert, and does not count in the diff. Postgres support is planned.
 
 ### History of a dimension (SCD type 2)
 
