@@ -327,6 +327,31 @@ class CriticSpec(BaseModel):
         return v
 
 
+class JurySpec(BaseModel):
+    """Several llms answer each record independently and a decision picks the answer (#299):
+    `majority` (most jurors agree on `fields`, a tie quarantines the record) or `judge` (a judge
+    llm reads the jurors' answers and writes the final one)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llms: list[str] = Field(min_length=2)
+    decide: Literal["majority", "judge"] = "majority"
+    judge: str | None = None
+    # low_confidence: only records whose first answer has `confidence` below `escalate_below`.
+    when: Literal["always", "low_confidence"] = "low_confidence"
+    fields: list[str] = Field(default_factory=list)  # default: every output field
+
+    @model_validator(mode="after")
+    def _judge(self) -> JurySpec:
+        if len(set(self.llms)) != len(self.llms):
+            raise ValueError("jury llms must be different entries")
+        if self.decide == "judge" and not self.judge:
+            raise ValueError("jury decide: judge needs judge: <llm name>")
+        if self.decide != "judge" and self.judge:
+            raise ValueError("jury judge: is only used with decide: judge")
+        return self
+
+
 DROP = "drop"  # reserved route target: the record is discarded
 ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
 
@@ -372,6 +397,9 @@ class StepSpec(BaseModel):
     attempts: list[AttemptSpec] = Field(default_factory=list)
     # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
     critic: CriticSpec | None = None
+    # Several llms answer and a vote or a judge decides (#299). See JurySpec.
+    jury: JurySpec | None = None
+    jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
     # Router (#299): an agent step that labels each record with one of these keys and sends it
     # only to the mapped step (`drop` discards it). Each target reads the router as its input and
     # receives just its branch. `rules:` items here are {when: expr, route: label}.
@@ -414,12 +442,37 @@ class StepSpec(BaseModel):
     fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
     fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
 
+    def _check_jury(self, jury: JurySpec) -> None:
+        sid = self.id
+        if not self.agent:
+            raise ValueError(f"step '{sid}': only agent steps take a jury")
+        if self.output_mode == "rows":
+            raise ValueError(f"step '{sid}': jury is not supported with output_mode rows")
+        if self.mode == "batch" or self.records_per_call > 1:
+            raise ValueError(
+                f"step '{sid}': jury works one record per call; drop mode batch and records_per_call"
+            )
+        unknown = [f for f in jury.fields if f not in (self.output or {})]
+        if unknown:
+            raise ValueError(f"step '{sid}': jury fields not in output: {', '.join(unknown)}")
+        if jury.when == "low_confidence" and (
+            "confidence" not in (self.output or {}) or self.escalate_below is None
+        ):
+            raise ValueError(
+                f"step '{sid}': jury when: low_confidence needs a confidence output field and"
+                " escalate_below; use when: always otherwise"
+            )
+
     @property
     def llms(self) -> list[str]:
         """Every llm the step may call, in order, without repeats."""
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
         if self.critic is not None:
             names.append(self.critic.llm or self.llm)
+        if self.jury is not None:
+            names.extend(self.jury.llms)
+            if self.jury.judge:
+                names.append(self.jury.judge)
         return list(dict.fromkeys(names))
 
     @model_validator(mode="before")
@@ -570,6 +623,10 @@ class StepSpec(BaseModel):
                     f"step '{self.id}': critic is not supported with output_mode rows; it reviews"
                     " one answer per record"
                 )
+        if self.jury is not None:
+            self._check_jury(self.jury)
+        elif self.jury_tag:
+            raise ValueError(f"step '{self.id}': jury_tag needs jury")
         if self.escalate and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":
@@ -587,9 +644,10 @@ class StepSpec(BaseModel):
             if any(a.validate_ == "lenient" for a in self.attempts[:-1]):
                 raise ValueError(f"step '{self.id}': only the last attempt can be lenient")
         if self.escalate_below is not None:
-            if not self.escalate:
+            if not self.escalate and self.jury is None:
                 raise ValueError(
-                    f"step '{self.id}': escalate_below needs a list of llms, e.g. llm: [cheap, strong]"
+                    f"step '{self.id}': escalate_below needs a list of llms or a jury,"
+                    " e.g. llm: [cheap, strong]"
                 )
             if (self.output or {}).get("confidence", "").rstrip("?") not in ("float", "int"):
                 raise ValueError(f"step '{self.id}': escalate_below needs a 'confidence: float' output field")
