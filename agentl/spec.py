@@ -1203,6 +1203,13 @@ class PipelineSpec(BaseModel):
             for name in s.llms if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
+            if s.on_drift == "remap" and not any(
+                t.use == "map_schema" and s.id in t.inputs for t in self.steps
+            ):
+                raise ValueError(
+                    f"step '{s.id}': on_drift remap hands the new layout to a map_schema step; "
+                    f"add one with input: {s.id}"
+                )
             if s.check and "rejected_rate" in s.expect:
                 from .checks import rejected_limits
 

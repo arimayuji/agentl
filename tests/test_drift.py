@@ -4,8 +4,9 @@ import datetime as dt
 
 import pytest
 
-from agentl import parse, register_channel
+from agentl import parse, register_channel, register_provider
 from agentl.drift import diff, signature, summary
+from agentl.llm import Result
 from agentl.runner import Runner
 from agentl.store import Store
 
@@ -147,15 +148,102 @@ def test_warn_passes_the_data_and_accepts_the_new_layout(tmp_path):
     assert r.status == "succeeded" and events == []
 
 
-def test_remap_stops_and_hands_over_both_layouts(tmp_path):
-    spec = pipeline("remap")
+class Mapper:
+    """Maps `label` to whatever column holds the name; counts its calls."""
+
+    def __init__(self, spec):
+        pass
+
+    def structured(self, instruction, record, schema):
+        MAPPER.append(record)
+        return Result(schema.model_validate({f: "full_name" for f in schema.model_fields}), 10, 5)
+
+    def text(self, instruction, content):
+        return ""
+
+
+MAPPER: list = []
+register_provider("drift-mapper", Mapper)
+
+
+def remap_pipeline(**with_):
+    return parse(
+        {
+            "name": "sheet-import",
+            "llm": {"default": {"provider": "drift-mapper"}},
+            "steps": [
+                {"id": "sheet", "fn": "tests.test_drift:src"},
+                {
+                    "id": "sheet_ok",
+                    "check": {"schema_matches": "sheet", "on_drift": "remap"},
+                    "input": "sheet",
+                },
+                {
+                    "id": "mapped",
+                    "use": "map_schema",
+                    "input": "sheet_ok",
+                    "with": {
+                        "target": {"id": "int", "label": "str"},
+                        "synonyms": {"label": ["name"]},
+                        **with_,
+                    },
+                },
+            ],
+        }
+    )
+
+
+def test_remap_hands_the_new_layout_to_map_schema_and_goes_on(tmp_path):
+    MAPPER.clear()
+    spec = remap_pipeline()
+    r, _ = run(tmp_path, spec)
+    assert r.status == "succeeded", r.error
+    assert MAPPER == []  # mapped by name
+    DATA["rows"] = NEW
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded", r.error
+    assert r.outputs["mapped"] == [{"id": 1, "label": "a"}]
+    assert len(MAPPER) == 1  # one call infers the mapping of the new layout
+    data = events[0]["data"]
+    assert data["remap"] == ["mapped"] and data["on_drift"] == "remap"
+    assert data["previous"]["columns"] == ["id", "name", "total", "day"]
+    assert data["current"]["columns"] == ["id", "full_name", "total", "day", "region"]
+    r, events = run(tmp_path, spec)  # new layout on record, mapping cached: no drift, no call
+    assert r.status == "succeeded" and events == [] and len(MAPPER) == 1
+
+
+def test_remap_with_review_required_waits_and_keeps_the_old_layout(tmp_path):
+    spec = remap_pipeline(review="required")
     run(tmp_path, spec)
     DATA["rows"] = NEW
     r, events = run(tmp_path, spec)
-    assert r.status == "failed" and "new reviewed mapping" in r.error
-    data = events[0]["data"]
-    assert data["previous"]["columns"] == ["id", "name", "total", "day"]
-    assert data["current"]["columns"] == ["id", "full_name", "total", "day", "region"]
+    assert r.status == "failed" and "waits for review" in r.error and len(events) == 1
+    r, events = run(tmp_path, spec)  # not mapped yet: the drift is still reported
+    assert r.status == "failed" and len(events) == 1
+    with Store(tmp_path / "s.db") as store:
+        layouts = store.mapping_get("sheet-import", "mapped")["layouts"]
+        for v in layouts.values():
+            v["approved"] = True
+        store.mapping_set("sheet-import", "mapped", {"layouts": layouts})
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded" and r.outputs["mapped"] == [{"id": 1, "label": "a"}]
+    r, events = run(tmp_path, spec)
+    assert events == []
+
+
+def test_remap_respects_a_pinned_mapping(tmp_path):
+    MAPPER.clear()
+    spec = remap_pipeline(mapping={"id": "id", "label": "total"})
+    run(tmp_path, spec)
+    DATA["rows"] = NEW
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded" and r.outputs["mapped"] == [{"id": 1, "label": "9.5"}]
+    assert MAPPER == [] and len(events) == 1
+
+
+def test_remap_needs_a_map_schema_step():
+    with pytest.raises(ValueError, match="hands the new layout to a map_schema step"):
+        pipeline("remap")
 
 
 def test_drift_combines_with_expectations_and_spec_errors(tmp_path):

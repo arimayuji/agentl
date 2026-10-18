@@ -199,9 +199,23 @@ Then:
 - `on_drift: warn`: the data goes on and the new layout becomes the one on record.
 - `on_drift: fail`: the step fails, nothing after it runs, and the old layout stays on record,
   so every run fails until the source is fixed.
-- `on_drift: remap`: the step fails like `fail`, and the event also carries `previous` and
-  `current` layouts for a new reviewed mapping. To accept the new layout once the mapping is
-  updated, run once with `warn`.
+- `on_drift: remap`: the data goes on to the `map_schema` steps that read the check (at least
+  one is required), and the event also carries `previous`, `current` and `remap` (those steps).
+  For this run they map the new layout as if they had `on_drift: infer`: a mapping already stored
+  for that layout is reused with no model call, a pinned `mapping:` is applied as is, and
+  otherwise one is inferred. With `review: required` the run stops until
+  `agentl mappings approve`. The new layout goes on record only once it has been mapped, so a run
+  that stops for review reports the drift again next time.
+
+```yaml
+- id: sheet_ok
+  check: { schema_matches: sheet, on_drift: remap }
+  input: sheet
+- id: mapped
+  use: map_schema
+  input: sheet_ok
+  with: { target: { report_date: date, region: str, value: float }, review: required }
+```
 
 Route it like any event: `notify: { rules: [{ on: schema.drift, to: [ops] }] }`. Inputs on the
 Arrow fast path are read from the Table's schema, without converting it first.
