@@ -18,13 +18,13 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
 from . import checks, contracts, graph, llm, registry, waits
 from .notify import Notifier
-from .spec import LLMSpec, PipelineSpec, StepSpec, load
+from .spec import DROP, LLMSpec, PipelineSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -227,6 +227,8 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     if step.jury is not None:  # the cached answer is the jury's decision
         llm_key = [llm_key, step.jury.model_dump(), step.jury_tag]
     # records_per_call is not part of the key: the answer per record is the same.
+    if step.routes is not None:  # a router's answer depends on its labels, not on where they go
+        return _hash("route", step.agent, sorted(step.routes), llm_key, step.tools, rec)
     if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
         return _hash("agent-rows", step.agent, step.output, llm_key, rec)
     if step.tools:  # tools can change the answer, so they are part of the key
@@ -358,6 +360,8 @@ class Runner:
         self._arrow_out: set[str] = set()
         self._reject_stats: dict[str, list[int]] = {}  # step id -> [rejected, seen], for checks
         self._polars_fed: set[str] = set()
+        # router id -> target step id -> the records routed to it this run (#299)
+        self._routed: dict[str, dict[str, Records]] = {}
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
@@ -561,6 +565,7 @@ class Runner:
         recs: Records,
         key: Callable[[dict], str],
         result: RunResult,
+        instruction: str | None = None,
     ) -> list[llm.Result | Exception]:
         """Submits one provider batch for `recs`, waits for it and returns one answer per record.
         The batch id is kept in the store, so a run that stops while waiting picks the same batch
@@ -580,7 +585,9 @@ class Runner:
             self._emit(run_id, "batch.resumed", step.id, batch_id=batch_id, requests=len(ids))
         else:
             held = self._check_budget(result, step.id)
-            batch_id = prov.submit_batch(step.agent or "", ids, schema)
+            batch_id = prov.submit_batch(
+                (step.agent or "") if instruction is None else instruction, ids, schema
+            )
             if resume:
                 self.store.cache_set(ticket, {"batch_id": batch_id})
             self._emit(run_id, "batch.submitted", step.id, batch_id=batch_id, requests=len(ids))
@@ -715,6 +722,8 @@ class Runner:
         records they cannot handle are sent to the llm; the output keeps the input order and each
         record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
         (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        if step.routes is not None:
+            return self._run_route(run_id, step, records, result)
         if step.output_mode == "rows":
             return self._run_rows(run_id, step, records, result)
         if not step.rules:
@@ -739,6 +748,83 @@ class Runner:
         self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
         return self._agent_finish(run_id, step, slots, len(records), result)
 
+    def _run_route(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """A router (#299): `rules:` pick a label first; the llm labels the other records, with
+        the answer constrained to the route labels (cached per record, budgeted like any agent
+        call). Each target step then reads only its branch; `drop` discards and a record without
+        a valid label goes to the quarantine. The step's own output is every routed record."""
+        from . import expr
+
+        routes = step.routes or {}
+        labels = list(routes)
+        records = list(records)
+        chosen: list[str | None] = [None] * len(records)
+        for i, rec in enumerate(records):
+            for rule in step.rules:
+                try:
+                    hit = expr.evaluate(str(rule["when"]), rec)
+                except Exception:  # an expression that cannot be evaluated on a record misses it
+                    hit = False
+                if hit is True:
+                    chosen[i] = rule["route"]
+                    break
+        rest = [i for i, c in enumerate(chosen) if c is None]
+        schema = create_model(f"{step.id}_route", route=(Literal[tuple(labels)], ...))  # type: ignore[arg-type]
+        bad: Records = []
+        slots = (
+            self._agent_slots(
+                run_id,
+                step,
+                [records[i] for i in rest],
+                result,
+                schema,
+                _route_instruction(step.agent or "", labels),
+            )
+            if rest
+            else []
+        )
+        for i, (good, rejected) in zip(rest, slots, strict=True):
+            if good is not None:
+                chosen[i] = good.get("route")
+            elif rejected is not None:
+                bad.append(rejected)
+        counts = dict.fromkeys(labels, 0)
+        branches: dict[str, Records] = {t: [] for t in step.targets}
+        out: Records = []
+        for i, label in enumerate(chosen):
+            if label is None:
+                continue
+            if label not in routes:  # e.g. a cached answer from labels that changed since
+                bad.append({**records[i], "_error": f"route label '{label}' is not one of {labels}"})
+                continue
+            counts[label] += 1
+            if routes[label] == DROP:
+                continue
+            rec = {**records[i], "_route": label} if step.route_tag else dict(records[i])
+            branches[routes[label]].append(rec)
+            out.append(rec)
+        self._routed[step.id] = branches
+        dropped = sum(n for label, n in counts.items() if routes[label] == DROP)
+        with self._spend:
+            mine = result.spend[step.id]
+            mine["routes"] = counts
+            mine["paths"] = {"rules": len(records) - len(rest), "agent": len(rest)}
+            cached = mine.get("cache_hits", 0)
+        self._emit(
+            run_id,
+            "route.decided",
+            step.id,
+            counts=counts,
+            rules=len(records) - len(rest),
+            llm=len(rest) - cached,
+            cached=cached,
+            dropped=dropped,
+            rejected=len(bad),
+            total=len(records),
+        )
+        self._rejects(run_id, step.id, bad, len(records), result)
+        return out
+
     def _agent_finish(
         self,
         run_id: str,
@@ -758,10 +844,19 @@ class Runner:
         return ok
 
     def _agent_slots(
-        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+        self,
+        run_id: str,
+        step: StepSpec,
+        records: Records,
+        result: RunResult,
+        schema: type[BaseModel] | None = None,
+        instruction: str | None = None,
     ) -> list[tuple[dict | None, dict | None]]:
-        """Asks the llm about each record: (answered record, None) or (None, rejected record)."""
-        schema = llm.schema_model(f"{step.id}_output", step.output or {})
+        """Asks the llm about each record: (answered record, None) or (None, rejected record).
+        `schema` and `instruction` replace the ones from `output:` and `agent:` (routers)."""
+        if schema is None:
+            schema = llm.schema_model(f"{step.id}_output", step.output or {})
+        base = (step.agent or "") if instruction is None else instruction
         prov = self._provider(step.llm)
         llm_spec = self.spec.llm[step.llm]
         cacheable = self.use_cache and step.cached
@@ -823,19 +918,19 @@ class Runner:
             while n < len(plan):
                 name, validate, feedback = plan[n]
                 p, spec = self._provider(name), self.spec.llm[name]
-                instruction = step.agent or ""
+                text = base
                 if feedback and errors:
-                    instruction = llm.feedback_instruction(instruction, errors)
+                    text = llm.feedback_instruction(text, errors)
                 asked = loose if validate == "lenient" else schema
                 held = self._check_budget(result, step.id)
                 res: llm.Result | None = None
                 try:
                     if call_tool is not None:
                         res = p.structured_tools(  # type: ignore[attr-defined]
-                            instruction, rec, asked, tool_defs, call_tool, step.max_tool_calls
+                            text, rec, asked, tool_defs, call_tool, step.max_tool_calls
                         )
                     else:
-                        res = p.structured(instruction, rec, asked)
+                        res = p.structured(text, rec, asked)
                     dropped: list[dict] = []
                     if validate == "lenient":
                         out, dropped = llm.lenient_check(schema, res.value.model_dump())
@@ -910,7 +1005,7 @@ class Runner:
             held = self._check_budget(result, step.id)
             payload = {"records": [{"index": i, "record": r} for i, r in enumerate(group)]}
             try:
-                res = prov.structured(_batch_instruction(step.agent or "", len(group)), payload, batch_schema)
+                res = prov.structured(_batch_instruction(base, len(group)), payload, batch_schema)
             except (ValidationError, ValueError, RuntimeError) as e:
                 self._charge(result, step, llm_spec, e, ticket=held)
             else:
@@ -949,7 +1044,7 @@ class Runner:
         groups = [todo[n : n + size] for n in range(0, len(todo), size)]
         if step.mode == "batch" and todo:
             answers_by_slot = self._run_batch(
-                run_id, step, prov, schema, [records[i] for i in todo], key, result
+                run_id, step, prov, schema, [records[i] for i in todo], key, result, instruction
             )
             failed = []
             for i, res in zip(todo, answers_by_slot, strict=True):
@@ -1224,14 +1319,19 @@ class Runner:
         self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult
     ) -> Records:
         refs = step.inputs
-        raw = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
+        whole = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
+
+        def raw(ref: str) -> Any:  # a router's target reads only its branch (#299)
+            branch = self._routed.get(ref)
+            return branch[step.id] if branch is not None and step.id in branch else whole(ref)
+
         data: Any = None
         if step.id in self.replay:
             data = self.replay[step.id]
         elif len(refs) == 1:
             data = raw(refs[0])
         elif refs:
-            data = {r: outputs[r] for r in refs}
+            data = {r: raw(r) if r in self._routed else outputs[r] for r in refs}
 
         if step.kind == "wait":
             return self._run_wait(run_id, step, outputs, [] if data is None else data, result)
@@ -1833,7 +1933,7 @@ class Runner:
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.depends != [cur.id] or not nxt.required:
+                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None:
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -2279,6 +2379,13 @@ def _apply_rules(
             continue
         found[r[tag]] = value.model_dump()
     return found
+
+
+def _route_instruction(question: str, labels: list[str]) -> str:
+    return (
+        f"{question}\n\nAnswer with the field `route` set to exactly one of these labels: "
+        f"{', '.join(labels)}."
+    )
 
 
 def _review_instruction(review: str) -> str:

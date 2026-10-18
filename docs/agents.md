@@ -455,6 +455,49 @@ record first; only the records they cannot handle are sent to the llm. (On a `ch
 - Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
   `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
 
+### Route each record to one branch
+
+A router is an agent step with `routes:`. It labels each record with one of the route keys and
+sends the record only to the step that key names; `drop` (reserved) discards it. The answer is
+constrained to the labels, so there is no `output:` on a router.
+
+```yaml
+- id: route
+  input: docs
+  agent: Which kind of document is this?
+  routes: { invoice: extract_invoice, contract: extract_contract, other: drop }
+  rules:                            # optional, decided before the llm
+    - { when: "type == 'nfe'", route: invoice }
+  route_tag: true                   # optional: add `_route` (the label) to each record
+- id: extract_invoice               # no input: a route target reads the router
+  agent: Extract the invoice fields.
+  output: { total: float }
+- id: extract_contract
+  input: route                      # same thing, written out; it still gets only its branch
+  agent: Extract the parties.
+  output: { parties: list[str] }
+```
+
+- A step named in `routes` reads the router (`input:` left out or naming the router) and receives
+  only the records routed to it; several labels may point at the same step. Any other step that
+  reads the router gets every routed record (dropped and rejected ones left out).
+- `rules:` on a router are `{when: <expression>, route: <label>}`, in the
+  [expression language](connectors.md#expressions-compute) of `compute`. The first rule that is true decides; a record
+  no rule matches (or whose expression errors) goes to the llm.
+- An answer that is not one of the labels is retried like any invalid answer, then goes to the
+  quarantine (`agentl rejected`) with `_error`.
+- Answers are cached per record, keyed on the instruction, the labels and the llm: renaming a
+  target step keeps the cache, adding a label does not. Calls count for budget and spend; cascades
+  (`llm: [cheap, strong]`), `attempts:`, `records_per_call` and batch mode work as on other agent
+  steps. A critic and `output_mode: rows` do not apply.
+- Each run logs one `route.decided` event with `counts` per label, `rules`, `llm`, `cached`,
+  `dropped`, `rejected` and `total` (no record data), and `spend[step]["routes"]` holds the counts.
+- Validation: `routes` is not empty, labels are identifiers, targets exist (or are `drop`), are
+  `use`, `fn` or agent steps that read the router, and no cycle goes through a router. The
+  diagram (`agentl graph`) draws each routed edge with its labels, for example
+  `route -->|invoice| extract_invoice`. `agentl plan` counts every record for each target (an upper
+  bound).
+
 ### Identical records are asked once
 
 Records that are exactly the same within a step are sent once and share the answer; the step logs
