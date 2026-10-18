@@ -7,7 +7,7 @@ from .spec import PipelineSpec, SpecError
 
 def order(spec: PipelineSpec) -> list[str]:
     """Topological order, stable with respect to declaration order."""
-    deps = {s.id: set(s.inputs) for s in spec.steps}
+    deps = {s.id: set(s.depends) for s in spec.steps}
     done: list[str] = []
     while len(done) < len(deps):
         ready = [i for i in deps if i not in done and deps[i] <= set(done)]
@@ -42,6 +42,9 @@ def mermaid(spec: PipelineSpec, status: dict[str, str] | None = None) -> str:
     for s in spec.steps:
         for ref in s.inputs:
             lines.append(f"  {ref} --> {s.id}")
+        for ref in s.after:
+            if ref not in s.inputs:
+                lines.append(f"  {ref} -.-> {s.id}")
     if status:
         for name, style in _STATUS_CLASS.items():
             lines.append(f"  classDef {name} {style}")

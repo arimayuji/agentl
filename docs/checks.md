@@ -61,10 +61,54 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
 | `vs_last_run` | `{ rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, changed more than that since the last run that passed |
+| `vs_runs` | `{ last: 5, rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, is further than that from the median of the last `last` runs that passed |
 | `rejected_rate` | `"< 1%"` or `{ orders: "<= 0.5%" }` | a step rejected a larger share of its records in this run (see [contracts](#schema-contracts)) |
+| `pii` | `true` or `{ allow: [customer_email] }` | a field looks like unprotected personal data (below); `allow` lists fields that may carry it |
+
+`pii` samples up to 200 records and flags a field when at least half of its values match one
+detector: CPF and CNPJ (check digits), US SSN (`123-45-6789`, format only), e-mail, phone (BR or US,
+written with separators or `+`), payment card (Luhn), IBAN (mod 97), IP address, and person names in
+fields named like `name`, `full_name` or `last_name`. Values already passed through
+[`protect`](connectors.md#protect-sensitive-fields-protect) no longer match. The failure names the
+field, the kind, a masked example (`*******4321`, never the full value) and the suggested `protect`
+action. From Python, `agentl.pii.scan(records)` returns the findings and
+`agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
+expect misses (free-text fields, unformatted phones) and some false positives.
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
+
+`vs_runs` compares with the median of the last `last` passing runs (default 5, at most 50), so
+one unusual run does not move the baseline. With fewer passing runs than `last` it uses the ones
+there are; with none it passes.
+
+### Severity per rule
+
+By default a failing rule fails the check (and `on_fail` decides what that does). `severity` sets
+it per rule:
+
+```yaml
+- id: verify
+  check: orders
+  expect:
+    rows: { min: 1000 }
+    not_null: [order_id]
+    accepted: { region: [north, south] }
+    vs_runs: { last: 5, rows: 30% }
+  severity:
+    vs_runs: warn        # emit `check.warned`, let the data through
+    accepted: reject     # drop the failing rows into the quarantine
+    # rows and not_null: fail (the default)
+```
+
+| Severity | What it does |
+| --- | --- |
+| `fail` | the check fails: stops before the writer, or warns with `on_fail: warn` |
+| `warn` | a `check.warned` event with the findings; the data goes through |
+| `reject` | the failing rows are dropped and quarantined like rejected records (`item.rejected`); only for `not_null`, `unique`, `accepted` and `range` |
+
+`review` takes `fail` or `warn` too. The `check.passed` and `check.failed` events carry `rules`,
+the result of each rule in this run: `passed`, `failed`, `warn` or `reject`.
 
 ## Agent review
 
@@ -76,6 +120,47 @@ That keeps the cost to one small call per run.
 The agent answers with a verdict and findings in plain language, for example *"The north region
 has no orders today; on the last run it had 312."* When it passes, its findings are kept as
 `notes`. Its tokens count in the run's budget and in the step's spend.
+
+## Row rules and the daily digest
+
+`rules:` checks each row. Every rule has an `on_fail`: `drop` leaves the row out (it goes to the
+step's rejected records), `flag` keeps it and reports it (use it when two values disagree and it
+is unclear which one is wrong), `fail` stops the step. An error inside a rule (a value that is not
+a number, say) never stops the pipeline: the row passes and the error is logged.
+
+`rules:` means something different by step kind. On a `check` step (this page) it lists per-row
+checks (`rule: not_null | between | accepted | matches | abs_diff_max`) that drop, flag or fail
+rows. On an `agent` step it lists [hybrid rules](agents.md#rules-first-the-agent-for-the-rest)
+(`compute`, `cast`, `fn`) that try to produce the `output:` fields before the llm is asked. A
+hybrid rule on a check step, or `rules:` on any other kind of step, is a validation error.
+
+```yaml
+- id: verify
+  check: transform
+  identity: [order_id]          # what makes a finding "the same" from one day to the next
+  rules:
+    - { rule: between, column: amount, min: 0, max: 100000, on_fail: drop }
+    - { rule: abs_diff_max, column: amount, other: billed, max: 500, on_fail: flag }
+    - { rule: not_null, column: customer }
+    - { rule: accepted, column: status, values: [paid, refunded] }
+    - { rule: matches, column: email, pattern: "@" }
+```
+
+Findings are grouped by identity in a daily (UTC) bucket; runs on the same day add to it. Each run
+emits `check.digest` with what is `new`, `resolved` and `ongoing` compared with the previous
+day's bucket, the counts, and a `summary`. On a clean day it still goes out with
+`all_clear: true` and "all clear: no findings today", so a missing digest means the service did
+not run. Route it to any channel with a normal rule:
+
+```yaml
+notify:
+  channels: { slack: { webhook: "${SLACK_WEBHOOK}" } }
+  rules:
+    - { on: check.digest, to: [slack] }
+```
+
+Not yet: a scheduled digest sent once a day at a fixed time with a "sent today" guard; today the
+digest goes out with each run of the check.
 
 ## When a check fails
 

@@ -94,7 +94,7 @@ def test_duration_and_percent_parsing():
 
 def test_spec_errors():
     base = {"name": "x", "steps": [{"id": "src", "fn": "tests.test_checks:src"}]}
-    with pytest.raises(ValueError, match="needs 'expect', 'review' or both"):
+    with pytest.raises(ValueError, match="needs 'expect', 'review' or 'rules'"):
         parse({**base, "steps": [*base["steps"], {"id": "c", "check": "src"}]})
     with pytest.raises(ValueError, match="unknown expectation"):
         parse({**base, "steps": [*base["steps"], {"id": "c", "check": "src", "expect": {"nope": 1}}]})
@@ -176,7 +176,10 @@ def test_failing_check_stops_before_the_writer(tmp_path):
     r, events = run(tmp_path, pipeline({"rows": {"min": 5}}))
     assert r.status == "failed" and "3 rows, expected at least 5" in r.error
     assert SAVED == [] and events[0]["type"] == "check.failed"
-    assert events[0]["data"]["findings"] == [{"check": "rows", "detail": "3 rows, expected at least 5"}]
+    assert events[0]["data"]["findings"] == [
+        {"check": "rows", "detail": "3 rows, expected at least 5", "severity": "fail"}
+    ]
+    assert events[0]["data"]["rules"] == {"rows": "failed"}
 
 
 def test_warn_lets_the_data_through(tmp_path):
@@ -221,3 +224,94 @@ def test_check_shows_up_in_the_graph():
     nodes = {n["id"]: n["kind"] for n in parse_graph(mermaid(pipeline({"rows": {"min": 1}})))["nodes"]}
     assert nodes == {"src": "fn", "verify": "check", "save": "fn"}
     assert json.dumps(nodes)
+
+
+# ---------------------------------------------------------------- vs_runs and severity (#185)
+def _prof(rows, total=None):
+    return {"rows": rows, "columns": {"total": {"sum": total if total is not None else rows * 100}}}
+
+
+def test_vs_runs_compares_with_the_median_of_the_window():
+    history = [_prof(100), _prof(5), _prof(102), _prof(98), _prof(101), _prof(10)]  # newest first
+    rule = {"vs_runs": {"last": 5, "rows": "10%"}}
+    # median of the last 5 (100, 5, 102, 98, 101) is 100: one bad run does not move it
+    assert run_expectations(sales(95), rule, None, history=history) == []
+    fails = run_expectations(sales(60), rule, None, history=history)
+    assert fails == [
+        {"check": "vs_runs", "detail": "rows: 60 vs 100 on median of the last 5 runs (-40%, limit 10%)"}
+    ]
+    fails = run_expectations(
+        sales(100),
+        {"vs_runs": {"last": 2, "sum": {"total": "5%"}}},
+        None,
+        history=[_prof(10, 100), _prof(10, 200)],
+    )
+    assert fails[0]["check"] == "vs_runs" and "sum of total" in fails[0]["detail"]
+
+
+def test_vs_runs_with_fewer_runs_than_the_window():
+    rule = {"vs_runs": {"last": 5, "rows": "10%"}}
+    assert run_expectations(sales(1), rule, None, history=[]) == []  # first run
+    fails = run_expectations(sales(50), rule, None, history=[_prof(100), _prof(90)])
+    assert "median of the last 2 runs" in fails[0]["detail"]
+
+
+def test_vs_runs_in_a_pipeline_uses_the_passing_runs(tmp_path):
+    spec = pipeline({"vs_runs": {"last": 3, "rows": "30%"}})
+    for n in (10, 10, 12):
+        DATA["rows"] = sales(n)
+        assert run(tmp_path, spec)[0].status == "succeeded"
+    DATA["rows"] = sales(5)
+    r, _ = run(tmp_path, spec)
+    assert r.status == "failed" and "median of the last 3 runs" in r.error
+
+
+def test_severity_warn_only_emits_an_event(tmp_path):
+    DATA["rows"] = sales(3)
+    spec = pipeline({"rows": {"min": 5}, "not_null": ["order_id"]})
+    spec.steps[1].severity = {"rows": "warn"}
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded" and SAVED == [3]
+    assert [e["type"] for e in events] == ["check.warned", "check.passed"]
+    assert events[0]["data"]["findings"][0]["severity"] == "warn"
+    assert events[1]["data"]["rules"] == {"rows": "warn", "not_null": "passed"}
+
+
+def test_severity_reject_drops_the_failing_rows(tmp_path):
+    DATA["rows"] = sales(6, r1={"region": "west"}, r2={"order_id": 0}, r3={"total": None})
+    spec = pipeline({"accepted": {"region": ["north", "south"]}, "unique": "order_id", "not_null": "total"})
+    spec.steps[1].severity = {"accepted": "reject", "unique": "reject", "not_null": "reject"}
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded" and SAVED == [3]
+    assert [x["order_id"] for x in r.outputs["verify"]] == [0, 4, 5]
+    errors = [x["_error"] for x in r.rejected["verify"]]
+    assert (
+        errors[0].startswith("accepted")
+        and errors[1].startswith("unique")
+        and errors[2].startswith("not_null")
+    )
+    assert events[0]["type"] == "check.passed" and events[0]["data"]["rules"]["unique"] == "reject"
+
+
+def test_severity_fail_is_the_default_and_mixes_with_others(tmp_path):
+    DATA["rows"] = sales(3, r0={"region": "west"})
+    spec = pipeline({"rows": {"min": 5}, "accepted": {"region": ["north", "south"]}})
+    spec.steps[1].severity = {"accepted": "reject"}
+    r, events = run(tmp_path, spec)
+    assert r.status == "failed" and SAVED == [] and "expected at least 5" in r.error
+    assert events[-1]["data"]["rules"] == {"rows": "failed", "accepted": "reject"}
+
+
+def test_severity_spec_errors():
+    base = {"name": "p", "steps": [{"id": "src", "fn": "tests.test_checks:src"}]}
+
+    def check(**kw):
+        return parse({**base, "steps": [*base["steps"], {"id": "v", "check": "src", **kw}]})
+
+    with pytest.raises(Exception, match="only for"):
+        check(expect={"rows": {"min": 1}}, severity={"rows": "reject"})
+    with pytest.raises(Exception, match="not in 'expect'"):
+        check(expect={"rows": {"min": 1}}, severity={"unique": "warn"})
+    with pytest.raises(Exception, match="vs_runs"):
+        check(expect={"vs_runs": {"last": 0, "rows": "10%"}})
+    assert check(expect={"rows": {"min": 1}}, severity={"rows": "warn"}).steps[1].severity == {"rows": "warn"}

@@ -72,6 +72,7 @@ the old behavior and adds no field.
 | DOCX | `docx.read` | `path`, `text`, `tables` | `office` |
 | DOC (legacy Word) | `doc.read` | `path`, `text`, `tables` | `office` + LibreOffice installed |
 | XML | `xml.read` (`items: item`) | attributes and simple children of each item | |
+| NF-e, NFC-e | `nfe.read` (`level: item`) | one record per invoice or item, see [NF-e invoices](nfe.md) | |
 | HTML tables | `html.read` (`table: 0`, `select`, `header_rows`) | one record per row, `table` index | |
 | HTML by CSS selector | `html.select` (`items`, `fields`) | one record per matched element | |
 | HTML as Markdown | `html.read` (`format: markdown`) | one record per page: `title`, `markdown` | `web` |
@@ -134,7 +135,7 @@ fixed name is enough.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `if_changed`, `on_unchanged` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -169,6 +170,35 @@ URL fetches refuse loopback, private, link-local (for example cloud metadata at
 or from an agent cannot reach internal services. For intranet pipelines set
 `AGENTL_ALLOW_HOSTS=host1,10.0.0.0/8` (host names or CIDRs), or `AGENTL_ALLOW_PRIVATE_NETWORK=1`.
 
+### Download only when the source changed
+
+For a large file that rarely changes, `if_changed` checks the source before downloading it, cheapest
+strategy first, and keeps what it saw in the run store (`agentl state`; reset with
+`agentl state reset`). Validators are saved only when the run succeeds.
+
+```yaml
+- id: report
+  use: http.get
+  with:
+    url: https://example.org/data/report.csv
+    if_changed:
+      by: [etag, last_modified, content_length]   # or page_stamp
+      # page_stamp: { url: https://example.org/reports, regex: 'Updated on (\d{2}/\d{2}/\d{4})' }
+    on_unchanged: stop        # stop (default) | continue_empty
+```
+
+| Strategy | How it checks |
+|---|---|
+| `page_stamp` | GET another, small page and compare the regex match (group 1 if any) |
+| `content_length` | HEAD request; compare `Content-Length` |
+| `etag`, `last_modified` | conditional GET (`If-None-Match`, `If-Modified-Since`); a 304 means unchanged |
+| hash | always last: SHA-256 of the downloaded body |
+
+When the source is unchanged, `on_unchanged: stop` ends the run with status `no_change`: the next
+steps do not run, the CLI exits 0 and `run(..., raise_on_failure=True)` does not raise.
+`continue_empty` returns no records and lets the run go on. `if_changed` works on one URL: not with
+an input step or `paginate`. Without a run store (the connector called directly) it always downloads.
+
 Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
 returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
 responses.
@@ -178,9 +208,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `deletes`, `partition_by`, `dry_run` (changeset only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `dry_run` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -191,6 +221,7 @@ Other databases will ship as plugins.
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `skip_seen` | `key` (`sha256` of the file at `path`, `path`, or any field), `scope` (default: the pipeline name) | Only records no earlier successful run let through; see below |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
 | `flatten` | `sep` (`.`), `fields` | Nested objects become columns: `end.cidade` |
 | `explode` | `field`, `keep_empty` (true) | One record per item of a list |
@@ -954,6 +985,49 @@ result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_
 nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
 in the run summary, so a notification rule can use `when: "deleted > 0"`. A record with a null
 key field is rejected, as in upsert, and does not count in the diff. Postgres support is planned.
+
+### History of a dimension (SCD type 2)
+
+`mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` keeps every version of a row
+instead of overwriting it. The writer manages three columns: `valid_from`, `valid_to` (empty while
+the version is current) and `is_current`.
+
+```yaml
+- id: customers
+  use: postgres.write
+  with:
+    dsn: ${DATABASE_URL}
+    table: dim_customer
+    mode: scd2
+    key: customer_id
+    track: [address, segment]   # default: every column but the key
+    on_missing: close           # default: keep
+```
+
+For each record, by `key`:
+
+- a new key inserts a current version;
+- a key whose `track` columns changed closes the current version (`valid_to` set, `is_current`
+  false) and inserts a new one;
+- a key whose `track` columns did not change is left alone (columns outside `track` keep the
+  values of the version's first load);
+- with `on_missing: close`, current keys absent from the input are closed. An empty input changes
+  nothing.
+
+The result reports `inserted`, `versioned`, `unchanged` (and `closed`), which also appear in the
+`step.succeeded` event and under `writes` in the run summary. Re-running the same data changes
+nothing. If a key repeats in the input, the last record wins.
+
+`as_of` sets the time stamped on `valid_from` and `valid_to` (default: now). It must carry a time
+zone (`2026-01-31T00:00:00-03:00`, `...Z`) and is stored in UTC: `timestamptz` on Postgres, ISO
+8601 text such as `2026-01-31T03:00:00.000000+00:00` on SQLite. An `as_of` earlier than the start
+of a version it would close is an error. A record with a null key field is rejected, as in
+upsert: it goes to the step's rejected records and the others are written.
+
+`sqlite.write` and `postgres.write` stage the input in a temporary table and merge it with a few
+set-based statements in the write's transaction; Postgres adds a unique index on `key` among
+current rows. `sql.write` reads the key and tracked columns of the current versions in one query
+and compares them in Python, so those must fit in memory.
 
 ## Any SQL database
 
