@@ -175,6 +175,60 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+RetryOn = Literal["transport", "http_5xx", "http_429", "any"]
+
+
+def _retry_on_default() -> list[RetryOn]:
+    return ["transport"]
+
+
+# The last part of a connector name that marks a writer or a delivery (`postgres.write`, `slack.send`)
+SINK_VERBS = ("write", "upload", "post", "produce", "publish", "send", "mark")
+
+
+def is_sink(use: str | None) -> bool:
+    """A connector that writes or delivers, judged by its name (`*.write`, `*.send`, ...)."""
+    return bool(use) and (use or "").rsplit(".", 1)[-1] in SINK_VERBS
+
+
+class RetrySpec(BaseModel):
+    """Step retries (#296): up to `attempts` tries, waiting `backoff` doubled each time (with
+    jitter) up to `max_backoff`, only for the errors in `on`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: int = Field(default=3, ge=1, le=20)
+    backoff: str | float = "1s"
+    max_backoff: str | float = "30s"
+    on: list[RetryOn] = Field(default_factory=_retry_on_default, min_length=1)
+
+    @model_validator(mode="after")
+    def _durations(self) -> RetrySpec:
+        from .checks import parse_duration
+
+        if parse_duration(self.backoff) < 0 or parse_duration(self.max_backoff) < 0:
+            raise ValueError("retries: backoff and max_backoff must not be negative")
+        return self
+
+
+class FallbackSpec(BaseModel):
+    """One step body tried when the main body fails (#296): a connector and its settings."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    use: str
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flat(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and "fallback" in raw:
+            raise ValueError("a fallback cannot have its own fallback; list every body in one list")
+        if isinstance(raw, dict) and "use" not in raw:
+            raise ValueError("each fallback is a step body {use, with}")
+        return raw
+
+
 class GoldenSpec(BaseModel):
     """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
     `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
@@ -343,6 +397,13 @@ class StepSpec(BaseModel):
     required: bool = True
     # Order-only dependencies: steps that must finish (succeed, or fail best effort) first.
     after: list[str] = Field(default_factory=list)
+    # Retries and fallbacks (#296): retry the step on matching errors, then try each fallback body
+    # ({use, with}) in order with the same input. See RetrySpec and FallbackSpec.
+    retries: RetrySpec | None = None
+    fallback: list[FallbackSpec] = Field(default_factory=list)
+    fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
+    fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
+    fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
 
     @property
     def llms(self) -> list[str]:
@@ -531,6 +592,26 @@ class StepSpec(BaseModel):
             rejected_limits(self.expect["rejected_rate"], self.check or "")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
+        if self.retries and (self.check or self.wait_until):
+            raise ValueError(f"step '{self.id}': retries go on use, fn or agent steps")
+        if self.fallback:
+            if self.agent:
+                raise ValueError(
+                    f"step '{self.id}': agent steps fall back between llms; set `fallback:` on the "
+                    "llm instead (llm: {main: {..., fallback: [backup]}}) or use llm: [cheap, strong]"
+                )
+            if not (self.use or self.fn):
+                raise ValueError(f"step '{self.id}': fallback goes on a use or fn step")
+            sinks = [u for u in (self.use, *(f.use for f in self.fallback)) if is_sink(u)]
+            if sinks and not self.fallback_writer:
+                raise ValueError(
+                    f"step '{self.id}': fallback on a writer ({sinks[0]}) may write twice; set "
+                    "`fallback_writer: true` if that is safe"
+                )
+        elif self.fallback_tag or self.fallback_writer or self.fallback_outcome != "partial":
+            raise ValueError(
+                f"step '{self.id}': fallback_tag, fallback_outcome and fallback_writer need a fallback"
+            )
         return self
 
     @property

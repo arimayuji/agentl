@@ -187,13 +187,19 @@ def test_concurrent_runs_one_at_a_time(target):
         }
     )
     statuses = []
-    ready = threading.Barrier(3)  # start the three runs together, after each opened its store
+    ready = threading.Barrier(3, timeout=30)  # start the three runs together, after each opened its store
+    with open_store(target):
+        pass  # create the schema once, so the threads do not race on it
 
     def go():
-        with open_store(target) as s:
-            runner = Runner(spec, store=s)
-            ready.wait()
-            statuses.append(runner.run().status)
+        try:
+            with open_store(target) as s:
+                runner = Runner(spec, store=s)
+                ready.wait()
+                statuses.append(runner.run().status)
+        except BaseException:
+            ready.abort()  # never leave the other threads waiting on the barrier
+            raise
 
     threads = [threading.Thread(target=go) for _ in range(3)]
     for t in threads:

@@ -83,6 +83,7 @@ set. Exit code 2 when there are errors.
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
 | AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 | AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
+| AL011 | an `http.*` source has a `fallback` but no `retries`, so it switches on the first transient error |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
