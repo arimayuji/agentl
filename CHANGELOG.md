@@ -13,6 +13,9 @@ They are always listed under **Changed** or **Removed**.
 
 - Release workflow: when a draft release for the tag already exists (Release Drafter), it now
   publishes the draft on the built commit instead of only attaching files to it.
+- A failing check with `on_fail: stop` now stops sibling writers: every final step waits for the
+  pipeline's required stop checks, so `typed -> save` no longer writes while
+  `typed -> production -> check` fails (#278).
 
 ## [0.12.0] - 2026-10-18
 

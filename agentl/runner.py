@@ -1981,13 +1981,14 @@ class Runner:
             for ref in s.inputs:
                 consumers[ref].append(s)
         chains = {}
+        gates = self._gates()
         for head in self.spec.steps:
             if not head.use or head.depends or head.cursor or registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None:
+                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None or nxt.id in gates:
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -2124,6 +2125,16 @@ class Runner:
         if counts[head.id] == 0:
             self._emit(run_id, "source.empty", head.id)
 
+    def _gates(self) -> dict[str, set[str]]:
+        """A required check with `on_fail: stop` gates the run's outputs (#278): every sink step (one
+        no other step depends on, usually a writer) that is not a check waits for those checks, so
+        a failing check stops a sibling writer instead of racing it."""
+        stops = {s.id for s in self.spec.steps if s.check and s.on_fail == "stop" and s.required}
+        if not stops:
+            return {}
+        used = {d for s in self.spec.steps for d in s.depends}
+        return {s.id: stops for s in self.spec.steps if s.id not in used and not s.check}
+
     def _run_graph(self, run_id: str, result: RunResult) -> None:
         """Starts each step as soon as its inputs are done, up to `max_parallel_steps` at once,
         picking ready steps in declaration order. After a failure no new step starts; the ones
@@ -2133,6 +2144,8 @@ class Runner:
         inside = {s.id for chain in chains.values() for s in chain[1:]}
         pending = [i for i in graph.order(self.spec) if i not in inside]
         deps = {s.id: set(s.depends) for s in self.spec.steps}
+        for sink, checks_ in self._gates().items():  # writers wait for `on_fail: stop` checks (#278)
+            deps[sink] |= checks_
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
         running: dict[Future, str] = {}
