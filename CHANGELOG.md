@@ -9,6 +9,12 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Docs
+
+- Docs search: hint and empty-state text that name real connectors and commands, matches inside
+  dotted names (`html.select`, `on_drift`), a share link, and a brand-styled panel with a blue focus
+  ring and highlighted matches.
+
 ### Fixed
 
 - Release workflow: when a draft release for the tag already exists (Release Drafter), it now
