@@ -451,6 +451,18 @@ def main(argv: list[str] | None = None) -> int:
         "--project", action="store_true", help="into ./.claude/skills instead of ~/.claude/skills"
     )
 
+    ev = cmd("eval", "score agent steps on their golden sets: accuracy per field, cost, differences")
+    ev.add_argument("pipeline")
+    ev.add_argument("step", nargs="?", help="one step (default: every step with a golden set)")
+    ev.add_argument(
+        "--compare",
+        action="append",
+        default=[],
+        metavar="model=NAME",
+        help="also run with another model (or provider=NAME), side by side; repeatable",
+    )
+    ev.add_argument("--json", action="store_true", help="print the reports as JSON")
+
     d = cmd("diagram", "print the pipeline as a Mermaid diagram")
     d.add_argument("pipeline")
 
@@ -712,6 +724,19 @@ def main(argv: list[str] | None = None) -> int:
 
             print(json.dumps(lint.schema(), indent=2))
             return 0
+        if a.cmd == "eval":
+            from . import golden
+
+            spec = load(a.pipeline)
+            variants: list[dict[str, str]] = [{}] + [golden.parse_override(c) for c in a.compare]
+            reports = [
+                golden.evaluate(spec, s, v) for s in golden.golden_steps(spec, a.step) for v in variants
+            ]
+            if a.json:
+                print(json.dumps([r.as_dict() for r in reports], ensure_ascii=False, indent=2, default=str))
+            else:
+                print(golden.render(reports))
+            return 0 if all(r.passed for r in reports) else 1
         if a.cmd == "diagram":
             print(graph.mermaid(load(a.pipeline)))
             return 0

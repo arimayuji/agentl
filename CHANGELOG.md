@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
+  and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
+  accuracy per field (numbers within a tolerance), cost and the records that differ.
+  `--compare model=NAME` runs the same check with another model side by side, and a run below
+  `min_accuracy` exits 1 for CI.
 - `mode: changeset` on `sqlite.write` (#205): compares with the table and writes only what
   changed. `deletes: missing` or `partition_replaced` (with `partition_by`) removes rows the source
   no longer has, `dry_run: true` reports the changeset without writing, and the result has

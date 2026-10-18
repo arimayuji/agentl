@@ -372,6 +372,11 @@ rejected), by its accepted answers (records not rejected) and by the records an 
 `cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
 their events and show up as model `unknown`.
 
+## Eval
+
+`agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
+golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+
 ## Gaps
 
 A freshness check says the latest data is late; it does not say a day in the middle is missing.
