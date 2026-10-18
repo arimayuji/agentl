@@ -1,0 +1,34 @@
+[files]
+extend-exclude = [
+  "*.svg", "*.png", "*.jpg", "*.gif", "*.mp4", "*.webm", "*.jsonl",
+  "requirements/*.txt",
+  "media/",
+  "tests/arrow_steps/",
+]
+
+[default]
+extend-ignore-re = [
+  # deliberate misspellings that test "did you mean" suggestions
+  "raed", "defualt", "invoce", "uper\\(", "step=\"som\"",
+]
+
+[default.extend-words]
+# Brazilian data formats and field names (NF-e, CPF/CNPJ, sample spreadsheets)
+serie = "serie"
+cliente = "cliente"
+clientes = "clientes"
+Cliente = "Cliente"
+falso = "falso"
+anual = "anual"
+# US Employer Identification Number
+ein = "ein"
+EIN = "EIN"
+# US and Brazilian state codes, ordinal suffixes, SQL prefixes, libraries
+BA = "BA"
+ND = "ND"
+nd = "nd"
+PN = "PN"
+UPDAT = "UPDAT"
+INSER = "INSER"
+certifi = "certifi"
+Ded = "Ded"

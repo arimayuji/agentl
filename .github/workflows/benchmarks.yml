@@ -35,8 +35,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          # No pip cache: these runs also fire on v* tags, and a cache written by another run
+          # could poison them (zizmor cache-poisoning). The install is small.
       # agentl's extras, plus the libraries the comparison measures it against
       - run: pip install -e ".[pandas,parquet]" requests httpx beautifulsoup4 lxml
       - run: python -m benchmarks --compare --against base --json compare.json
@@ -56,8 +56,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          # No pip cache: these runs also fire on v* tags, and a cache written by another run
+          # could poison them (zizmor cache-poisoning). The install is small.
       - run: pip install -e .
       - run: python -m benchmarks --quick --json benchmarks.json
       - run: python -m benchmarks --compare --quick --json compare.json

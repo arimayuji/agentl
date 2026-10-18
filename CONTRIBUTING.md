@@ -94,6 +94,20 @@ entry point group. Please name third-party packages `agentl-<name>`.
   release config need the owner's review (see `.github/CODEOWNERS`). New dependencies are checked
   for known vulnerabilities, and third-party actions are pinned to commit SHAs.
 
+## Bots
+
+- **Welcome**: a short comment on your first issue or pull request.
+- **Labeler**: adds labels such as `connectors`, `cli` or `docs` from the files a pull request
+  changes (`.github/labeler.yml`).
+- **Release Drafter**: after each merge, updates a draft release grouped by label and title prefix
+  (`feat`, `fix`, `docs`, `ci`, `deps`). It never publishes; a maintainer does.
+- **Quality**: `typos` checks spelling (add real words to `_typos.toml`) and `zizmor` checks the
+  workflows for security issues. Run them locally with `pip install typos zizmor`, then
+  `typos` and `zizmor --offline .`.
+
+The welcome and labeler workflows use `pull_request_target` but never check out or run pull
+request code.
+
 ## Releases (maintainers)
 
 1. Move the `[Unreleased]` entries in `CHANGELOG.md` to a new version section.
