@@ -175,6 +175,54 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+class RowRuleSpec(BaseModel):
+    """A per-row rule of a check step (#218). `on_fail`: `drop` removes the row, `flag` keeps it
+    and reports it, `fail` stops the step. An error inside the rule never stops the pipeline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule: Literal["not_null", "between", "accepted", "matches", "abs_diff_max"]
+    column: str
+    other: str | None = None  # abs_diff_max: the column compared with `column`
+    min: float | None = None
+    max: float | None = None
+    values: list[Any] | None = None
+    pattern: str | None = None
+    on_fail: Literal["drop", "flag", "fail"] = "flag"
+
+    @model_validator(mode="after")
+    def _needs(self) -> RowRuleSpec:
+        need = {
+            "between": self.min is not None or self.max is not None,
+            "accepted": self.values is not None,
+            "matches": self.pattern is not None,
+            "abs_diff_max": self.other is not None and self.max is not None,
+        }.get(self.rule, True)
+        if not need:
+            hint = {"between": "min and/or max", "accepted": "values", "matches": "pattern"}
+            raise ValueError(f"rule {self.rule}: needs {hint.get(self.rule, 'other and max')}")
+        return self
+
+
+def _row_rule(step: str, raw: Any) -> RowRuleSpec:
+    if (
+        isinstance(raw, dict)
+        and "rule" not in raw
+        and len(raw) == 1
+        and next(iter(raw))
+        in (
+            "compute",
+            "cast",
+            "fn",
+        )
+    ):
+        raise ValueError(
+            f"step '{step}': {next(iter(raw))}: is a hybrid rule of agent steps; a check step's "
+            "rules are per-row checks (rule: not_null | between | accepted | matches | abs_diff_max)"
+        )
+    return RowRuleSpec.model_validate(raw)
+
+
 class AttemptSpec(BaseModel):
     """One try of an agent step at a record (#198). `attempts:` lists them in order; a record moves
     to the next attempt when its answer fails validation."""
@@ -203,6 +251,15 @@ class StepSpec(BaseModel):
     expect: dict[str, Any] = Field(default_factory=dict)
     review: str | None = None
     on_fail: Literal["stop", "warn"] = "stop"
+    # `rules:` depends on the step kind (validated in _one_kind):
+    # - on a `check` step (#218): per-row rules (RowRuleSpec), with `identity` naming the columns
+    #   that identify a finding from one day to the next (default: the rule's column value);
+    # - on an `agent` step (#124, #195, hybrid): rules tried in order on each record before the
+    #   agent; a record whose rules all succeed and give valid `output:` fields never reaches the
+    #   llm. Items are one-key dicts: {compute: {field: expr}}, {cast: {field: type}} or
+    #   {fn: "module:function"}.
+    rules: list[Any] = Field(default_factory=list)
+    identity: list[str] = Field(default_factory=list)
     # Per rule (#185): fail (default), warn (event only) or reject (drop the failing rows).
     severity: dict[str, Literal["fail", "warn", "reject"]] = Field(default_factory=dict)
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
@@ -237,10 +294,6 @@ class StepSpec(BaseModel):
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
-    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
-    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
-    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
-    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
@@ -294,8 +347,17 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
-        if self.check and not (self.expect or self.review):
-            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or both")
+        if self.check and not (self.expect or self.review or self.rules):
+            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or 'rules'")
+        if self.identity and not self.check:
+            raise ValueError(f"step '{self.id}': identity belongs to check steps (with per-row rules)")
+        if self.rules and not (self.check or self.agent):
+            raise ValueError(
+                f"step '{self.id}': rules go on an agent step (hybrid: rules first, the llm for the "
+                "rows they miss) or on a check step (per-row check rules)"
+            )
+        if self.check:
+            self.rules = [r if isinstance(r, RowRuleSpec) else _row_rule(self.id, r) for r in self.rules]
         unknown = [k for k in self.expect if k not in _EXPECTATIONS]
         if unknown:
             raise ValueError(
@@ -346,9 +408,11 @@ class StepSpec(BaseModel):
                     "row rejected on its own); attempts: works with whole-record answers only"
                 )
 
-        if self.rules and not self.agent:
-            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
-        for rule in self.rules:
+        for rule in self.rules if self.agent else []:
+            if not isinstance(rule, dict):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
             if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
                 raise ValueError(
                     f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"

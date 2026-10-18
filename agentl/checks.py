@@ -304,3 +304,71 @@ def failing_rows(records: Records, key: str, rule: Any) -> dict[int, str]:
 
 def _names(value: str | list[str]) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
+
+
+# ---------------------------------------------------------------- per-row rules (#218)
+def _rule_ok(rule: Any, row: dict[str, Any]) -> bool:
+    v = row.get(rule.column)
+    if rule.rule == "not_null":
+        return not _empty(v)
+    if _empty(v):
+        return True  # empty values are the job of not_null
+    if rule.rule == "between":
+        n = _number(v)
+        if n is None:
+            raise ValueError(f"{rule.column}: {v!r} is not a number")
+        return (rule.min is None or n >= rule.min) and (rule.max is None or n <= rule.max)
+    if rule.rule == "accepted":
+        return str(v) in {str(a) for a in rule.values}
+    if rule.rule == "matches":
+        return re.search(rule.pattern, str(v)) is not None
+    a, b = _number(v), _number(row.get(rule.other))
+    if a is None or b is None:
+        raise ValueError(f"{rule.column}/{rule.other}: {v!r} and {row.get(rule.other)!r} are not numbers")
+    return abs(a - b) <= rule.max
+
+
+def _identity(rule: Any, row: dict[str, Any], identity: list[str]) -> str:
+    cols = identity or [rule.column]
+    return "|".join([rule.rule, rule.column, *(f"{c}={row.get(c)}" for c in cols)])
+
+
+def run_rules(
+    records: Records, rules: list[Any], identity: list[str] | None = None
+) -> tuple[Records, list[dict[str, Any]], list[str]]:
+    """Applies per-row rules. Returns (kept rows, findings, rule errors). A finding is
+    {id, rule, column, action, detail}; rows failing a `drop` rule are left out. A rule that
+    raises on a row counts as passing for that row and the error is reported, never raised."""
+    kept: Records = []
+    findings: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for i, row in enumerate(records):
+        drop = False
+        for rule in rules:
+            try:
+                ok = _rule_ok(rule, row)
+            except Exception as e:  # a broken rule never breaks the flow
+                if len(errors) < 20:
+                    errors.append(f"row {i}, rule {rule.rule} on {rule.column}: {e}")
+                continue
+            if ok:
+                continue
+            findings.append(
+                {
+                    "id": _identity(rule, row, identity or []),
+                    "rule": rule.rule,
+                    "column": rule.column,
+                    "action": rule.on_fail,
+                    "detail": f"row {i}: {rule.column}={row.get(rule.column)!r} failed {rule.rule}",
+                }
+            )
+            drop = drop or rule.on_fail == "drop"
+        if not drop:
+            kept.append(row)
+    return kept, findings, errors
+
+
+def digest(today: list[str], yesterday: list[str]) -> dict[str, list[str]]:
+    """Finding ids compared with the previous day: new, resolved and ongoing (sorted)."""
+    t, y = set(today), set(yesterday)
+    return {"new": sorted(t - y), "resolved": sorted(y - t), "ongoing": sorted(t & y)}

@@ -11,6 +11,7 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Check steps take per-row `rules:` with `on_fail: drop | flag | fail` (a broken rule never stops the run) and emit a `check.digest` event with new, resolved and ongoing findings by `identity` against the previous day, including an all-clear heartbeat (#218). `rules:` is validated by step kind: per-row check rules on `check` steps, hybrid rules (#124) on `agent` steps.
 - Schedules by publication cycle (#201): a `schedule:` trigger with a required `tz`, expected
   `days` and `at`, built-in `us_federal` and `br_national` holiday calendars plus an exceptions
   file, `if_holiday` (skip, next or previous business day, run), staged `poll.cadence`,

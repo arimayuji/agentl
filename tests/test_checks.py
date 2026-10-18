@@ -94,7 +94,7 @@ def test_duration_and_percent_parsing():
 
 def test_spec_errors():
     base = {"name": "x", "steps": [{"id": "src", "fn": "tests.test_checks:src"}]}
-    with pytest.raises(ValueError, match="needs 'expect', 'review' or both"):
+    with pytest.raises(ValueError, match="needs 'expect', 'review' or 'rules'"):
         parse({**base, "steps": [*base["steps"], {"id": "c", "check": "src"}]})
     with pytest.raises(ValueError, match="unknown expectation"):
         parse({**base, "steps": [*base["steps"], {"id": "c", "check": "src", "expect": {"nope": 1}}]})
