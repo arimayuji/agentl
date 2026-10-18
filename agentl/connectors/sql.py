@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from ..registry import Rejects, connector, stream_reader, stream_writer
-from ._util import check_update_columns, null_keys, single, upsert_options
+from ._util import (
+    SCD2_COLUMNS,
+    changeset_options,
+    check_scd2_columns,
+    check_update_columns,
+    null_keys,
+    scd2_options,
+    single,
+    upsert_options,
+)
 
 
 @connector("sqlite.read")
@@ -53,22 +62,38 @@ def sqlite_write_chunks(
     key: str | list[str] | None = None,
     on_conflict: str | None = None,
     update_columns: str | list[str] | None = None,
+    deletes: str | dict | None = None,
+    partition_by: str | list[str] | None = None,
+    dry_run: bool = False,
+    track: str | list[str] | None = None,
+    on_missing: str | None = None,
+    as_of: Any = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. Columns that first appear in a later chunk are added
     to the table. `mode`: append, replace (drop the table first) or upsert (rows whose `key`
     columns match an existing row update it; see `sqlite_write` for on_conflict and update_columns).
     Upsert reports inserted, updated and unchanged; it needs no unique index on `key` (a table it
-    creates gets one). Records with a null key field are rejected, not written."""
+    creates gets one). Records with a null key field are rejected, not written (upsert and scd2).
+    scd2 keeps every version of a row (see `sqlite_write`); the source is staged in a temp table
+    and merged once at the end, so `on_missing: close` sees the whole input."""
     if not table.replace("_", "").isalnum():
         raise ValueError(f"invalid table name '{table}'")
-    if mode not in ("append", "replace", "upsert"):
-        raise ValueError(f"sqlite.write mode must be append, replace or upsert, got {mode!r}")
+    if mode not in ("append", "replace", "upsert", "scd2", "changeset"):
+        raise ValueError(
+            f"sqlite.write mode must be append, replace, upsert, scd2 or changeset, got {mode!r}"
+        )
     keys = [key] if isinstance(key, str) else list(key or [])
+    drop, parts = changeset_options("sqlite.write", mode, keys, deletes, partition_by, dry_run)
+    if mode == "changeset":
+        return _changeset(chunks, db, table, keys, drop, parts, dry_run)
     if mode == "upsert" and not keys:
         raise ValueError(
             "sqlite.write mode: upsert needs `key` (the column, or columns, that identify a row)"
         )
     conflict, upd = upsert_options("sqlite.write", mode, keys, on_conflict, update_columns)
+    tracked, missing_rows, when = scd2_options("sqlite.write", mode, keys, track, on_missing, as_of)
+    stage = '"_agentl_scd2"'
+    staged = False
     written = inserted = updated = 0
     cols: list[str] = []
     rejected: list[dict] = []
@@ -90,6 +115,8 @@ def sqlite_write_chunks(
                     if k not in known:
                         known.add(k)
                         new.append(k)
+            if new and mode == "scd2":
+                check_scd2_columns("sqlite.write", None, new)
             if new:
                 if not cols:
                     have = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
@@ -106,12 +133,31 @@ def sqlite_write_chunks(
                 for c in new:
                     if c not in have:
                         conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_column(c, rows)}')
+                if mode == "scd2":
+                    for c in SCD2_COLUMNS:
+                        if c not in have and not cols:
+                            conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_quote(c)}')
+                    if staged:
+                        for c in new:
+                            conn.execute(f"ALTER TABLE temp.{stage} ADD COLUMN {_quote(c)}")
                 cols.extend(new)
             if not rows:
                 continue
             names = ", ".join(map(_quote, cols))
             ph = ", ".join("?" for _ in cols)
             insert = f'INSERT INTO "{table}" ({names}) VALUES ({ph})'
+            if mode == "scd2":
+                rows, bad = null_keys("sqlite.write", rows, keys)
+                rejected.extend(bad)
+                if not staged:
+                    conn.execute(f"DROP TABLE IF EXISTS temp.{stage}")
+                    conn.execute(f"CREATE TEMP TABLE {stage} ({names}, _st)")
+                    staged = True
+                conn.executemany(
+                    f"INSERT INTO temp.{stage} ({names}) VALUES ({ph})",
+                    [tuple(map(r.get, cols)) for r in rows],
+                )
+                continue
             if mode != "upsert":
                 conn.executemany(insert, [tuple(map(r.get, cols)) for r in rows])
                 written += len(rows)
@@ -179,10 +225,250 @@ def sqlite_write_chunks(
             n = conn.execute(f"SELECT count(*) FROM temp.{tmp}").fetchone()[0]
             conn.execute(f"DROP TABLE temp.{tmp}")
             written += n
+        if mode == "scd2":
+            if staged:  # an empty input changes nothing, even with on_missing: close
+                counts = _sqlite_scd2(conn, table, stage, cols, keys, tracked, missing_rows, when)
+                done = [{"table": table, "written": counts.pop("written"), "mode": mode, **counts}]
+            else:
+                done = [
+                    {
+                        "table": table,
+                        "written": 0,
+                        "mode": mode,
+                        "inserted": 0,
+                        "versioned": 0,
+                        "unchanged": 0,
+                    }
+                ]
+            return Rejects(done, rejected) if rejected else done
     out: dict[str, Any] = {"table": table, "written": written}
     if mode == "upsert":
         out.update(inserted=inserted, updated=updated, unchanged=written - inserted - updated)
     return Rejects([out], rejected) if rejected else [out]
+
+
+_STAGE = '"_agentl_changeset"'
+
+
+def _changeset(
+    chunks: Iterable[list[dict]],
+    db: str,
+    table: str,
+    keys: list[str],
+    drop: str,
+    parts: list[str],
+    dry_run: bool,
+) -> list[dict]:
+    """mode: changeset. Every chunk is staged in a temp table first (deletes need the whole
+    source), then the diff with the table runs as a handful of set-based statements. With
+    `dry_run` the counts are computed and nothing in the database changes."""
+    cols: list[str] = []
+    rejected: list[dict] = []  # null keys cannot be matched to a row, as in upsert
+    if db and db != ":memory:" and not dry_run:
+        Path(db).parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute(f"DROP TABLE IF EXISTS temp.{_STAGE}")
+        for rows in chunks:
+            rows, bad = null_keys("sqlite.write", list(rows), keys)
+            rejected.extend(bad)
+            new = [k for k in dict.fromkeys(k for r in rows for k in r) if k not in cols]
+            for c in new:
+                if not cols:
+                    conn.execute(f"CREATE TEMP TABLE {_STAGE} ({_quote(c)}, _hit, _diff)")
+                else:
+                    conn.execute(f"ALTER TABLE temp.{_STAGE} ADD COLUMN {_quote(c)}")
+                cols.append(c)
+            if rows:
+                names = ", ".join(map(_quote, cols))
+                ph = ", ".join("?" for _ in cols)
+                conn.executemany(
+                    f"INSERT INTO temp.{_STAGE} ({names}) VALUES ({ph})",
+                    [tuple(map(r.get, cols)) for r in rows],
+                )
+        have = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+        if not cols:
+            if not have:  # no source rows and no table: nothing to compare
+                empty = [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                return Rejects(empty, rejected) if rejected else empty
+            conn.execute(f"CREATE TEMP TABLE {_STAGE} ({', '.join(map(_quote, keys))}, _hit, _diff)")
+            cols = list(keys)
+        if missing := [k for k in keys if k not in cols]:
+            raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
+        if have and (absent := [k for k in keys if k not in have]):
+            raise ValueError(f"sqlite.write: key column(s) not in table {table!r}: {absent}")
+        klist = ", ".join(map(_quote, keys))
+        conn.execute(  # last record of a key wins, as in upsert
+            f"DELETE FROM temp.{_STAGE} WHERE rowid NOT IN "
+            f"(SELECT max(rowid) FROM temp.{_STAGE} GROUP BY {klist})"
+        )
+        conn.execute(f"CREATE INDEX temp._agentl_changeset_k ON {_STAGE} ({klist})")
+        if parts:
+            conn.execute(
+                f"CREATE INDEX temp._agentl_changeset_p ON {_STAGE} ({', '.join(map(_quote, parts))})"
+            )
+        total = conn.execute(f"SELECT count(*) FROM temp.{_STAGE}").fetchone()[0]
+        rest = [c for c in cols if c not in keys]
+        match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
+        inserted = updated = deleted = 0
+        gone = ""
+        if have:
+            # one scan of the table probing the indexed stage: mark hits, and hits whose values differ
+            # (a column the table lacks differs when the record has a value for it)
+            differs = (
+                " OR ".join(
+                    f"s.{_quote(c)} IS NOT t.{_quote(c)}" if c in have else f"s.{_quote(c)} IS NOT NULL"
+                    for c in rest
+                )
+                or "0"
+            )
+            scan = f'SELECT s.rowid FROM "{table}" AS t CROSS JOIN temp.{_STAGE} AS s WHERE {match}'
+            conn.execute(f"UPDATE temp.{_STAGE} SET _hit = 1 WHERE rowid IN ({scan})")
+            conn.execute(f"UPDATE temp.{_STAGE} SET _diff = 1 WHERE rowid IN ({scan} AND ({differs}))")
+            updated = conn.execute(f"SELECT count(*) FROM temp.{_STAGE} WHERE _diff = 1").fetchone()[0]
+            gone = _gone(table, keys, drop, parts)
+            if gone:
+                deleted = conn.execute(f'SELECT count(*) FROM "{table}" AS t WHERE {gone}').fetchone()[0]
+        inserted = total - conn.execute(f"SELECT count(*) FROM temp.{_STAGE} WHERE _hit = 1").fetchone()[0]
+        changed_parts = total_parts = 0
+        if parts:
+            plist = ", ".join(f"s.{_quote(p)}" for p in parts)
+            pmatch = " AND ".join(f"t.{_quote(p)} IS s.{_quote(p)}" for p in parts)
+            lost = f' OR EXISTS (SELECT 1 FROM "{table}" AS t WHERE {pmatch} AND {gone})' if deleted else ""
+            total_parts, changed_parts = conn.execute(
+                f"SELECT count(*), coalesce(sum(ch), 0) FROM "
+                f"(SELECT (max(s._hit IS NULL OR s._diff = 1){lost}) AS ch "
+                f"FROM temp.{_STAGE} AS s GROUP BY {plist})"
+            ).fetchone()
+        if not dry_run and (inserted or updated or deleted or not have):
+            names = ", ".join(map(_quote, cols))
+            if not have:
+                conn.execute(f'CREATE TABLE "{table}" ({names})')
+            for c in cols:
+                if have and c not in have:
+                    conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {_quote(c)}')
+            if deleted:
+                conn.execute(f'DELETE FROM "{table}" AS t WHERE {gone}')
+            if updated:
+                sets = ", ".join(
+                    f"{_quote(c)} = (SELECT s.{_quote(c)} FROM temp.{_STAGE} AS s WHERE {match})"
+                    for c in rest
+                )
+                conn.execute(
+                    f'UPDATE "{table}" AS t SET {sets} '
+                    f"WHERE EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE s._diff = 1 AND {match})"
+                )
+            if inserted:
+                conn.execute(
+                    f'INSERT INTO "{table}" ({names}) SELECT {names} FROM temp.{_STAGE} WHERE _hit IS NULL'
+                )
+        conn.execute(f"DROP TABLE temp.{_STAGE}")
+    out = _counts(table, total, inserted, updated, deleted, total - inserted - updated, dry_run, parts)
+    if parts:
+        out.update(partitions=total_parts, partitions_unchanged=total_parts - changed_parts)
+    return Rejects([out], rejected) if rejected else [out]
+
+
+def _gone(table: str, keys: list[str], drop: str, parts: list[str]) -> str:
+    """WHERE clause (on the table aliased `t`) for rows the changeset deletes; empty for none."""
+    if drop == "none":
+        return ""
+    match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
+    cond = f"NOT EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE {match})"
+    if drop == "partition_replaced":
+        pmatch = " AND ".join(f"t.{_quote(p)} IS s.{_quote(p)}" for p in parts)
+        cond += f" AND EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE {pmatch})"
+    return cond
+
+
+def _counts(
+    table: str, n: int, ins: int, upd: int, dele: int, same: int, dry_run: bool, parts: list[str]
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "table": table,
+        "written": 0 if dry_run else ins + upd + dele,
+        "inserted": ins,
+        "updated": upd,
+        "deleted": dele,
+        "unchanged": same,
+        "outcome": "no_change" if not (ins or upd or dele) else "changed",
+    }
+    if dry_run:
+        out["dry_run"] = True
+    return out
+
+
+def _sqlite_scd2(
+    conn: sqlite3.Connection,
+    table: str,
+    stage: str,
+    cols: list[str],
+    keys: list[str],
+    track: list[str] | None,
+    on_missing: str,
+    when: Any,
+) -> dict[str, Any]:
+    """Merge the staged source into the versioned table, set-based: a handful of statements
+    whatever the row count. `_st` is NULL for a new key, 1 for unchanged, 2 for changed."""
+    missing = [k for k in keys if k not in cols]
+    if missing:
+        raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
+    check_scd2_columns("sqlite.write", track, cols)
+    tracked = track if track is not None else [c for c in cols if c not in keys]
+    ts = when.isoformat(timespec="microseconds")
+    tbl = _quote(table)
+    s = f"temp.{stage}"
+    klist = ", ".join(map(_quote, keys))
+    null_key = " OR ".join(f"{_quote(k)} IS NULL" for k in keys)
+    if conn.execute(f"SELECT 1 FROM {s} WHERE {null_key} LIMIT 1").fetchone():
+        raise ValueError(f"sqlite.write: mode: scd2 needs a value in every key column {keys}")
+    conn.execute(f"DELETE FROM {s} WHERE rowid NOT IN (SELECT max(rowid) FROM {s} GROUP BY {klist})")
+    conn.execute(f"CREATE INDEX temp._agentl_scd2_k ON {stage} ({klist})")
+    match = " AND ".join(f"t.{_quote(k)} = s.{_quote(k)}" for k in keys)
+    cur = f"{match} AND t.is_current = 1"
+    conn.execute(
+        f"UPDATE {s} SET _st = 1 WHERE rowid IN "
+        f"(SELECT s.rowid FROM {tbl} AS t CROSS JOIN {s} AS s WHERE {cur})"
+    )
+    if tracked:
+        same = " AND ".join(f"s.{_quote(c)} IS t.{_quote(c)}" for c in tracked)
+        conn.execute(
+            f"UPDATE {s} SET _st = 2 WHERE rowid IN "
+            f"(SELECT s.rowid FROM {tbl} AS t CROSS JOIN {s} AS s WHERE {cur} AND NOT ({same}))"
+        )
+    late = conn.execute(
+        f"SELECT 1 FROM {tbl} AS t CROSS JOIN {s} AS s "
+        f"WHERE {cur} AND s._st = 2 AND t.valid_from > ? LIMIT 1",
+        (ts,),
+    ).fetchone()
+    if late:
+        raise ValueError(f"sqlite.write: as_of {ts} is before the start of a current version")
+    conn.execute(
+        f"UPDATE {tbl} AS t SET valid_to = ?, is_current = 0 WHERE is_current = 1 AND EXISTS "
+        f"(SELECT 1 FROM {s} AS s WHERE {match} AND s._st = 2)",
+        (ts,),
+    )
+    closed = 0
+    if on_missing == "close":
+        closed = conn.execute(
+            f"UPDATE {tbl} AS t SET valid_to = ?, is_current = 0 WHERE is_current = 1 AND NOT EXISTS "
+            f"(SELECT 1 FROM {s} AS s WHERE {match})",
+            (ts,),
+        ).rowcount
+    names = ", ".join(map(_quote, cols))
+    conn.execute(
+        f"INSERT INTO {tbl} ({names}, valid_from, valid_to, is_current) "
+        f"SELECT {names}, ?, NULL, 1 FROM {s} WHERE _st IS NULL OR _st = 2",
+        (ts,),
+    )
+    counts: dict[Any, int] = dict.fromkeys((None, 1, 2), 0)
+    counts.update(conn.execute(f"SELECT _st, count(*) FROM {s} GROUP BY _st").fetchall())
+    conn.execute(f"DROP TABLE {s}")
+    out: dict[str, Any] = {"written": sum(counts.values()), "inserted": counts[None]}
+    out.update(versioned=counts[2], unchanged=counts[1])
+    if on_missing == "close":
+        out["closed"] = closed
+    out["as_of"] = ts
+    return out
 
 
 @connector("sqlite.write")
@@ -194,12 +480,26 @@ def sqlite_write(
     key: str | list[str] | None = None,
     on_conflict: str | None = None,
     update_columns: str | list[str] | None = None,
+    deletes: str | dict | None = None,
+    partition_by: str | list[str] | None = None,
+    dry_run: bool = False,
+    track: str | list[str] | None = None,
+    on_missing: str | None = None,
+    as_of: Any = None,
 ) -> list[dict]:
     """Write records to a SQLite table, created (and widened) as needed. `mode`: append (default),
     replace, or upsert with `key: id` (a record updates the row with the same key).
     Upsert only: on_conflict update (default; rows whose values did not change are left alone),
     do_nothing (keep the existing row) or error (fail on a duplicate key); update_columns limits
-    the update to those columns. The result reports inserted, updated and unchanged."""
+    the update to those columns. The result reports inserted, updated and unchanged.
+    mode: changeset compares with the table and writes only what changed; `deletes: missing` (or
+    `partition_replaced` with `partition_by`) also removes rows the source no longer has, and
+    `dry_run: true` reports the counts without writing.
+    scd2 keeps history (slowly changing dimension type 2) in `valid_from`, `valid_to` (NULL while
+    current) and `is_current`: a record whose `track` columns (default: all but the key) changed
+    closes the current version and adds a new one; on_missing: close also closes keys absent
+    from the input. `as_of` (default now) is the time stamped, stored as UTC ISO 8601 text.
+    The result reports inserted, versioned, unchanged (and closed)."""
     return sqlite_write_chunks(
         [single(input)],
         db=db,
@@ -208,4 +508,10 @@ def sqlite_write(
         key=key,
         on_conflict=on_conflict,
         update_columns=update_columns,
+        deletes=deletes,
+        partition_by=partition_by,
+        dry_run=dry_run,
+        track=track,
+        on_missing=on_missing,
+        as_of=as_of,
     )

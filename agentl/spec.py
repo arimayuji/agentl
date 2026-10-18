@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .gaps import ExpectSpec
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 # ${params.name} (or ${param.name}): a run parameter declared under `params:`.
@@ -106,6 +109,7 @@ _EXPECTATIONS = (  # see checks.py
     "range",
     "fresh",
     "vs_last_run",
+    "vs_runs",
     "rejected_rate",
     "pii",
 )
@@ -131,6 +135,27 @@ class WaitSpec(BaseModel):
         return self
 
 
+class ConcurrencySpec(BaseModel):
+    """At most one run at a time per `key` (default: the pipeline name), across every worker that
+    shares the run store. The lock is a lease renewed while the run lives; a dead worker's lease
+    lapses after `lease`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = "{pipeline}"
+    on_overlap: Literal["skip", "queue", "fail"] = "skip"
+    lease: str | float = "5m"
+    wait: str | float = "1h"  # queue: how long to wait for the other run before failing
+
+    @model_validator(mode="after")
+    def _valid(self) -> ConcurrencySpec:
+        from .checks import parse_duration
+
+        if parse_duration(self.lease) <= 0 or parse_duration(self.wait) <= 0:
+            raise ValueError("concurrency: lease and wait must be positive")
+        return self
+
+
 class CursorSpec(BaseModel):
     """Incremental loading: the largest `field` seen in a successful run is kept in the run store
     and replaces `{cursor}` in the step's `with` on the next run (`initial` on the first)."""
@@ -150,6 +175,124 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+RetryOn = Literal["transport", "http_5xx", "http_429", "any"]
+
+
+def _retry_on_default() -> list[RetryOn]:
+    return ["transport"]
+
+
+# The last part of a connector name that marks a writer or a delivery (`postgres.write`, `slack.send`)
+SINK_VERBS = ("write", "upload", "post", "produce", "publish", "send", "mark")
+
+
+def is_sink(use: str | None) -> bool:
+    """A connector that writes or delivers, judged by its name (`*.write`, `*.send`, ...)."""
+    return bool(use) and (use or "").rsplit(".", 1)[-1] in SINK_VERBS
+
+
+class RetrySpec(BaseModel):
+    """Step retries (#296): up to `attempts` tries, waiting `backoff` doubled each time (with
+    jitter) up to `max_backoff`, only for the errors in `on`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: int = Field(default=3, ge=1, le=20)
+    backoff: str | float = "1s"
+    max_backoff: str | float = "30s"
+    on: list[RetryOn] = Field(default_factory=_retry_on_default, min_length=1)
+
+    @model_validator(mode="after")
+    def _durations(self) -> RetrySpec:
+        from .checks import parse_duration
+
+        if parse_duration(self.backoff) < 0 or parse_duration(self.max_backoff) < 0:
+            raise ValueError("retries: backoff and max_backoff must not be negative")
+        return self
+
+
+class FallbackSpec(BaseModel):
+    """One step body tried when the main body fails (#296): a connector and its settings."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    use: str
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flat(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and "fallback" in raw:
+            raise ValueError("a fallback cannot have its own fallback; list every body in one list")
+        if isinstance(raw, dict) and "use" not in raw:
+            raise ValueError("each fallback is a step body {use, with}")
+        return raw
+
+
+class GoldenSpec(BaseModel):
+    """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
+    `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    min_accuracy: float | None = Field(default=None, ge=0, le=1)
+    tolerance: float = Field(default=0.0, ge=0)  # numbers within this absolute difference match
+
+    @model_validator(mode="before")
+    @classmethod
+    def _short(cls, raw: Any) -> Any:
+        return {"file": raw} if isinstance(raw, str) else raw
+
+
+class RowRuleSpec(BaseModel):
+    """A per-row rule of a check step (#218). `on_fail`: `drop` removes the row, `flag` keeps it
+    and reports it, `fail` stops the step. An error inside the rule never stops the pipeline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule: Literal["not_null", "between", "accepted", "matches", "abs_diff_max"]
+    column: str
+    other: str | None = None  # abs_diff_max: the column compared with `column`
+    min: float | None = None
+    max: float | None = None
+    values: list[Any] | None = None
+    pattern: str | None = None
+    on_fail: Literal["drop", "flag", "fail"] = "flag"
+
+    @model_validator(mode="after")
+    def _needs(self) -> RowRuleSpec:
+        need = {
+            "between": self.min is not None or self.max is not None,
+            "accepted": self.values is not None,
+            "matches": self.pattern is not None,
+            "abs_diff_max": self.other is not None and self.max is not None,
+        }.get(self.rule, True)
+        if not need:
+            hint = {"between": "min and/or max", "accepted": "values", "matches": "pattern"}
+            raise ValueError(f"rule {self.rule}: needs {hint.get(self.rule, 'other and max')}")
+        return self
+
+
+def _row_rule(step: str, raw: Any) -> RowRuleSpec:
+    if (
+        isinstance(raw, dict)
+        and "rule" not in raw
+        and len(raw) == 1
+        and next(iter(raw))
+        in (
+            "compute",
+            "cast",
+            "fn",
+        )
+    ):
+        raise ValueError(
+            f"step '{step}': {next(iter(raw))}: is a hybrid rule of agent steps; a check step's "
+            "rules are per-row checks (rule: not_null | between | accepted | matches | abs_diff_max)"
+        )
+    return RowRuleSpec.model_validate(raw)
+
+
 class AttemptSpec(BaseModel):
     """One try of an agent step at a record (#198). `attempts:` lists them in order; a record moves
     to the next attempt when its answer fails validation."""
@@ -163,6 +306,54 @@ class AttemptSpec(BaseModel):
     # Add the previous attempt's validation errors (field, rule, value) and a stricter reminder.
     feedback: bool = False
     on_invalid: Literal["quarantine"] = "quarantine"
+
+
+class CriticSpec(BaseModel):
+    """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
+    step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
+    quarantined."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm: str | None = None  # default: the step's llm
+    criteria: str
+    max_rounds: int = Field(default=2, ge=1, le=5)
+
+    @field_validator("criteria")
+    @classmethod
+    def _criteria(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("critic criteria must not be empty")
+        return v
+
+
+class JurySpec(BaseModel):
+    """Several llms answer each record independently and a decision picks the answer (#299):
+    `majority` (most jurors agree on `fields`, a tie quarantines the record) or `judge` (a judge
+    llm reads the jurors' answers and writes the final one)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llms: list[str] = Field(min_length=2)
+    decide: Literal["majority", "judge"] = "majority"
+    judge: str | None = None
+    # low_confidence: only records whose first answer has `confidence` below `escalate_below`.
+    when: Literal["always", "low_confidence"] = "low_confidence"
+    fields: list[str] = Field(default_factory=list)  # default: every output field
+
+    @model_validator(mode="after")
+    def _judge(self) -> JurySpec:
+        if len(set(self.llms)) != len(self.llms):
+            raise ValueError("jury llms must be different entries")
+        if self.decide == "judge" and not self.judge:
+            raise ValueError("jury decide: judge needs judge: <llm name>")
+        if self.decide != "judge" and self.judge:
+            raise ValueError("jury judge: is only used with decide: judge")
+        return self
+
+
+DROP = "drop"  # reserved route target: the record is discarded
+ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
 
 
 class StepSpec(BaseModel):
@@ -180,6 +371,17 @@ class StepSpec(BaseModel):
     on_fail: Literal["stop", "warn"] = "stop"
     # Layout drift (#178): compare the input's columns and types with the last run's. See drift.py.
     on_drift: Literal["warn", "fail", "remap"] | None = None
+    # `rules:` depends on the step kind (validated in _one_kind):
+    # - on a `check` step (#218): per-row rules (RowRuleSpec), with `identity` naming the columns
+    #   that identify a finding from one day to the next (default: the rule's column value);
+    # - on an `agent` step (#124, #195, hybrid): rules tried in order on each record before the
+    #   agent; a record whose rules all succeed and give valid `output:` fields never reaches the
+    #   llm. Items are one-key dicts: {compute: {field: expr}}, {cast: {field: type}} or
+    #   {fn: "module:function"}.
+    rules: list[Any] = Field(default_factory=list)
+    identity: list[str] = Field(default_factory=list)
+    # Per rule (#185): fail (default), warn (event only) or reject (drop the failing rows).
+    severity: dict[str, Literal["fail", "warn", "reject"]] = Field(default_factory=dict)
     # Wait for a source with no fixed publishing time: re-run `step` every `every` until
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
@@ -195,6 +397,16 @@ class StepSpec(BaseModel):
     # Attempts with validator feedback and progressive strictness (#198). Replaces the default
     # "two tries per llm" when set. See AttemptSpec.
     attempts: list[AttemptSpec] = Field(default_factory=list)
+    # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
+    critic: CriticSpec | None = None
+    # Several llms answer and a vote or a judge decides (#299). See JurySpec.
+    jury: JurySpec | None = None
+    jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
+    # Router (#299): an agent step that labels each record with one of these keys and sends it
+    # only to the mapped step (`drop` discards it). Each target reads the router as its input and
+    # receives just its branch. `rules:` items here are {when: expr, route: label}.
+    routes: dict[str, str] | None = None
+    route_tag: bool = False  # add `_route` (the label) to each routed record
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
     # Compact rows (#215): the model answers one JSON array per line in the column order of
@@ -206,26 +418,63 @@ class StepSpec(BaseModel):
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
+    cache_ttl: str | float | None = None  # cached results expire after this long; default: never
     # Tools the agent may call, per record: "http.get", "sqlite.query", "fn:module:function",
     # "mcp:server" or "mcp:server/tool"; a one-key dict adds settings, e.g. {sqlite.query: {db: x}}.
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=100)  # per record
     write_tools: list[str] = Field(default_factory=list)  # tools allowed even though they can write
-    # Hybrid (#124, #195): rules tried in order on each record before the agent; a record whose
-    # rules all succeed and give valid `output:` fields never reaches the llm. Items are one-key
-    # dicts: {compute: {field: expr}}, {cast: {field: type}} or {fn: "module:function"}.
-    rules: list[dict[str, Any]] = Field(default_factory=list)
     # Contract (#122): checks every record the step outputs (after `output:` on agent steps)
     # against `cast` types. See agentl/contracts.py.
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
     on_bad: Literal["reject", "fail", "coerce"] = "reject"
     extra: Literal["keep", "drop", "forbid"] = "keep"
     rejected_to: WriterSpec | None = None  # writes the step's rejected records (any reason)
+    golden: GoldenSpec | None = None  # expected answers for `agentl eval` (agent steps)
+    # Criticality (#206): `required: false` (or `criticality: best_effort`) makes a failure of this
+    # step a recorded warning instead of a failed run. No step may read its output.
+    required: bool = True
+    # Order-only dependencies: steps that must finish (succeed, or fail best effort) first.
+    after: list[str] = Field(default_factory=list)
+    # Retries and fallbacks (#296): retry the step on matching errors, then try each fallback body
+    # ({use, with}) in order with the same input. See RetrySpec and FallbackSpec.
+    retries: RetrySpec | None = None
+    fallback: list[FallbackSpec] = Field(default_factory=list)
+    fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
+    fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
+    fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
+
+    def _check_jury(self, jury: JurySpec) -> None:
+        sid = self.id
+        if not self.agent:
+            raise ValueError(f"step '{sid}': only agent steps take a jury")
+        if self.output_mode == "rows":
+            raise ValueError(f"step '{sid}': jury is not supported with output_mode rows")
+        if self.mode == "batch" or self.records_per_call > 1:
+            raise ValueError(
+                f"step '{sid}': jury works one record per call; drop mode batch and records_per_call"
+            )
+        unknown = [f for f in jury.fields if f not in (self.output or {})]
+        if unknown:
+            raise ValueError(f"step '{sid}': jury fields not in output: {', '.join(unknown)}")
+        if jury.when == "low_confidence" and (
+            "confidence" not in (self.output or {}) or self.escalate_below is None
+        ):
+            raise ValueError(
+                f"step '{sid}': jury when: low_confidence needs a confidence output field and"
+                " escalate_below; use when: always otherwise"
+            )
 
     @property
     def llms(self) -> list[str]:
         """Every llm the step may call, in order, without repeats."""
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
+        if self.critic is not None:
+            names.append(self.critic.llm or self.llm)
+        if self.jury is not None:
+            names.extend(self.jury.llms)
+            if self.jury.judge:
+                names.append(self.jury.judge)
         return list(dict.fromkeys(names))
 
     @model_validator(mode="before")
@@ -252,6 +501,23 @@ class StepSpec(BaseModel):
             if not names:
                 raise ValueError(f"step '{raw.get('id')}': llm list is empty")
             raw = {**raw, "llm": names[0], "escalate": names[1:]}
+        if isinstance(raw, dict) and "criticality" in raw:
+            rest = {k: v for k, v in raw.items() if k != "criticality"}
+            value = raw["criticality"]
+            if value not in ("required", "best_effort"):
+                raise ValueError(f"step '{raw.get('id')}': criticality is 'required' or 'best_effort'")
+            if "required" in rest and rest["required"] != (value == "required"):
+                raise ValueError(f"step '{raw.get('id')}': set either required or criticality")
+            raw = {**rest, "required": value == "required"}
+        if isinstance(raw, dict) and isinstance(raw.get("after"), str):
+            raw = {**raw, "after": [raw["after"]]}
+        if isinstance(raw, dict) and raw.get("routes") is not None:
+            # A router answers one label per record; its output schema is implicit.
+            if raw.get("output") not in (None, ROUTE_OUTPUT):
+                raise ValueError(
+                    f"step '{raw.get('id')}': a router has no 'output'; it answers a route label"
+                )
+            raw = {**raw, "output": dict(ROUTE_OUTPUT)}
         return raw
 
     @model_validator(mode="after")
@@ -263,8 +529,17 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
             raise ValueError(f"step '{self.id}': check names its input; drop 'input'")
-        if self.check and not (self.expect or self.review or self.on_drift):
-            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review' or 'on_drift'")
+        if self.check and not (self.expect or self.review or self.rules or self.on_drift):
+            raise ValueError(f"step '{self.id}': a check needs 'expect', 'review', 'rules' or 'on_drift'")
+        if self.identity and not self.check:
+            raise ValueError(f"step '{self.id}': identity belongs to check steps (with per-row rules)")
+        if self.rules and not (self.check or self.agent):
+            raise ValueError(
+                f"step '{self.id}': rules go on an agent step (hybrid: rules first, the llm for the "
+                "rows they miss) or on a check step (per-row check rules)"
+            )
+        if self.check:
+            self.rules = [r if isinstance(r, RowRuleSpec) else _row_rule(self.id, r) for r in self.rules]
         if self.on_drift and not self.check:
             raise ValueError(f"step '{self.id}': on_drift belongs to check steps")
         unknown = [k for k in self.expect if k not in _EXPECTATIONS]
@@ -272,7 +547,30 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': unknown expectation {unknown}. Use {', '.join(_EXPECTATIONS)}"
             )
-        if (self.expect or self.review) and not self.check:
+        if self.severity:
+            from .checks import ROW_RULES
+
+            stray = [k for k in self.severity if k not in self.expect and k != "review"]
+            if stray:
+                raise ValueError(f"step '{self.id}': severity for {stray}, which is not in 'expect'")
+            wrong = [k for k, v in self.severity.items() if v == "reject" and k not in ROW_RULES]
+            if wrong:
+                raise ValueError(
+                    f"step '{self.id}': severity reject drops rows, so it works only for "
+                    f"{', '.join(ROW_RULES)} (not {wrong})"
+                )
+        if "vs_runs" in self.expect:
+            vr = self.expect["vs_runs"]
+            if (
+                not isinstance(vr, dict)
+                or not isinstance(vr.get("last", 5), int)
+                or not 1 <= vr.get("last", 5) <= 50
+            ):
+                raise ValueError(f"step '{self.id}': vs_runs needs a mapping like {{last: 5, rows: 30%}}")
+            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
+            if unknown_vr:
+                raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
+        if (self.expect or self.review or self.severity) and not self.check:
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
@@ -294,9 +592,13 @@ class StepSpec(BaseModel):
                     "row rejected on its own); attempts: works with whole-record answers only"
                 )
 
-        if self.rules and not self.agent:
-            raise ValueError(f"step '{self.id}': rules go on an agent step, the fallback for rows they miss")
-        for rule in self.rules:
+        if self.routes is not None:
+            self._check_router()
+        for rule in self.rules if self.agent and self.routes is None else []:
+            if not isinstance(rule, dict):
+                raise ValueError(
+                    f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
+                )
             if len(rule) != 1 or next(iter(rule)) not in ("compute", "cast", "fn"):
                 raise ValueError(
                     f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
@@ -316,6 +618,8 @@ class StepSpec(BaseModel):
                         raise ValueError(f"step '{self.id}': rule compute: {e}") from None
         if self.tools and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take tools")
+        if self.golden and not self.agent:
+            raise ValueError(f"step '{self.id}': only agent steps take a golden set")
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
             raise ValueError(
                 f"step '{self.id}': tools work one record per call; drop mode batch and records_per_call"
@@ -325,6 +629,18 @@ class StepSpec(BaseModel):
                 raise ValueError(f"step '{self.id}': write each tool with settings as its own item")
         if self.cursor and not (self.use or self.fn):
             raise ValueError(f"step '{self.id}': cursor goes on a use or fn step that reads the data")
+        if self.critic is not None:
+            if not self.agent:
+                raise ValueError(f"step '{self.id}': only agent steps take a critic")
+            if self.output_mode == "rows":
+                raise ValueError(
+                    f"step '{self.id}': critic is not supported with output_mode rows; it reviews"
+                    " one answer per record"
+                )
+        if self.jury is not None:
+            self._check_jury(self.jury)
+        elif self.jury_tag:
+            raise ValueError(f"step '{self.id}': jury_tag needs jury")
         if self.escalate and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":
@@ -342,9 +658,10 @@ class StepSpec(BaseModel):
             if any(a.validate_ == "lenient" for a in self.attempts[:-1]):
                 raise ValueError(f"step '{self.id}': only the last attempt can be lenient")
         if self.escalate_below is not None:
-            if not self.escalate:
+            if not self.escalate and self.jury is None:
                 raise ValueError(
-                    f"step '{self.id}': escalate_below needs a list of llms, e.g. llm: [cheap, strong]"
+                    f"step '{self.id}': escalate_below needs a list of llms or a jury,"
+                    " e.g. llm: [cheap, strong]"
                 )
             if (self.output or {}).get("confidence", "").rstrip("?") not in ("float", "int"):
                 raise ValueError(f"step '{self.id}': escalate_below needs a 'confidence: float' output field")
@@ -365,7 +682,68 @@ class StepSpec(BaseModel):
             rejected_limits(self.expect["rejected_rate"], self.check or "")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
+        if self.retries and (self.check or self.wait_until):
+            raise ValueError(f"step '{self.id}': retries go on use, fn or agent steps")
+        if self.fallback:
+            if self.agent:
+                raise ValueError(
+                    f"step '{self.id}': agent steps fall back between llms; set `fallback:` on the "
+                    "llm instead (llm: {main: {..., fallback: [backup]}}) or use llm: [cheap, strong]"
+                )
+            if not (self.use or self.fn):
+                raise ValueError(f"step '{self.id}': fallback goes on a use or fn step")
+            sinks = [u for u in (self.use, *(f.use for f in self.fallback)) if is_sink(u)]
+            if sinks and not self.fallback_writer:
+                raise ValueError(
+                    f"step '{self.id}': fallback on a writer ({sinks[0]}) may write twice; set "
+                    "`fallback_writer: true` if that is safe"
+                )
+        elif self.fallback_tag or self.fallback_writer or self.fallback_outcome != "partial":
+            raise ValueError(
+                f"step '{self.id}': fallback_tag, fallback_outcome and fallback_writer need a fallback"
+            )
+        if self.route_tag and self.routes is None:
+            raise ValueError(f"step '{self.id}': route_tag goes with routes")
         return self
+
+    def _check_router(self) -> None:
+        routes = self.routes or {}
+        if not self.agent:
+            raise ValueError(f"step '{self.id}': routes go on an agent step (the router's question)")
+        if not routes:
+            raise ValueError(f"step '{self.id}': routes is empty; map each label to a step id or drop")
+        for label, target in routes.items():
+            if not label.isidentifier():
+                raise ValueError(f"step '{self.id}': route label '{label}' must be an identifier")
+            if not isinstance(target, str) or not target:
+                raise ValueError(f"step '{self.id}': route '{label}' needs a target step id or drop")
+            if target == self.id:
+                raise ValueError(f"step '{self.id}': route '{label}' points at the router itself")
+        if self.critic is not None or self.output_mode == "rows":
+            raise ValueError(f"step '{self.id}': a router takes no critic and no output_mode rows")
+        from . import expr
+
+        for rule in self.rules:
+            if not (isinstance(rule, dict) and set(rule) == {"when", "route"}):
+                raise ValueError(f"step '{self.id}': a router rule is {{when: <expression>, route: <label>}}")
+            if rule["route"] not in routes:
+                raise ValueError(
+                    f"step '{self.id}': rule route '{rule['route']}' is not a label in routes "
+                    f"({', '.join(routes)})"
+                )
+            try:
+                expr.compile_expr(str(rule["when"]))
+            except expr.ExprError as e:
+                raise ValueError(f"step '{self.id}': rule when: {e}") from None
+
+    @property
+    def targets(self) -> dict[str, list[str]]:
+        """A router's targets: step id -> the labels it receives (`drop` left out)."""
+        out: dict[str, list[str]] = {}
+        for label, target in (self.routes or {}).items():
+            if target != DROP:
+                out.setdefault(target, []).append(label)
+        return out
 
     @property
     def kind(self) -> str:
@@ -380,6 +758,11 @@ class StepSpec(BaseModel):
                 return [self.wait_until.step]
             return [self.check] if self.check else []
         return [self.input] if isinstance(self.input, str) else list(self.input)
+
+    @property
+    def depends(self) -> list[str]:
+        """Steps that must finish before this one: its inputs, then its `after` list."""
+        return [*self.inputs, *(a for a in self.after if a not in self.inputs)]
 
     @property
     def cached(self) -> bool:
@@ -403,6 +786,89 @@ class NotifySpec(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
 
 
+class PublicationSpec(BaseModel):
+    """When a publication is due: weekdays and a local time, with a holiday calendar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[str] = Field(default_factory=list)  # mon..sun
+    at: str = "00:00"  # "16:00", in the schedule's tz
+    calendar: str | None = None  # us_federal, br_national
+    exceptions: str | None = None  # file with one extra holiday (YYYY-MM-DD) per line
+    if_holiday: Literal["skip", "next_business_day", "previous_business_day", "run"] = "skip"
+
+    @model_validator(mode="after")
+    def _check(self) -> PublicationSpec:
+        import datetime as _dt
+
+        from .schedule import _DAYS, CALENDARS
+
+        self.days = [d.lower() for d in self.days]
+        bad = [d for d in self.days if d not in _DAYS]
+        if bad:
+            raise ValueError(f"expect.days: unknown day(s) {bad}; use mon, tue, wed, thu, fri, sat, sun")
+        try:
+            _dt.time.fromisoformat(self.at)
+        except ValueError as e:
+            raise ValueError(f"expect.at '{self.at}': use HH:MM") from e
+        if self.calendar and self.calendar not in CALENDARS:
+            raise ValueError(f"expect.calendar '{self.calendar}': use one of {sorted(CALENDARS)}")
+        return self
+
+
+class PollStage(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    for_: str = Field(alias="for")  # how long this stage lasts: "15m"
+    every: str  # how often it fires: "1m"
+
+    @model_validator(mode="after")
+    def _check(self) -> PollStage:
+        from .checks import parse_duration
+
+        if parse_duration(self.every) <= 0 or parse_duration(self.for_) <= 0:
+            raise ValueError("poll stages need positive `for` and `every`")
+        return self
+
+
+class PollSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cadence: list[PollStage] = Field(default_factory=list)
+    stop_when: Literal["success_in_cycle"] | None = None
+
+
+class ActiveSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    between: tuple[date, date]
+
+
+class ScheduleSpec(BaseModel):
+    """A schedule by publication cycle: expected days, holidays, staged polling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tz: str  # required: "America/New_York"
+    expect: PublicationSpec | None = None
+    poll: PollSpec | None = None
+    active: ActiveSpec | None = None
+    extra_dates: list[date] = Field(default_factory=list)  # cycles on top of `expect`
+    skip_dates: list[date] = Field(default_factory=list)  # expected days with no cycle
+
+    @model_validator(mode="after")
+    def _check(self) -> ScheduleSpec:
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(self.tz)
+        except Exception as e:
+            raise ValueError(f"schedule.tz '{self.tz}': not a known time zone (e.g. America/New_York)") from e
+        if not (self.expect and self.expect.days) and not self.extra_dates:
+            raise ValueError("a schedule needs `expect.days` or `extra_dates`")
+        return self
+
+
 class TriggerSpec(BaseModel):
     """What starts a run under `agentl serve`: a cron schedule, a webhook path or new files."""
 
@@ -410,6 +876,7 @@ class TriggerSpec(BaseModel):
 
     cron: str | None = None  # "0 7 * * 1-5", local time unless `timezone`
     timezone: str | None = None
+    schedule: ScheduleSpec | None = None  # publication cycles; see agentl/schedule.py
     webhook: str | None = None  # "/hooks/invoices"
     secret: str | None = None  # webhook: Bearer token or HMAC-SHA256 signature key
     files: str | None = None  # glob, local or remote: "inbox/*.csv", "s3://bucket/in/*.xlsx"
@@ -420,11 +887,11 @@ class TriggerSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
-        kinds = [k for k in ("cron", "webhook", "files", "after") if getattr(self, k)]
+        kinds = [k for k in ("cron", "schedule", "webhook", "files", "after") if getattr(self, k)]
         if not kinds and "every" in self.model_fields_set:
             kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, webhook, files, after or every")
+            raise ValueError("a trigger has exactly one of cron, schedule, webhook, files, after or every")
         if self.cron:
             from .triggers import Cron
 
@@ -439,9 +906,10 @@ class TriggerSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        if self.cron or self.webhook or self.files:
-            return "cron" if self.cron else "webhook" if self.webhook else "files"
-        return "after" if self.after else "every"
+        for k in ("cron", "schedule", "webhook", "files", "after"):
+            if getattr(self, k):
+                return k
+        return "every"
 
 
 class EmitSpec(BaseModel):
@@ -488,6 +956,51 @@ class LineageSpec(BaseModel):
     namespace: str = "agentl"
     api_key: str | None = None
     endpoint: str = "api/v1/lineage"
+
+
+Outcome = Literal["success", "no_change", "skipped", "partial", "failed"]
+OUTCOMES: tuple[str, ...] = ("success", "no_change", "skipped", "partial", "failed")
+
+
+class OutcomesSpec(BaseModel):
+    """How a finished run is classified (#188). `status` stays `succeeded`/`failed` for
+    every outcome but `skipped`, whose status is `skipped`."""
+
+    model_config = ConfigDict(extra="forbid")
+    # Timeouts and connection errors only; HTTP 4xx/5xx and parsing errors stay failed.
+    on_transport_error: Literal["failed", "skipped_upstream"] = "failed"
+    on_empty: Literal["no_change", "success"] = "no_change"  # every source step read 0 records
+    on_rejected: Literal["partial", "success"] = "partial"  # the run quarantined records
+    alert_on: list[Outcome] = ["failed", "partial"]  # pydantic copies mutable defaults
+    # This many skipped runs in a row (this one included) turn the run into failed.
+    max_skipped: int | None = Field(default=3, ge=1)
+    exit_codes: dict[Outcome, int] = Field(default_factory=dict)
+
+    def exit_code(self, outcome: str) -> int:
+        default = {"failed": 1, "partial": 0}.get(outcome, 0)
+        return self.exit_codes.get(outcome, default)  # type: ignore[call-overload]
+
+
+class WindowSpec(BaseModel):
+    """Fetch windows: `${window.start}` / `${window.end}` (ISO dates, end exclusive) in a step's
+    `with:`. A run re-reads the last `lookback`; `agentl backfill` covers any range. Either way the
+    range is split into chunks of at most `max_span`, cut at `align` boundaries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lookback: str = "1d"
+    max_span: str | None = None
+    align: Literal["none", "calendar_month", "week"] = "none"
+    order: Literal["oldest_first", "newest_first"] = "oldest_first"
+
+    @field_validator("lookback", "max_span")
+    @classmethod
+    def _duration(cls, v: str | None) -> str | None:
+        if v is not None:
+            from .windows import days
+
+            days(v)
+        return v
 
 
 class ParamSpec(BaseModel):
@@ -611,6 +1124,8 @@ def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
 
 class PipelineSpec(BaseModel):
     name: str
+    window: WindowSpec | None = None
+
     # Run parameters, used as ${params.name}. Values come from --param, params= or serve.
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     # Under `agentl serve`: what starts a run. A `use: trigger` step gets what started it.
@@ -623,6 +1138,8 @@ class PipelineSpec(BaseModel):
     on_failure: list[ActionSpec] = Field(default_factory=list)
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
+    outcomes: OutcomesSpec = Field(default_factory=OutcomesSpec)
+    concurrency: ConcurrencySpec | None = None
     # OpenLineage events for data catalogs; see agentl.lineage.
     lineage: LineageSpec | None = None
     # Independent steps run together, up to this many; 1 = one at a time.
@@ -632,6 +1149,8 @@ class PipelineSpec(BaseModel):
     # Pass pyarrow Tables between steps that can take them. None: when pyarrow is installed.
     arrow: bool | None = None
     mcp: dict[str, MCPServerSpec] = Field(default_factory=dict)
+    # Partitions the destination should hold; `agentl gaps` lists the missing ones.
+    expect: ExpectSpec | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 
@@ -655,10 +1174,19 @@ class PipelineSpec(BaseModel):
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
             raise ValueError(f"duplicate step ids: {sorted(dup)}")
+        self._routers(ids)
         for s in self.steps:
             for ref in s.inputs:
                 if ref not in ids:
                     raise ValueError(f"step '{s.id}': unknown input '{ref}'")
+                if not self.step(ref).required:
+                    raise ValueError(
+                        f"step '{s.id}': input '{ref}' is best effort (required: false); "
+                        "use 'after' to order steps after it"
+                    )
+            for ref in s.after:
+                if ref not in ids or ref == s.id:
+                    raise ValueError(f"step '{s.id}': after names unknown step '{ref}'")
             for name in s.llms if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
@@ -677,6 +1205,35 @@ class PipelineSpec(BaseModel):
                 if name.startswith("mcp:") and server not in self.mcp:
                     raise ValueError(f"step '{s.id}': tool '{name}' needs an mcp server named '{server}'")
         return self
+
+    def _routers(self, ids: list[str]) -> None:
+        """Router targets (#299): each must exist and read the router (a target with no input gets
+        it), never be the router's ancestor, and take one branch only."""
+        routers = [s for s in self.steps if s.routes is not None]
+        for r in routers:
+            for target in r.targets:
+                if target not in ids:
+                    raise ValueError(f"step '{r.id}': route target '{target}' does not exist (or use drop)")
+                t = self.step(target)
+                if t.input is None and not (t.check or t.wait_until):
+                    t.input = r.id
+                if r.id not in t.inputs:
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must read the router (input: {r.id}); "
+                        "it receives only its branch"
+                    )
+                if t.kind in ("check", "wait"):
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must be a use, fn or agent step"
+                    )
+        if routers:
+            deps = {s.id: set(s.depends) & set(ids) for s in self.steps}
+            done: set[str] = set()
+            while len(done) < len(deps):
+                ready = {i for i in deps if i not in done and deps[i] <= done}
+                if not ready:
+                    raise ValueError(f"cycle between steps: {sorted(set(deps) - done)}")
+                done |= ready
 
     def step(self, step_id: str) -> StepSpec:
         return next(s for s in self.steps if s.id == step_id)

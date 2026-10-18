@@ -16,15 +16,15 @@ PAGE = """<!doctype html>
 <title>agentl dashboard</title>
 <style>
 :root{--bg:#f5f8fb;--panel:#ffffff;--panel2:#eef3f8;--line:#e2e9f0;--fg:#0b1b2b;--muted:#3d5266;--faint:#8aa0b4;
---violet:#0070c9;--indigo:#005ea8;--teal:#009c3b;--green:#009c3b;--red:#d93a2b;--amber:#c99700;--blue:#0070c9;--sun:#ffd400;--sunset:#ff6b3d;
+--violet:#0070c9;--indigo:#005ea8;--teal:#003f7d;--green:#009c3b;--red:#d93a2b;--amber:#c99700;--blue:#0070c9;--sun:#ffd400;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root{--bg:#08131f;--panel:#0d1a28;--panel2:#112134;--line:#1b2d42;--fg:#f2f6fa;--muted:#9fb3c6;--faint:#5a7189;
---violet:#4aa8ff;--indigo:#2f8fe6;--teal:#2fc46a;--green:#2fc46a;--red:#ff7a6b;--amber:#ffd400;--blue:#4aa8ff}}
+--violet:#4aa8ff;--indigo:#2f8fe6;--teal:#9fd0f5;--green:#2fc46a;--red:#ff7a6b;--amber:#ffd400;--blue:#4aa8ff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(900px 600px at 15% -10%,#0070c91f,transparent 70%),radial-gradient(800px 600px at 100% 110%,#ffd40026,transparent 70%)}
-header{position:relative;display:flex;align-items:center;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line)}
-.wm{font:800 26px/1 Outfit,Inter,system-ui,sans-serif;letter-spacing:-.5px;color:var(--fg)}.wm:after{content:"";display:inline-block;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--sun)}
-.sub{color:var(--muted);font-weight:500}.live{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+header{position:relative;overflow:hidden;display:flex;align-items:center;gap:14px;padding:18px 28px;background:#0070c9;color:#fff}header:before{content:"";position:absolute;right:-60px;top:-110px;width:240px;height:240px;border-radius:50%;background:#005ea8;opacity:.6}header>*{position:relative}
+.wm{font:800 26px/1 Outfit,Inter,system-ui,sans-serif;letter-spacing:-.5px;color:#fff}.wm:after{content:"";display:inline-block;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--sun)}
+.sub{color:#ffffffcc;font-weight:500}.live{margin-left:auto;display:flex;align-items:center;gap:8px;color:#ffffffdd;font-size:13px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 #009c3b88;animation:pulse 2s infinite}
 @keyframes pulse{70%{box-shadow:0 0 0 8px #009c3b00}100%{box-shadow:0 0 0 0 #009c3b00}}
 main{position:relative;display:grid;grid-template-columns:300px 1fr;gap:20px;padding:20px 28px 40px}
@@ -37,7 +37,7 @@ h2{margin:0 0 12px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
 .run b{font-size:15px}.meta{display:flex;gap:10px;color:var(--muted);font-size:12px;margin-top:4px;font-variant-numeric:tabular-nums}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em}
 .pill:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.s-succeeded{color:var(--green);background:#009c3b1a}.s-failed{color:var(--red);background:#d93a2b1a}.s-running{color:var(--blue);background:#0070c91a}
+.s-succeeded{color:var(--green);background:#009c3b1a}.s-failed{color:var(--red);background:#d93a2b1a}.s-running{color:var(--blue);background:#0070c91a}.s-skipped,.s-no_change{color:var(--muted);background:#8881}.s-partial{color:var(--amber);background:#e8a3001a}.s-success{color:var(--green);background:#009c3b1a}
 .s-running:before{animation:blink 1s infinite}@keyframes blink{50%{opacity:.25}}
 .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:20px}@media (max-width:1200px){.kpis{grid-template-columns:repeat(3,1fr)}}
 .kpi{padding:14px 16px}.kpi .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:700 24px/1.2 Outfit,Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;margin-top:4px}.kpi .l{color:var(--muted);font-size:12px}
@@ -55,7 +55,7 @@ svg text{font-family:Inter,system-ui,sans-serif}
 .graph{overflow:auto;display:flex;justify-content:center;padding:8px 0}
 .grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:20px;margin-top:20px}@media (max-width:1200px){.grid2{grid-template-columns:1fr}}
 .bar{display:grid;grid-template-columns:110px 1fr 90px;gap:10px;align-items:center;margin:10px 0;font-size:13px}
-.bar .track{height:10px;border-radius:5px;background:var(--panel2);overflow:hidden}.bar .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--teal),var(--violet))}
+.bar .track{height:10px;border-radius:5px;background:var(--panel2);overflow:hidden}.bar .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--violet),var(--sun))}
 .bar .n{font-family:var(--mono);color:var(--muted);text-align:right;font-size:12px}
 .events{max-height:420px;overflow:auto;font-size:13px}
 .ev{display:grid;grid-template-columns:64px 128px 92px 1fr;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line);align-items:baseline}
@@ -104,7 +104,7 @@ function render(d){
   const kpi=(l,v,c='')=>`<div class="card kpi"><div class="l">${l}</div><div class="v" style="${c}">${v}</div></div>`;
   const evs=d.events.filter(e=>filter==='all'||/failed|rejected|exceeded/.test(e.type));
   const steps=Object.entries(sp.steps),max=Math.max(1e-9,...steps.map(([,v])=>v.cost_usd||v.input_tokens+v.output_tokens));
-  $('#detail').innerHTML=`<div class="title"><h1>${esc(run.pipeline)}</h1><span class="pill s-${run.status}">${run.status}</span><code>${esc(run.id)}</code></div>
+  $('#detail').innerHTML=`<div class="title"><h1>${esc(run.pipeline)}</h1><span class="pill s-${run.status}">${run.status}</span>${run.outcome&&run.outcome!=='success'&&run.outcome!=='failed'?`<span class="pill s-${run.outcome}">${run.outcome}</span>`:''}<code>${esc(run.id)}</code></div>
   <div class="kpis">${kpi('Duration',dur(secs))}${kpi('Steps',`${Object.values(d.steps).filter(s=>s.status==='succeeded').length}/${d.graph.nodes.length}`)}
   ${kpi('Records out',num(out))}${kpi('Rejected',num(rejected),rejected?'color:var(--amber)':'')}${kpi('Tokens',num(sp.total.input_tokens+sp.total.output_tokens))}${kpi('Cost',usd(sp.total.cost_usd))}</div>
   ${run.error?`<div class="card err">${esc(run.error)}</div>`:''}
@@ -118,7 +118,7 @@ function render(d){
 async function tick(){
   const runs=await (await fetch('/api/runs')).json();$('#count').textContent=runs.length;
   if(!pinned&&runs.length)sel=runs[0].id;  // follow the newest run until the user picks one
-  $('#runs').innerHTML=runs.map(r=>`<div class="run ${r.id===sel?'sel':''}" onclick="sel='${r.id}';pinned=true;tick()"><div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(r.pipeline)}</b><span class="pill s-${r.status}">${r.status}</span></div>
+  $('#runs').innerHTML=runs.map(r=>`<div class="run ${r.id===sel?'sel':''}" onclick="sel='${r.id}';pinned=true;tick()"><div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(r.pipeline)}</b><span class="pill s-${r.outcome||r.status}">${r.outcome||r.status}</span></div>
     <div class="meta"><span>${ago(r.started)}</span><span>${dur(r.finished?r.finished-r.started:null)}</span></div></div>`).join('')||'<div class="empty">No runs yet.<br><br><code>agentl run pipeline.yaml</code></div>';
   if(!sel){$('#detail').innerHTML='<div class="card empty">Run a pipeline and it shows up here live.</div>';return}
   const r=await fetch('/api/runs/'+sel);if(r.ok)render(await r.json());
@@ -167,7 +167,7 @@ def run_detail(store: Store, run_id: str) -> dict | None:
 
 
 _NODE = re.compile(r'^\s*(\w+)\W*"(\w+)<br/><small>(.*?)</small>"')
-_EDGE = re.compile(r"^\s*(\w+) --> (\w+)\s*$")
+_EDGE = re.compile(r"^\s*(\w+) -->(?:\|[^|]*\|)? (\w+)\s*$")
 
 
 def parse_graph(diagram: str) -> dict:
@@ -176,7 +176,15 @@ def parse_graph(diagram: str) -> dict:
     for line in diagram.splitlines():
         if m := _NODE.match(line):
             detail = m.group(3)
-            kind = detail if detail in ("agent", "check", "wait") else "fn" if ":" in detail else "use"
+            kind = (
+                "agent"
+                if detail == "route"
+                else detail
+                if detail in ("agent", "check", "wait")
+                else "fn"
+                if ":" in detail
+                else "use"
+            )
             nodes.append({"id": m.group(1), "detail": m.group(3), "kind": kind})
         elif m := _EDGE.match(line):
             edges.append([m.group(1), m.group(2)])

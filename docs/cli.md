@@ -3,7 +3,7 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
-                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo] [--json]
+                [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
 agentl plan PIPELINE [--json]
 agentl preview PIPELINE STEP [-n 5]
@@ -20,6 +20,7 @@ agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
+agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
@@ -80,7 +81,9 @@ set. Exit code 2 when there are errors.
 | AL006 | a step keeps a `cursor` but has no `{cursor}` in its `with` |
 | AL007 | a top-level field is unknown, so it is ignored when the pipeline runs (`budjet:`) |
 | AL008 | an agent step runs before a `protect` step, so the LLM provider sees the fields it protects |
+| AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 | AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
+| AL011 | an `http.*` source has a `fallback` but no `retries`, so it switches on the first transient error |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
@@ -150,6 +153,28 @@ agentl schema > pipeline.schema.json
 name: tickets
 ```
 
+## Snapshots
+
+`agentl snapshot` runs a pipeline and compares each step's output with the JSON saved in
+`snapshots/<pipeline name>/<step>.json`. Records are matched by `--key`, not by order, and a change
+is shown field by field:
+
+```bash
+agentl snapshot pipeline.yaml --key id             # exit 1 when a step differs or has no snapshot
+agentl snapshot pipeline.yaml --key id -u          # show the diff and ask before accepting
+agentl snapshot pipeline.yaml --step clean --key id,date -u --yes   # accept without asking (CI)
+```
+
+```text
+clean: ~ [42]
+    total: 10.5 -> 12.0
+clean: + {"id": 43, "total": 3}
+clean: - {"id": 7, "total": 1}
+```
+
+Without `--key` a record is either identical or added/removed. Snapshots are written sorted by key
+so their diffs in git stay small. Without a terminal, `-u` needs `--yes`.
+
 ## Test against a golden file
 
 `agentl test` runs a pipeline on fixture files and compares what each writer would write with an
@@ -216,6 +241,33 @@ agentl dashboard                     # sees every run
 In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store.open_store(url)`.
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
+
+Cached results can be dropped by key, by prefix or all at once:
+
+```bash
+agentl cache clear catalog:north     # one key (a `cache` step's `key`)
+agentl cache clear 'catalog:*'       # every key starting with catalog:
+agentl cache clear --all             # everything, agent answers included
+```
+
+## Seen files
+
+`skip_seen` lets a pipeline run by hand or by a scheduler handle each file once: it drops the
+records whose key an earlier successful run already let through. Keys are stored in the run store,
+per scope, and marked only when the whole run succeeds, so a failed run handles the same files
+again next time.
+
+```yaml
+- id: new_files
+  use: skip_seen
+  input: attachments
+  with: { key: sha256, scope: weekly-reports }   # key: sha256 | path | a field
+```
+
+```bash
+agentl seen list [--scope weekly-reports]
+agentl seen forget --scope weekly-reports [KEY]  # reprocess one key, or the whole scope
+```
 
 ## Column mappings
 
@@ -287,6 +339,37 @@ agentl doctor 20261014-091203-ab12cd --suggest --pipeline invoices.yaml
 and the steps that finished. No LLM is called unless you pass `--suggest`, which adds a suggested
 fix (with `--pipeline`, the model also sees the YAML).
 
+## Repair (proposal only)
+
+```bash
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml --write invoices.fixed.yaml
+agentl repair 20261014-091203-ab12cd --pipeline invoices.yaml --llm strong --json
+```
+
+`repair` asks an llm for a fix to a failed (or partial) run and answers with a diagnosis, a
+confidence, notes and a unified diff against the pipeline YAML. **Nothing is applied**: the diff is
+applied in memory only, the result is parsed and linted, and the command reports whether the patched
+YAML is valid. An invalid diff goes back to the model once with the validation errors; if the second
+answer is still invalid, only the diagnosis is shown. `--write` writes the patched YAML to a new
+file and refuses the pipeline path or an existing file. The exit code is 0 for a valid patch, 1
+otherwise. The same proposal is the read-only `repair` tool of `agentl mcp`.
+
+What is sent to the llm: what `agentl doctor` reads from the run store (failing step, error, check
+findings, rejected-record counts, finished steps), the pipeline YAML as written (`${VAR}`
+references, not their values), lint findings, and at most 3 sample records per input of the failing
+step, from the store's samples. In those samples, values that look like personal data (emails,
+phones, tax ids, cards, IBANs, IPs, names in name-like fields) are replaced by their kind, like
+`<email>`, and long values are cut. Secret values (resolved secret references and environment
+variables with secret-looking names such as `*_TOKEN`, `*_KEY`, `*_DSN`) are masked as `***` in the
+whole payload.
+
+The llm is the pipeline's `default` llm (or `--llm NAME` from its `llm:` section); with a pipeline
+that does not load, `$AGENTL_PROVIDER` / `$AGENTL_MODEL`. A repair costs one or two calls with the
+pipeline YAML and the context as input; the calls, tokens and cost (from the llm's `price:`) are
+printed, the retry is skipped once the pipeline's `budget:` is reached, and a `repair.proposed`
+event with the spend is recorded on the run.
+
 ## Track record
 
 ```bash
@@ -320,6 +403,54 @@ rejected), by its accepted answers (records not rejected) and by the records an 
 `agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
 `cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
 their events and show up as model `unknown`.
+
+## Eval
+
+`agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
+golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+
+## Gaps
+
+A freshness check says the latest data is late; it does not say a day in the middle is missing.
+Declare the partitions the destination should hold under a top-level `expect:` block and
+`agentl gaps` lists the missing ones:
+
+```yaml
+expect:
+  partitions:
+    every: 1d              # or 1h
+    from: "2025-01-01"
+    skip: weekends         # weekends, weekdays or ISO dates; a list is fine
+    field: ref_date        # the column holding the partition value
+  present_in:
+    use: postgres.read     # any reader: sqlite.read, sql.read (SQLAlchemy)...
+    with: { dsn: "${DATABASE_URL}", query: "select distinct ref_date from facts" }
+```
+
+Files instead of a table: `present_in: { files: "out/{date:%Y-%m-%d}/*.parquet" }` is formatted
+once per expected period (relative to the YAML file) and the period is present when the glob
+matches anything. Composite partitions add `keys: { source: [web, store] }`: every key combination
+is expected for every period; the reader rows need a `source` column, and the glob can use
+`{source}`.
+
+```bash
+agentl gaps pipeline.yaml                         # 3 of 290 partitions missing, as ranges
+agentl gaps pipeline.yaml --since 2025-06-01 --until 2025-06-30
+agentl gaps pipeline.yaml --json                  # missing periods, ranges and commands
+agentl gaps pipeline.yaml --commands              # also print `agentl backfill` lines
+agentl gaps pipeline.yaml --fail                  # exit 1 when something is missing
+```
+
+`to:` defaults to the last complete period (yesterday, or the previous hour), in UTC. Values read
+from the destination are normalised (dates, datetimes and ISO strings) to `format:`, by default
+`%Y-%m-%d` or `%Y-%m-%dT%H`.
+
+`--commands` prints one `agentl backfill pipeline.yaml --from A --to B` line per contiguous run of
+missing days (with `--param key=value` for composite keys), for the `agentl backfill` command and
+run params of [#182](https://github.com/arimayuji/agentl/issues/182). Hourly gaps and custom
+formats get no lines. Running only the missing periods automatically (`--fill`, within request
+budgets) is not part of this release; for a scheduled check, run `agentl gaps --fail` from cron or
+CI and alert on the exit code.
 
 ## Diagram
 

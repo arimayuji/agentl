@@ -3,6 +3,10 @@
 Connectors are used with `use:` and configured with `with:`. List what is installed with
 `agentl connectors`.
 
+Every connector step also takes `retries:` and `fallback:` (other connectors tried in order with
+the same input); see [retries and fallbacks](concepts.md#retries-and-fallbacks). The `retries`
+setting inside `http.get`'s `with:` keeps its own simple retry loop.
+
 ## Files
 
 <video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/files.jpg" aria-label="Reading a folder of mixed files into records">
@@ -208,9 +212,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`), `on_conflict`, `update_columns` (upsert only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `dry_run` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -221,6 +225,7 @@ Other databases will ship as plugins.
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `skip_seen` | `key` (`sha256` of the file at `path`, `path`, or any field), `scope` (default: the pipeline name) | Only records no earlier successful run let through; see below |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
 | `flatten` | `sep` (`.`), `fields` | Nested objects become columns: `end.cidade` |
 | `explode` | `field`, `keep_empty` (true) | One record per item of a list |
@@ -949,6 +954,84 @@ type. A record with a null or missing key field cannot be matched to a row: `pos
 `sqlite.write` and `sql.write` send it to the step's rejected records (`_error` names the key)
 instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
 `step.succeeded` event of a writer reports the rows written in `records` and `written`.
+
+### Changeset writes
+
+`mode: changeset` on `sqlite.write` compares the source with the table and writes only what
+changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
+A table with triggers or versioning sees no write at all when nothing changed.
+
+```yaml
+load:
+  - id: save
+    use: sqlite.write
+    input: rows
+    with:
+      db: out/facts.db
+      table: facts
+      key: [country, month, product]
+      mode: changeset
+      partition_by: month
+      deletes: { when: partition_replaced }
+```
+
+| Option | Meaning |
+|---|---|
+| `deletes: none` | Default. Rows missing from the source stay. |
+| `deletes: missing` | Delete rows whose key is not in the source (the source is the whole table). |
+| `deletes: partition_replaced` | Delete missing rows only in the partitions (`partition_by` values) the source has. |
+| `partition_by: month` | Also report `partitions` and `partitions_unchanged` (partitions with no insert, update or delete). |
+| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column. |
+
+All chunks are staged in a temp table first and the diff runs as a few set-based statements in
+one transaction, so it stays fast on large loads; the last record of a repeated key wins. The
+result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_change` when
+nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
+in the run summary, so a notification rule can use `when: "deleted > 0"`. A record with a null
+key field is rejected, as in upsert, and does not count in the diff. Postgres support is planned.
+
+### History of a dimension (SCD type 2)
+
+`mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` keeps every version of a row
+instead of overwriting it. The writer manages three columns: `valid_from`, `valid_to` (empty while
+the version is current) and `is_current`.
+
+```yaml
+- id: customers
+  use: postgres.write
+  with:
+    dsn: ${DATABASE_URL}
+    table: dim_customer
+    mode: scd2
+    key: customer_id
+    track: [address, segment]   # default: every column but the key
+    on_missing: close           # default: keep
+```
+
+For each record, by `key`:
+
+- a new key inserts a current version;
+- a key whose `track` columns changed closes the current version (`valid_to` set, `is_current`
+  false) and inserts a new one;
+- a key whose `track` columns did not change is left alone (columns outside `track` keep the
+  values of the version's first load);
+- with `on_missing: close`, current keys absent from the input are closed. An empty input changes
+  nothing.
+
+The result reports `inserted`, `versioned`, `unchanged` (and `closed`), which also appear in the
+`step.succeeded` event and under `writes` in the run summary. Re-running the same data changes
+nothing. If a key repeats in the input, the last record wins.
+
+`as_of` sets the time stamped on `valid_from` and `valid_to` (default: now). It must carry a time
+zone (`2026-01-31T00:00:00-03:00`, `...Z`) and is stored in UTC: `timestamptz` on Postgres, ISO
+8601 text such as `2026-01-31T03:00:00.000000+00:00` on SQLite. An `as_of` earlier than the start
+of a version it would close is an error. A record with a null key field is rejected, as in
+upsert: it goes to the step's rejected records and the others are written.
+
+`sqlite.write` and `postgres.write` stage the input in a temporary table and merge it with a few
+set-based statements in the write's transaction; Postgres adds a unique index on `key` among
+current rows. `sql.write` reads the key and tracked columns of the current versions in one query
+and compares them in Python, so those must fit in memory.
 
 ## Any SQL database
 

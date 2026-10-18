@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import datetime as dt
 import glob as _glob
 import re
 import shutil
@@ -150,6 +151,40 @@ def upsert_options(
     return conflict, upd
 
 
+DELETES = ("none", "missing", "partition_replaced")
+
+
+def changeset_options(
+    name: str,
+    mode: str,
+    keys: list[str],
+    deletes: str | dict | None,
+    partition_by: str | list[str] | None,
+    dry_run: bool,
+) -> tuple[str, list[str]]:
+    """Check the mode: changeset options before any I/O. `deletes` takes a name or `{when: name}`."""
+    if mode != "changeset":
+        if deletes is not None or partition_by is not None or dry_run:
+            raise ValueError(
+                f"{name}: deletes, partition_by and dry_run need mode: changeset (got mode: {mode})"
+            )
+        return "none", []
+    if not keys:
+        raise ValueError(f"{name}: mode: changeset needs `key` (the column, or columns, that identify a row)")
+    when = deletes.get("when") if isinstance(deletes, dict) else deletes
+    if isinstance(deletes, dict) and set(deletes) - {"when"}:
+        raise ValueError(f"{name}: deletes takes only `when`, got {sorted(deletes)}")
+    drop = when or "none"
+    if drop not in DELETES:
+        raise ValueError(f"{name}: deletes must be one of {', '.join(DELETES)}, got {when!r}")
+    parts = [partition_by] if isinstance(partition_by, str) else list(partition_by or [])
+    if not all(isinstance(p, str) and p for p in parts):
+        raise ValueError(f"{name}: partition_by must be a column name or a list of names")
+    if drop == "partition_replaced" and not parts:
+        raise ValueError(f"{name}: deletes: partition_replaced needs partition_by")
+    return drop, parts
+
+
 def null_keys(name: str, rows: list[dict], keys: list[str]) -> tuple[list[dict], list[dict]]:
     """Split upsert records into (good, rejected): a record with a null (or missing) key field
     cannot be matched to a row, so it goes to the rejected records with the reason in `_error`."""
@@ -173,3 +208,59 @@ def null_keys(name: str, rows: list[dict], keys: list[str]) -> tuple[list[dict],
 def check_update_columns(name: str, upd: list[str] | None, cols: list[str]) -> None:
     if upd and (unknown := [c for c in upd if c not in cols]):
         raise ValueError(f"{name}: update_columns names unknown column(s) {unknown}; columns: {cols}")
+
+
+SCD2_COLUMNS = ("valid_from", "valid_to", "is_current")
+ON_MISSING = ("keep", "close")
+
+
+def scd2_options(
+    name: str,
+    mode: str,
+    keys: list[str],
+    track: str | list[str] | None,
+    on_missing: str | None,
+    as_of: Any,
+) -> tuple[list[str] | None, str, Any]:
+    """Check the `mode: scd2` settings before any I/O. Returns (track, on_missing, as_of in UTC)."""
+    if mode != "scd2":
+        if track is not None or on_missing is not None or as_of is not None:
+            raise ValueError(f"{name}: track, on_missing and as_of need mode: scd2 (got mode: {mode})")
+        return None, "keep", None
+    if not keys:
+        raise ValueError(f"{name}: mode: scd2 needs `key` (the column, or columns, that identify a row)")
+    if reserved := [k for k in keys if k in SCD2_COLUMNS]:
+        raise ValueError(f"{name}: key cannot be the scd2 column(s) {reserved}")
+    missing = on_missing or "keep"
+    if missing not in ON_MISSING:
+        raise ValueError(f"{name}: on_missing must be one of {', '.join(ON_MISSING)}, got {on_missing!r}")
+    cols: list[str] | None = None
+    if track is not None:
+        cols = [track] if isinstance(track, str) else list(track)
+        if not cols or not all(isinstance(c, str) and c for c in cols):
+            raise ValueError(f"{name}: track must be a column name or a non-empty list of names")
+        if bad := [c for c in cols if c in keys or c in SCD2_COLUMNS]:
+            raise ValueError(f"{name}: track cannot include key or scd2 column(s) {bad}")
+    if as_of is None:
+        when = dt.datetime.now(dt.timezone.utc)
+    else:
+        if isinstance(as_of, str):
+            try:
+                as_of = dt.datetime.fromisoformat(
+                    as_of[:-1] + "+00:00" if as_of.endswith(("Z", "z")) else as_of
+                )
+            except ValueError:
+                raise ValueError(f"{name}: as_of must be an ISO 8601 timestamp, got {as_of!r}") from None
+        if not isinstance(as_of, dt.datetime):
+            raise ValueError(f"{name}: as_of must be a timestamp with a time zone, got {as_of!r}")
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError(f"{name}: as_of needs a time zone (for example 2026-01-31T00:00:00Z)")
+        when = as_of.astimezone(dt.timezone.utc)
+    return cols, missing, when
+
+
+def check_scd2_columns(name: str, track: list[str] | None, cols: list[str]) -> None:
+    if reserved := [c for c in cols if c in SCD2_COLUMNS]:
+        raise ValueError(f"{name}: mode: scd2 manages {list(SCD2_COLUMNS)}; records cannot carry {reserved}")
+    if track and (unknown := [c for c in track if c not in cols]):
+        raise ValueError(f"{name}: track names unknown column(s) {unknown}; columns: {cols}")

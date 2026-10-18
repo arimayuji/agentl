@@ -283,6 +283,29 @@ def step_state() -> StepState | None:
     return _STEP_STATE.get()
 
 
+# ---------------------------------------------------------------- seen keys
+# `skip_seen` remembers which files or records a pipeline already handled, in the run store.
+class SeenKeys:
+    """Seen keys of the current run: `filter(scope, keys)` returns those already seen, `add(scope,
+    keys)` marks them (call it from an `after_run` success hook). `default_scope` is the pipeline."""
+
+    def __init__(
+        self,
+        default_scope: str,
+        filter: Callable[[str, list[str]], set[str]],
+        add: Callable[[str, list[str]], None],
+    ):
+        self.default_scope, self.filter, self.add = default_scope, filter, add
+
+
+_SEEN: contextvars.ContextVar[SeenKeys | None] = contextvars.ContextVar("agentl_seen", default=None)
+
+
+def seen_keys() -> SeenKeys | None:
+    """The run store's seen keys, or None outside a run (a connector called directly)."""
+    return _SEEN.get()
+
+
 class NoChange(Exception):
     """Raised by a source step that found its source unchanged since the last run (for example
     `http.get` with `if_changed`). The runner ends the run as `no_change` instead of `failed`:
