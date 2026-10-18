@@ -9,12 +9,50 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Docs
+
+- Contributors showcase on the community page (who they are and what they shipped), links to
+  @useagentl on X and Instagram in the README and the site footer.
+
+### Security
+
+- Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the
+  latest release (`# vX.Y.Z`), least-privilege `permissions` per job, docs deploy and release
+  only from `main` or a `v*` tag, release version input validated, a dependency review check on
+  pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
+  contributions" section in `CONTRIBUTING.md`.
+- Repository bots: a welcome comment on a first issue or pull request, path labels on pull
+  requests (`.github/labeler.yml`), a Release Drafter draft (never published) updated on every
+  merge to `main`, and a `Quality` workflow with the `typos` spell checker (`_typos.toml`) and
+  the `zizmor` workflow security linter. Dependabot waits 7 days before proposing a new release,
+  and the benchmark jobs no longer restore a pip cache (zizmor cache-poisoning).
+### Docs
+
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
+
 ### Added
 
 - Layout drift detection (#178): a check with `on_drift: warn | fail | remap` (or `check: {schema_matches:
   step, on_drift: ...}`) records its input's columns and types per pipeline and step and emits
   `schema.drift` with the columns added, removed and probably renamed, and the type changes, on
   records and Arrow inputs. `fail` and `remap` stop the run; `remap` also carries both layouts.
+- `agentl report [RUN_ID] --pipeline p.yaml`: a ready-to-paste bug report (version, Python and
+  OS, failing step, error and traceback, doctor findings, the pipeline YAML with secrets and
+  `${VAR:-default}` defaults masked, a minimal repro suggestion) as markdown matching the Bug report
+  form plus a prefilled GitHub issue URL; `--crash` for the last CLI crash, `-o FILE`, `--json`.
+  It never sends anything. Also a read-only `report` tool in `agentl mcp`.
+- A one-line "Looks like an agentl bug" hint after an unexpected CLI crash or a run failing with an
+  internal error type outside `fn:` code; silence it with `AGENTL_NO_REPORT_HINT=1`. `step.failed`
+  events now carry the end of the traceback (`traceback`, at most 3000 characters).
+- `.github/CONTRIBUTING_AI.md`: a guide for AI coding agents from error to issue to fix pull request,
+  linked from `CONTRIBUTING.md`, the bug-report form and the docs.
+
+- `agentl cost` attributes compute cost per pipeline, step and model (#309), for a Lambda function
+  or a shared EC2, ECS or k8s host that runs many pipelines: `--usd-per-hour X` prices each run's
+  wall time, `--lambda-memory-mb MB` uses the Lambda formula (GB-seconds plus the request fee,
+  `--usd-per-gb-second` and `--usd-per-request` override the prices) and `--bill-usd X` splits a
+  known bill over the period's runs by wall time. Groups gain `compute_usd` and `total_usd`; without
+  a compute flag the report is unchanged. Python: `ledger.cost(..., compute=ledger.compute_price(...))`.
 - Run labels and a grouped, exportable dashboard (#295): a free-form `labels:` map of strings in
   the pipeline spec, plus inferred `source` and `sink` labels from the connector steps, stored with
   each run. The dashboard groups pipelines by any label key with per-group pipelines, failing count,
@@ -224,6 +262,9 @@ They are always listed under **Changed** or **Removed**.
 
 ### Fixed
 
+- `html.select` keeps upstream `url` and `source_url` on each extracted record without overwriting
+  selected fields with the same names, including when `items` selects multiple elements (#287,
+  thanks @dannyward630).
 - Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
   send a record whose key field is null or missing to the step's rejected records with the reason
   (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index

@@ -837,7 +837,9 @@ def html_read(
     for attempt in range(retry_if_empty + 1):
         out = []
         empty = False
-        for source, html in scrape.pages(input, path, url, headers, storage_options, field, encoding):
+        for source, html, _metadata in scrape.pages(
+            input, path, url, headers, storage_options, field, encoding
+        ):
             if format == "markdown":
                 page = web.to_markdown(html, url=source if source.startswith("http") else None)
                 rows = [{**page, "_source": source}] if page["markdown"] else []

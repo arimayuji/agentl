@@ -1,0 +1,39 @@
+name: Welcome
+
+# pull_request_target runs with a token that can write to this repository, even for pull requests
+# from forks. That is safe here only because this job never checks out, builds or runs any code
+# from the pull request: it posts a fixed comment through the API, and the message text below
+# comes from the base branch. Do not add a checkout or a run step that reads pull request data.
+on:
+  issues:
+    types: [opened]
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] no PR code is checked out or run, see above
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/first-interaction@1c4688942c71f71d4f5502a26ea67c331730fa4d  # v3.1.0
+        with:
+          issue_message: |
+            Thanks for opening your first issue in agentl!
+
+            If this is a bug, `agentl report` builds a ready-to-paste report (version, OS, failing
+            step, traceback and your pipeline with secrets masked) and never sends anything on its own.
+            A maintainer will take a look soon. Want to fix it yourself? See
+            [CONTRIBUTING.md](https://github.com/arimayuji/agentl/blob/main/CONTRIBUTING.md) and, if you
+            work with an AI agent, [CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md).
+          pr_message: |
+            Thanks for your first pull request to agentl!
+
+            Please check [CONTRIBUTING.md](https://github.com/arimayuji/agentl/blob/main/CONTRIBUTING.md)
+            (checks, Conventional Commit title, a `CHANGELOG.md` entry) and, if you worked with an AI agent,
+            [CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md).
+            For a bug, the output of `agentl report` helps a lot. Once merged, you are credited in the
+            changelog and on https://agentl.com.br/community/#contributors.

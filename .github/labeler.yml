@@ -1,0 +1,46 @@
+# Path labels for pull requests (actions/labeler v5+ syntax). The labels must already exist in
+# the repository: the workflow has no issues: write, so the action cannot create them.
+connectors:
+  - changed-files:
+      - any-glob-to-any-file: ["agentl/connectors/**", "agentl/integrations/**", "docs/connectors.md", "docs/integrations.md"]
+
+agents/llm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - agentl/llm.py
+          - agentl/assist.py
+          - agentl/tools.py
+          - agentl/mcp*.py
+          - agentl/skill/**
+          - evals/**
+          - docs/agents.md
+          - docs/ai-agents.md
+          - docs/evals.md
+
+dashboard:
+  - changed-files:
+      - any-glob-to-any-file: ["agentl/dashboard.py", "tests/test_dashboard.py"]
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file: ["agentl/cli.py", "agentl/__main__.py", "agentl/report.py", "docs/cli.md", "tests/test_cli.py"]
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "mkdocs.yml", "README.md", "CONTRIBUTING.md", ".github/CONTRIBUTING_AI.md", "tools/llms_txt.py"]
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: [".github/workflows/**", ".github/*.yml", ".pre-commit-config.yaml", "_typos.toml"]
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ["tests/**"]
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ["pyproject.toml", "requirements/**", ".github/dependabot.yml"]
+
+media:
+  - changed-files:
+      - any-glob-to-any-file: ["media/**", "docs/assets/**"]

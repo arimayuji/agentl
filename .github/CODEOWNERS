@@ -1,1 +1,11 @@
+# Everything defaults to the owner.
 * @arimayuji
+
+# CI, release and supply chain: these always need the owner's review, even when a
+# broader rule above changes later.
+/.github/ @arimayuji
+/pyproject.toml @arimayuji
+/requirements*  @arimayuji
+/requirements/ @arimayuji
+/tools/ @arimayuji
+/agentl/__init__.py @arimayuji

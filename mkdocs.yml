@@ -119,3 +119,9 @@ extra:
       link: https://github.com/arimayuji/agentl
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/agentl-etl/
+    - icon: fontawesome/brands/x-twitter
+      link: https://x.com/useagentl
+      name: agentl on X
+    - icon: fontawesome/brands/instagram
+      link: https://www.instagram.com/useagentl/
+      name: agentl on Instagram

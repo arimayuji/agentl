@@ -13,7 +13,7 @@ agentl schema
 agentl keygen                                   # a key for protect / unprotect
 agentl diagram PIPELINE
 agentl runs [show RUN_ID [--json]]
-agentl cost [--since 30d] [--by pipeline,model] [--json]
+agentl cost [--since 30d] [--by pipeline,model] [--usd-per-hour X | --lambda-memory-mb MB | --bill-usd X] [--json]
 agentl connectors [NAME]
 agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
@@ -52,6 +52,38 @@ total $0.3150
 
 Both read the runs and events the store already keeps. Steps recorded before per-model spend
 existed count under model `?`.
+
+### Compute cost per pipeline
+
+One Lambda function or one EC2, ECS or k8s host usually runs many pipelines, so the cloud bill
+shows a single line. `agentl cost` can attribute that compute to pipelines, steps and models from
+the wall time each run recorded. Pick one price:
+
+| Flag | Formula per run |
+| --- | --- |
+| `--usd-per-hour X` | `wall_seconds / 3600 * X` (instance, task or pod price) |
+| `--lambda-memory-mb MB` | `wall_seconds * MB / 1024 * usd_per_gb_second + usd_per_request` |
+| `--bill-usd X` | `X * wall_seconds / sum(wall_seconds of all runs in the period)` |
+
+Lambda prices default to 0.0000166667 USD per GB-second and 0.0000002 USD per request (x86,
+us-east-1); override them with `--usd-per-gb-second` and `--usd-per-request`. `--bill-usd` spreads
+a known bill for a shared host (for example the month's EC2 line) over the runs of the period.
+
+A run's compute goes to its finished steps in proportion to their `seconds`, and a step's share to
+its models in proportion to their LLM calls. Steps without LLM calls show model `-`; a run with no
+finished step keeps its compute under step `-`. Each group then has `compute_usd` and `total_usd`
+(LLM plus compute), and the report has `llm_usd`, `compute_usd` and `total_usd`:
+
+```text
+$ agentl cost --since 30d --by pipeline --usd-per-hour 0.0832
+orders   0 calls in 720 runs, 0 in / 0 out tokens, $0.0000 + compute $0.4992 = $0.4992
+tickets  420 calls in 30 runs, 210000 in / 21000 out tokens, $0.3150 + compute $0.0693 = $0.3843
+total $0.8835 (LLM $0.3150, compute $0.5685, hourly)
+```
+
+Limits: the split uses wall time only (not CPU seconds or memory), every run in the store is
+priced the same way (run `agentl cost` against one host's store, or one `--db`, per price), and the
+host's idle time is not reported; with `--bill-usd` it is spread over the runs.
 
 ## Validate and lint
 
@@ -371,6 +403,40 @@ that does not load, `$AGENTL_PROVIDER` / `$AGENTL_MODEL`. A repair costs one or 
 pipeline YAML and the context as input; the calls, tokens and cost (from the llm's `price:`) are
 printed, the retry is skipped once the pipeline's `budget:` is reached, and a `repair.proposed`
 event with the spend is recorded on the run.
+
+## Report a bug
+
+```bash
+agentl report --pipeline invoices.yaml            # the latest failed run
+agentl report 20261014-091203-ab12cd --pipeline invoices.yaml -o bug.md
+agentl report --crash                              # the last CLI crash
+agentl report --json
+```
+
+`report` builds a ready-to-paste bug report: the agentl version, Python and OS, the failing step
+with its error and traceback, what `agentl doctor` sees, the pipeline YAML and a minimal repro
+suggestion. It prints markdown that matches the Bug report issue form, and a prefilled
+`https://github.com/arimayuji/agentl/issues/new?template=bug_report.yml&...` URL; when the URL
+would pass 8000 characters it asks you to paste the markdown (or the `-o` file) into the form
+instead. **Nothing is sent over the network**: it only prints. Read it before you share it.
+
+In the YAML, `${VAR:-default}` loses its default, values of secret-looking keys (`token`,
+`password`, `dsn`, `api_key`...) that are not `${VAR}` references become `***`, and secret values
+the process knows (resolved secret references, environment variables with secret-looking names)
+are masked everywhere in the report. Hostnames, paths and data values in a traceback are not.
+
+When the CLI crashes with an unexpected Python error, or a run fails with an error that looks
+internal (`TypeError`, `AttributeError`... raised outside your own `fn:` code), agentl prints one
+line after the error:
+
+```text
+Looks like an agentl bug: run `agentl report <run_id>` to file it (silence with AGENTL_NO_REPORT_HINT=1)
+```
+
+A CLI crash keeps its traceback in `.agentl/last-crash.txt` for `agentl report --crash`. Set
+`AGENTL_NO_REPORT_HINT=1` to never print the line. The same report is the read-only `report` tool
+of `agentl mcp`. To fix the bug yourself or with an AI agent, see
+[CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md).
 
 ## Track record
 

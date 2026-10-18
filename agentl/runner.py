@@ -241,6 +241,17 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     return _hash("agent", step.agent, step.output, llm_key, rec)
 
 
+def _trace(e: BaseException) -> str:
+    """The end of the traceback, kept on `step.failed` so `agentl report` can show it."""
+    import traceback
+
+    text = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    return text[-TRACE_CHARS:]
+
+
+TRACE_CHARS = 3000
+
+
 def _describe(e: BaseException) -> str:
     text = f"{type(e).__name__}: {e}"
     if "CERTIFICATE_VERIFY_FAILED" in text:  # netguard is not imported up front: it is heavy
@@ -1823,6 +1834,7 @@ class Runner:
                 "step.failed",
                 step_id,
                 error=_describe(e),
+                traceback=_trace(e),
                 **({} if step.required else {"required": False}),
                 **self._step_spend(step, result),
             )
@@ -2084,7 +2096,10 @@ class Runner:
                 )
             for step in chain:
                 error = _describe(e) if step.id == culprit else f"stopped: step '{culprit}' failed"
-                self._emit(run_id, "step.failed", step.id, error=error, **self._step_spend(step, result))
+                trace = {"traceback": _trace(e)} if step.id == culprit else {}
+                self._emit(
+                    run_id, "step.failed", step.id, error=error, **trace, **self._step_spend(step, result)
+                )
             raise
         result.outputs[last.id] = out
         seconds = round(time.time() - t0, 3)

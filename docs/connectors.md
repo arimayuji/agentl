@@ -774,7 +774,10 @@ The HTML comes from `url`, `path`, or the `html` field of upstream records (`bro
 `extract: html`, `crawl`), so it chains after a login done in the browser. Supported selectors:
 tag, `#id`, `.class`, `[attr]`, `[attr=v]` (and `^=`, `$=`, `*=`, `~=`), `:first-child`,
 `:last-child`, `:nth-child(n)`, `:nth-of-type(n)`, descendant and `>` combinators, and groups
-with commas. XPath is not supported.
+with commas. When the HTML comes from upstream records, each result also keeps that page's `url`
+and `source_url` when those keys are present, including when `items` produces several records. If a
+selected field uses one of those names, its extracted value takes precedence.
+XPath is not supported.
 
 **Tables.** `html.read` takes `select` (a CSS selector for the tables to read), `header_rows: N`
 (several header rows are joined: `Sales` over `Q1` becomes `Sales Q1`) and repeats `colspan` and
