@@ -249,7 +249,8 @@ They are always listed under **Changed** or **Removed**.
 ### Fixed
 
 - `html.select` keeps upstream `url` and `source_url` on each extracted record without overwriting
-  selected fields with the same names, including when `items` selects multiple elements.
+  selected fields with the same names, including when `items` selects multiple elements (#287,
+  thanks @dannyward630).
 - Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
   send a record whose key field is null or missing to the step's rejected records with the reason
   (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index
