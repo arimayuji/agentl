@@ -100,6 +100,10 @@ jobs:
         run: |
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --clobber
+            # a draft (e.g. from Release Drafter) has no tag yet: publish it on the commit that was built
+            if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true ]; then
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --target "$GITHUB_SHA"
+            fi
           else
             # on a tag push the tag exists; from "Run workflow" this creates it on the commit that was built
             gh release create "$TAG" dist/* sbom/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
