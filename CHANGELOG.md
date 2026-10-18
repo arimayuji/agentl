@@ -9,6 +9,16 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- `mode: changeset` on `postgres.write` and `sql.write` (#205), with the semantics of
+  `sqlite.write`: inserted, updated, deleted and unchanged counts, `deletes: missing` or
+  `partition_replaced`, `dry_run` and `outcome: no_change`. `postgres.write` diffs set-based in a
+  temp table typed like the destination; `sql.write` compares in Python.
+- `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
+  partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
+  comparing their rows. The result reports `partitions_skipped`.
+
 ### Changed
 
 - `on_drift: remap` on a check (#178) no longer stops the run: it hands the new layout to the
