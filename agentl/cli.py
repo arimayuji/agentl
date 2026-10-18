@@ -484,6 +484,20 @@ def main(argv: list[str] | None = None) -> int:
     ct.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
     ct.add_argument("--by", default="pipeline,model", help="comma list of pipeline, step, model, day")
     ct.add_argument("--json", action="store_true")
+    cp = ct.add_mutually_exclusive_group()
+    cp.add_argument(
+        "--usd-per-hour", type=float, help="compute: host, task or pod price per hour of run time"
+    )
+    cp.add_argument(
+        "--lambda-memory-mb", type=float, help="compute: Lambda memory; priced per GB-second plus request"
+    )
+    cp.add_argument(
+        "--bill-usd", type=float, help="compute: a shared host's bill, split over runs by wall time"
+    )
+    ct.add_argument(
+        "--usd-per-gb-second", type=float, default=None, help="Lambda price (default us-east-1 x86)"
+    )
+    ct.add_argument("--usd-per-request", type=float, default=None, help="Lambda request fee")
     co = cmd("connectors", "list installed connectors, or show one connector's parameters")
     co.add_argument("name", nargs="?", help="a connector, e.g. http.get: prints its `with:` parameters")
 
@@ -790,8 +804,20 @@ def main(argv: list[str] | None = None) -> int:
             from .checks import parse_duration
 
             by = [k.strip() for k in a.by.split(",") if k.strip()]
+            lam = {
+                k: v
+                for k, v in (
+                    ("usd_per_gb_second", a.usd_per_gb_second),
+                    ("usd_per_request", a.usd_per_request),
+                )
+                if v is not None
+            }
+            if lam and a.lambda_memory_mb is None:
+                print("--usd-per-gb-second and --usd-per-request need --lambda-memory-mb", file=sys.stderr)
+                return 2
+            price = ledger.compute_price(a.usd_per_hour, a.lambda_memory_mb, a.bill_usd, **lam)
             with open_store(a.db) as store:
-                report = ledger.cost(store, time.time() - parse_duration(a.since), by)
+                report = ledger.cost(store, time.time() - parse_duration(a.since), by, compute=price)
             print(json.dumps(report, indent=2, default=str) if a.json else ledger.cost_text(report))
             return 0
         if a.cmd == "runs":

@@ -22,6 +22,12 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `agentl cost` attributes compute cost per pipeline, step and model (#309), for a Lambda function
+  or a shared EC2, ECS or k8s host that runs many pipelines: `--usd-per-hour X` prices each run's
+  wall time, `--lambda-memory-mb MB` uses the Lambda formula (GB-seconds plus the request fee,
+  `--usd-per-gb-second` and `--usd-per-request` override the prices) and `--bill-usd X` splits a
+  known bill over the period's runs by wall time. Groups gain `compute_usd` and `total_usd`; without
+  a compute flag the report is unchanged. Python: `ledger.cost(..., compute=ledger.compute_price(...))`.
 - Run labels and a grouped, exportable dashboard (#295): a free-form `labels:` map of strings in
   the pipeline spec, plus inferred `source` and `sink` labels from the connector steps, stored with
   each run. The dashboard groups pipelines by any label key with per-group pipelines, failing count,
