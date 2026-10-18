@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Schedules by publication cycle (#201): a `schedule:` trigger with a required `tz`, expected
+  `days` and `at`, built-in `us_federal` and `br_national` holiday calendars plus an exceptions
+  file, `if_holiday` (skip, next or previous business day, run), staged `poll.cadence`,
+  `stop_when: success_in_cycle`, `active.between`, `extra_dates` and `skip_dates`. `agentl serve`
+  logs a lateness warning when a cycle's window closes with no successful run, and
+  `agentl schedule next PIPELINE --n 10` prints the next firings. `agentl lint` refuses a `cron`
+  trigger without `timezone` (AL009).
 - Fetch windows (#190): a `window:` section (`lookback`, `max_span`, `align: none | calendar_month
   | week`, `order`) fills `${window.start}` / `${window.end}` in steps. `agentl run` re-reads the
   lookback tail; `agentl backfill --from X --to Y` runs the same chunked path over any range, keeps

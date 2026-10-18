@@ -215,6 +215,10 @@ class Service:
         self.routes: dict[str, tuple[Any, Any]] = {}
         self.next_cron: dict[tuple[str, int], _dt.datetime] = {}
         self.next_files: dict[tuple[str, int], float] = {}
+        self.schedules: dict[tuple[str, int], Any] = {}
+        self.next_cycle: dict[tuple[str, int], tuple[_dt.date, _dt.datetime] | None] = {}
+        self.open_cycle: dict[tuple[str, int], _dt.date] = {}  # last cycle fired, until it closes
+        self.on_late: Callable[[Any, _dt.date, _dt.datetime], None] | None = None
         self.pending: dict[tuple[str, int], set[str]] = {}  # files handed to a run not finished yet
         self._stop = threading.Event()
         from . import chain
@@ -231,6 +235,12 @@ class Service:
                     self.routes[t.webhook] = (spec, t)
                 if t.cron:
                     self.next_cron[(spec.name, i)] = Cron(t.cron).next_after(_now(t.timezone))
+                if t.schedule:
+                    from .schedule import Schedule
+
+                    sch = self.schedules[(spec.name, i)] = Schedule(t.schedule)
+                    nxt = sch.next_firings(_dt.datetime.now(_dt.timezone.utc), 1)
+                    self.next_cycle[(spec.name, i)] = nxt[0] if nxt else None
 
     def _default_run(self, spec: Any, records: list[dict], kind: str) -> Any:
         from .runner import Runner
@@ -338,6 +348,8 @@ class Service:
                     if current >= due:
                         self.next_cron[(name, i)] = Cron(t.cron).next_after(current)
                         self.submit(spec, [{"scheduled_at": due.isoformat()}], "cron")
+                elif t.schedule:
+                    self._tick_schedule(spec, i, wall)
                 elif t.kind == "every":
                     q = self.queues.get(name)
                     running = q is not None and q.unfinished_tasks > 0
@@ -358,6 +370,61 @@ class Service:
                     if files:
                         busy.update(f["path"] for f in files)
                         self.submit(spec, files, "files", after=self._seen(name, i, t.files, files))
+
+    def _cycle_key(self, name: str, i: int, d: _dt.date) -> str:
+        return f"schedule-cycle:{name}:{i}:{d.isoformat()}"
+
+    def cycle_succeeded(self, name: str, i: int, d: _dt.date) -> bool:
+        return bool(self.store.cache_get(self._cycle_key(name, i, d)))
+
+    def _tick_schedule(self, spec: Any, i: int, wall: float) -> None:
+        """Fire the schedule's due poll, skip polls of a cycle that already succeeded
+        (`stop_when: success_in_cycle`) and raise a lateness alert when a window closes empty."""
+        key, sch = (spec.name, i), self.schedules[(spec.name, i)]
+        current = _dt.datetime.fromtimestamp(wall, _dt.timezone.utc)
+        opened = self.open_cycle.get(key)
+        q = self.queues.get(spec.name)
+        busy = q is not None and q.unfinished_tasks > 0
+        if opened is not None and current > sch.window_end(opened) and not busy:
+            del self.open_cycle[key]
+            if not self.cycle_succeeded(spec.name, i, opened):
+                self._late(spec, opened, sch.start_of(opened))
+        nxt = self.next_cycle.get(key)
+        if nxt is None or current < nxt[1]:
+            return
+        d, due = nxt
+        later = sch.next_firings(current, 1)
+        self.next_cycle[key] = later[0] if later else None
+        if opened is not None and opened != d and not self.cycle_succeeded(spec.name, i, opened):
+            self.open_cycle.pop(key, None)
+            self._late(spec, opened, sch.start_of(opened))
+        self.open_cycle[key] = d
+        stop = spec.trigger[i].schedule.poll and spec.trigger[i].schedule.poll.stop_when
+        if stop and self.cycle_succeeded(spec.name, i, d):
+            return
+        if stop and busy:
+            return  # a poll of this pipeline is still running; the next one decides
+
+        def done(ok: bool) -> None:
+            if ok:
+                self.store.cache_set(self._cycle_key(spec.name, i, d), True)
+
+        record = {
+            "scheduled_at": due.isoformat(),
+            "cycle": d.isoformat(),
+            "expected_at": sch.start_of(d).isoformat(),
+        }
+        self.submit(spec, [record], "schedule", after=done)
+
+    def _late(self, spec: Any, d: _dt.date, expected: _dt.datetime) -> None:
+        log.warning(
+            "%s: late: cycle %s (expected %s) had no successful run in its window",
+            spec.name,
+            d,
+            expected.isoformat(),
+        )
+        if self.on_late:
+            self.on_late(spec, d, expected)
 
     def _seen(self, name: str, i: int, pattern: str, files: list[dict]) -> Callable[[bool], None]:
         def done(ok: bool) -> None:
@@ -430,6 +497,7 @@ class Service:
         for name, spec in self.specs.items():
             kinds = ", ".join(
                 t.cron
+                or (f"schedule {t.schedule.tz}" if t.schedule else None)
                 or t.webhook
                 or (f"files {t.files}" if t.files else f"after {t.after}" if t.after else f"every {t.every}")
                 for t in spec.trigger

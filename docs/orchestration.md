@@ -57,10 +57,46 @@ agentl serve pipelines/invoices.yaml pipelines/sales.yaml --host 0.0.0.0 --port 
 | Trigger | The `trigger` step gets |
 | --- | --- |
 | `cron` | `[{scheduled_at}]`. Five fields, names (`mon`, `jan`), ranges, steps, `@daily`/`@hourly`/`@weekly`/`@monthly`; a time missed while the service was down is not run later |
+| `schedule` | `[{scheduled_at, cycle, expected_at}]`, see below |
 | `webhook` | the JSON body as records (an object is one record). `secret` accepts `Authorization: Bearer <secret>` or an HMAC-SHA256 of the body in `X-Signature-256` / `X-Hub-Signature-256` (`sha256=<hex>`). Answers 202 once queued |
 | `every` (on its own) | `[{started_at}]`. Runs again `every` after the last one started, never two at once; for queue consumers |
 | `files` | one record per new or changed file: `path`, `name`, `size`, `modified`. The cursor is kept in the run store, so a restart does not reprocess old files, and files are marked as seen only after a successful run |
 | `after: <pipeline>` | `[{pipeline, run_id, status, error}]` of the finished run. `status: succeeded` (default), `failed` or `any` |
+
+### Schedules by publication cycle
+
+Data that comes out on expected days, with a variable delay and holidays, does not fit a cron.
+A `schedule:` trigger describes the publication instead, always in an explicit time zone:
+
+```yaml
+trigger:
+  - schedule:
+      tz: America/New_York                    # required
+      expect:
+        days: [mon, tue]
+        at: "16:00"
+        calendar: us_federal                  # or br_national
+        exceptions: holidays.txt              # one extra closed date (YYYY-MM-DD) per line
+        if_holiday: next_business_day         # skip (default), previous_business_day, run
+      poll:
+        cadence: [{ for: 15m, every: 1m }, { for: 45m, every: 5m }]
+        stop_when: success_in_cycle           # no more polls once a run of the cycle succeeded
+      active: { between: ["2026-09-01", "2026-11-30"] }
+      extra_dates: [2026-02-19]               # cycles on top of `expect`
+      skip_dates: [2026-10-06]                # expected days with no cycle
+```
+
+Each cycle fires at `at`, then on the cadence until its window (the sum of the `for`s) ends. The
+`trigger` step gets `[{scheduled_at, cycle, expected_at}]`. When a window closes with no
+successful run, `agentl serve` logs a lateness warning (`late: cycle ... had no successful run`).
+Successful cycles are kept in the run store, so a restart does not poll them again.
+
+```bash
+agentl schedule next pipelines/releases.yaml --n 10   # the next firings, cron triggers too
+```
+
+`agentl lint` refuses a `cron:` trigger without `timezone:` (AL009): it would follow the server
+clock and move with daylight saving. `validate` and `run` still accept it.
 
 Runs of one pipeline never overlap: they queue. Different pipelines run side by side. `GET
 /health` lists the pipelines served. A `use: trigger` step outside `agentl serve` returns no
