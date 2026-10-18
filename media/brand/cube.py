@@ -51,6 +51,8 @@ def main() -> None:
     from playwright.sync_api import sync_playwright
 
     jobs = [
+        ("agentl-cube-256.png", page(cube(118), "transparent", 256, 256), 256, 256),
+        ("agentl-cube-onblue-1024.png", page(cube(470, "#1a85dc"), "transparent", 1024, 1024), 1024, 1024),
         ("agentl-cube-1024.png", page(cube(470), "transparent", 1024, 1024), 1024, 1024),
         ("agentl-cube-avatar-white-1000.png", page(cube(400), "#ffffff", 1000, 1000), 1000, 1000),
         (
