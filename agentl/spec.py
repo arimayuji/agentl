@@ -1124,6 +1124,8 @@ def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
 
 class PipelineSpec(BaseModel):
     name: str
+    # Free-form str -> str tags (team, domain, ...) recorded with each run; see agentl.labels.
+    labels: dict[str, str] = Field(default_factory=dict)
     window: WindowSpec | None = None
 
     # Run parameters, used as ${params.name}. Values come from --param, params= or serve.
@@ -1153,6 +1155,17 @@ class PipelineSpec(BaseModel):
     expect: ExpectSpec | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
+
+    @field_validator("labels", mode="before")
+    @classmethod
+    def _labels(cls, v: Any) -> Any:
+        from .labels import check
+
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError("labels: must be a map of key: value strings")
+        return check(v)
 
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
