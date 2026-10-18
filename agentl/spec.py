@@ -254,6 +254,25 @@ class AttemptSpec(BaseModel):
     on_invalid: Literal["quarantine"] = "quarantine"
 
 
+class CriticSpec(BaseModel):
+    """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
+    step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
+    quarantined."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm: str | None = None  # default: the step's llm
+    criteria: str
+    max_rounds: int = Field(default=2, ge=1, le=5)
+
+    @field_validator("criteria")
+    @classmethod
+    def _criteria(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("critic criteria must not be empty")
+        return v
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -293,6 +312,8 @@ class StepSpec(BaseModel):
     # Attempts with validator feedback and progressive strictness (#198). Replaces the default
     # "two tries per llm" when set. See AttemptSpec.
     attempts: list[AttemptSpec] = Field(default_factory=list)
+    # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
+    critic: CriticSpec | None = None
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
     # Compact rows (#215): the model answers one JSON array per line in the column order of
@@ -327,6 +348,8 @@ class StepSpec(BaseModel):
     def llms(self) -> list[str]:
         """Every llm the step may call, in order, without repeats."""
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
+        if self.critic is not None:
+            names.append(self.critic.llm or self.llm)
         return list(dict.fromkeys(names))
 
     @model_validator(mode="before")
@@ -460,6 +483,14 @@ class StepSpec(BaseModel):
                 raise ValueError(f"step '{self.id}': write each tool with settings as its own item")
         if self.cursor and not (self.use or self.fn):
             raise ValueError(f"step '{self.id}': cursor goes on a use or fn step that reads the data")
+        if self.critic is not None:
+            if not self.agent:
+                raise ValueError(f"step '{self.id}': only agent steps take a critic")
+            if self.output_mode == "rows":
+                raise ValueError(
+                    f"step '{self.id}': critic is not supported with output_mode rows; it reviews"
+                    " one answer per record"
+                )
         if self.escalate and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":

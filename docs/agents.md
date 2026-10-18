@@ -348,6 +348,40 @@ calls, failures and tokens per attempt next to `answered_by`:
 `"attempts": {"1": {"llm": "small", "calls": 40, "failed": 6, "input_tokens": ..., "output_tokens": ...}}`.
 One record per call: not with `mode: batch`, `records_per_call` or `llm: [a, b]`.
 
+### A critic reviews each answer
+
+`critic:` sends each valid answer to a reviewer llm with the record and your criteria. The
+reviewer answers `{approved, feedback}`. A rejected answer goes back to the step's llm with the
+previous answer and the feedback added to the instruction, until the critic approves or has
+rejected `max_rounds` times:
+
+```yaml
+- id: extract
+  agent: Extract invoice fields.
+  output: { total: float, due: date }
+  critic:
+    llm: reviewer          # optional, default: the step's llm; must name an entry in `llm:`
+    criteria: Totals must match the line items; dates are in the document.
+    max_rounds: 2          # 1 to 5, default 2
+```
+
+- Approved: the record goes on. Still rejected after `max_rounds`: the record goes to the
+  quarantine (`agentl rejected`) with `_error` holding the last feedback and `_critic` the
+  exchange (answer and feedback per round).
+- Each round logs a `critic.round` event (round, llm, approved, cached, clipped feedback; no
+  record data), and the step's spend counts `"critic": {"approved", "rejected", "quarantined"}`.
+- Critic and regeneration calls go through the budget and the step's spend (per model). Verdicts
+  are cached on the record, the answer, the criteria and the critic llm, and regenerations on the
+  answer and the feedback, so a re-run pays nothing for them.
+- Works with `records_per_call`, `mode: batch`, `rules:` (only agent answers are reviewed) and
+  tools (regenerations may call tools). Not with `output_mode: rows`.
+
+!!! note "Cost"
+    The critic adds one call per record when it approves at once. Each rejected round adds up to
+    two more (a regeneration and another review), so a record can cost up to `2 * max_rounds`
+    extra calls. Use a cheap reviewer for broad checks, keep `max_rounds` low and try it with
+    `agentl eval` on a golden set before turning it on for a large input.
+
 ### Rules first, the agent for the rest
 
 Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
