@@ -45,6 +45,22 @@ def download(url: str, headers: dict | None = None, timeout: float = 60, retries
     raise RuntimeError("unreachable")
 
 
+def changed_download(
+    url: str, headers: dict | None, if_changed: dict, on_unchanged: str, timeout: float = 60, retries: int = 2
+) -> list[Path]:
+    """`url` saved to a temp file only when it changed since the last successful run."""
+    from .http import conditional_get
+
+    hdrs = {"User-Agent": "agentl", "Accept": "*/*", **(headers or {})}
+    body = conditional_get(url, hdrs, timeout, retries, if_changed, on_unchanged)
+    if body is None:
+        return []
+    name = Path(urllib.parse.urlparse(url).path).name or "download"
+    target = tmpdir("dl-") / name
+    target.write_bytes(body)
+    return [target]
+
+
 _REMOTE = re.compile(r"^(?!https?://|file://)[a-zA-Z][a-zA-Z0-9+.-]*://")
 _ORIGIN: dict[Path, str] = {}
 
@@ -92,8 +108,16 @@ def paths(
     url: str | None = None,
     headers: dict | None = None,
     storage_options: dict | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> list[Path]:
-    """Files from a `url`, a local or remote glob `path`, or the `field` of upstream records."""
+    """Files from a `url`, a local or remote glob `path`, or the `field` of upstream records.
+    With `if_changed`, the `url` is fetched conditionally (see `http.get`): unchanged gives no
+    files (`on_unchanged: continue_empty`) or ends the run as `no_change` (`stop`)."""
+    if if_changed is not None:
+        if not url:
+            raise ValueError("if_changed works only with 'url'")
+        return changed_download(url, headers, if_changed, on_unchanged)
     if url:
         return [download(url, headers)]
     if path and is_remote(path):

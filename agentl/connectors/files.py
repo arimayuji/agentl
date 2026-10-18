@@ -439,6 +439,8 @@ def archive_read(
     type: str = "auto",
     max_extract_bytes: int = MAX_EXTRACT_BYTES,
     max_members: int = MAX_ARCHIVE_MEMBERS,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
     """Extract the members of zip, tar or gz archives whose name matches `pattern` (a regex,
     searched in the member path). One record per member: `path` (the extracted file, ready for any
@@ -449,7 +451,7 @@ def archive_read(
     """
     rx = re.compile(pattern) if pattern else None
     out: Records = []
-    for p in paths(input, path, field, url, headers, storage_options):
+    for p in paths(input, path, field, url, headers, storage_options, if_changed, on_unchanged):
         kind = _archive_kind(p, type)
         names = _archive_members(p, kind)
         if len(names) > max_members:
@@ -495,6 +497,10 @@ def archive_read(
 
 
 # ---------------------------------------------------------------- connectors
+def _cond(if_changed: dict | None, on_unchanged: str) -> dict:
+    return {"if_changed": if_changed, "on_unchanged": on_unchanged}
+
+
 def _each(
     reader: Callable[..., Records],
     input: Any,
@@ -506,7 +512,8 @@ def _each(
 ) -> Records:
     out: Records = []
     so = opts.pop("storage_options", None)
-    for p in paths(input, path, field, url, headers, so):
+    cond = {"if_changed": opts.pop("if_changed", None), "on_unchanged": opts.pop("on_unchanged", "stop")}
+    for p in paths(input, path, field, url, headers, so, **cond):
         out.extend(reader(p, **opts))
     return out
 
@@ -521,6 +528,8 @@ def file_read(
     on_unsupported: str = "skip",
     max_extract_bytes: int = MAX_EXTRACT_BYTES,
     storage_options: dict | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
     **opts: Any,
 ) -> Records:
     """Read any supported file, detecting the format by extension.
@@ -531,7 +540,7 @@ def file_read(
     if on_unsupported not in ("skip", "error"):
         raise ValueError("on_unsupported must be 'skip' or 'error'")
     out: Records = []
-    for p in paths(input, path, field, url, headers, storage_options):
+    for p in paths(input, path, field, url, headers, storage_options, if_changed, on_unchanged):
         for f, archive in _expand(p, max_extract_bytes):
             reader = READERS.get(f.suffix.lower())
             if reader is None:
@@ -557,6 +566,8 @@ def csv_read(
     storage_options: dict | None = None,
     delimiter: str | None = None,
     encoding: Encoding = "utf-8",
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
     return _each(
         read_csv,
@@ -567,6 +578,8 @@ def csv_read(
         delimiter=delimiter,
         encoding=encoding,
         storage_options=storage_options,
+        if_changed=if_changed,
+        on_unchanged=on_unchanged,
     )
 
 
@@ -580,9 +593,11 @@ def csv_read_chunks(
     storage_options: dict | None = None,
     delimiter: str | None = None,
     encoding: Encoding = "utf-8",
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Iterator[Records]:
     chunk: Records = []
-    for p in paths(input, path, "path", url, headers, storage_options):
+    for p in paths(input, path, "path", url, headers, storage_options, if_changed, on_unchanged):
         for row in iter_csv(p, delimiter, encoding):
             chunk.append(row)
             if len(chunk) >= chunk_size:
@@ -615,14 +630,16 @@ def csv_read_arrow(
     delimiter: str | None = None,
     encoding: Encoding = "utf-8",
     _engine: str | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Any:
     """pyarrow's CSV reader with every column as text, like `csv.read`. Falls back to the normal
     reader (and returns records) for anything it would read differently: several files, another
     encoding, a BOM, duplicate or ragged columns, invalid UTF-8. With `_engine="polars"` (the runner
     sets it when every consumer is a polars step) polars reads the file, falling back to pyarrow."""
-    files = paths(input, path, "path", url, headers, storage_options)
+    files = paths(input, path, "path", url, headers, storage_options, if_changed, on_unchanged)
     if len(files) != 1 or not isinstance(encoding, str) or encoding.lower().replace("-", "") != "utf8":
-        return csv_read(input, path, url, headers, storage_options, delimiter, encoding)
+        return [r for f in files for r in read_csv(f, delimiter, encoding)]
     pa = require("pyarrow", "arrow")
     pacsv = require("pyarrow.csv", "arrow")
     p = files[0]
@@ -674,8 +691,19 @@ def json_read(
     headers: dict | None = None,
     storage_options: dict | None = None,
     key: str | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
-    return _each(read_json, input, path, url, headers, key=key, storage_options=storage_options)
+    return _each(
+        read_json,
+        input,
+        path,
+        url,
+        headers,
+        key=key,
+        storage_options=storage_options,
+        **_cond(if_changed, on_unchanged),
+    )
 
 
 @connector("txt.read")
@@ -687,9 +715,19 @@ def txt_read(
     storage_options: dict | None = None,
     lines: bool = False,
     encoding: Encoding = "utf-8",
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
     return _each(
-        read_txt, input, path, url, headers, lines=lines, encoding=encoding, storage_options=storage_options
+        read_txt,
+        input,
+        path,
+        url,
+        headers,
+        lines=lines,
+        encoding=encoding,
+        storage_options=storage_options,
+        **_cond(if_changed, on_unchanged),
     )
 
 
@@ -702,12 +740,22 @@ def excel_read(
     storage_options: dict | None = None,
     sheet: str | None = None,
     header_row: int = 1,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
     def read(p: Path, **kw: Any) -> Records:
         return (read_xls if p.suffix.lower() == ".xls" else read_xlsx)(p, **kw)
 
     return _each(
-        read, input, path, url, headers, sheet=sheet, header_row=header_row, storage_options=storage_options
+        read,
+        input,
+        path,
+        url,
+        headers,
+        sheet=sheet,
+        header_row=header_row,
+        storage_options=storage_options,
+        **_cond(if_changed, on_unchanged),
     )
 
 
@@ -719,8 +767,19 @@ def parquet_read(
     headers: dict | None = None,
     storage_options: dict | None = None,
     columns: list[str] | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Records:
-    return _each(read_parquet, input, path, url, headers, columns=columns, storage_options=storage_options)
+    return _each(
+        read_parquet,
+        input,
+        path,
+        url,
+        headers,
+        columns=columns,
+        storage_options=storage_options,
+        **_cond(if_changed, on_unchanged),
+    )
 
 
 @arrow_reader("parquet.read")
@@ -731,12 +790,14 @@ def parquet_read_arrow(
     headers: dict | None = None,
     storage_options: dict | None = None,
     columns: list[str] | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> Any:
     pa = require("pyarrow", "arrow")
     pq = require("pyarrow.parquet", "arrow")
     tables = [
         pq.read_table(str(p), columns=columns)
-        for p in paths(input, path, "path", url, headers, storage_options)
+        for p in paths(input, path, "path", url, headers, storage_options, if_changed, on_unchanged)
     ]
     if not tables:
         return []

@@ -131,6 +131,30 @@ fixed name is enough.
     headers: { Authorization: "Bearer ${API_TOKEN}" }
 ```
 
+### Read a URL only when it changed
+
+The readers that take a `url` (`file.read`, `archive.read`, `csv.read`, `json.read`, `txt.read`,
+`excel.read`, `parquet.read`) accept the same `if_changed` and `on_unchanged` as
+[`http.get`](#download-only-when-the-source-changed): ETag, Last-Modified, Content-Length or a page
+stamp, with the body hash as the last resort, saved in the run store only when the run succeeds.
+A monthly bulk file checked daily downloads once a month:
+
+```yaml
+- id: bulk
+  use: archive.read
+  with:
+    url: https://example.org/downloads/psd_alldata_csv.zip
+    pattern: '\.csv$'
+    if_changed: { by: [etag, last_modified] }
+    on_unchanged: stop        # the run ends as no_change; continue_empty gives no records
+- id: rows
+  use: csv.read
+  input: bulk
+```
+
+`if_changed` needs `url` (not `path` or an input step). The changed file is held in memory once
+before it is written to disk.
+
 ## HTTP
 
 <video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/http.jpg" aria-label="Paginated API requests with retries">
