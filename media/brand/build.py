@@ -84,11 +84,19 @@ def _mark(size: float, scale: float) -> str:
     return f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, size * scale)}</g>'
 
 
+def _shade(width: float, height: float) -> str:
+    """The deep blue circle from the top right corner: depth on blue without a new color."""
+    return f'<circle cx="{width:.0f}" cy="0" r="{height * 0.62:.0f}" fill="{BLUE_DEEP}" opacity=".55"/>'
+
+
 def icon(size: int = 512) -> str:
     """App icon and favicon: rounded square."""
+    rx = f"{size * 0.22:.0f}"
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
-        f'<rect width="{size}" height="{size}" rx="{size * 0.22:.0f}" fill="{BLUE}"/>{_mark(size, 0.62)}</svg>'
+        f'<defs><clipPath id="r"><rect width="{size}" height="{size}" rx="{rx}"/></clipPath></defs>'
+        f'<g clip-path="url(#r)"><rect width="{size}" height="{size}" fill="{BLUE}"/>{_shade(size, size)}</g>'
+        f"{_mark(size, 0.62)}</svg>"
     )
 
 
@@ -96,7 +104,7 @@ def avatar(size: int = 512) -> str:
     """Profile picture: full bleed, since X, GitHub and others crop it to a circle."""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
-        f'<rect width="{size}" height="{size}" fill="{BLUE}"/>{_mark(size, 0.56)}</svg>'
+        f'<rect width="{size}" height="{size}" fill="{BLUE}"/>{_shade(size, size)}{_mark(size, 0.56)}</svg>'
     )
 
 
@@ -110,7 +118,7 @@ def _wide(width: int, height: int, title: float, tagline: str, x_center: float) 
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
         f'<rect width="{width}" height="{height}" fill="{BLUE}"/>'
-        f'<circle cx="{width:.0f}" cy="0" r="{height * 0.62:.0f}" fill="{BLUE_DEEP}" opacity=".55"/>'
+        f"{_shade(width, height)}"
         f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, title)}</g>'
         f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{WHITE}" '
         'fill-opacity=".85"/>'

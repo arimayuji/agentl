@@ -196,6 +196,8 @@ They are always listed under **Changed** or **Removed**.
 
 ### Changed
 
+- Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
+  the top right corner of the blue surface, as on the X banner.
 - Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
   the dashboard keeps green and red only for run status, and the social preview and X banner are
   blue with a white wordmark and the yellow dot.
