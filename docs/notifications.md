@@ -95,3 +95,30 @@ A channel's type defaults to its name. Set `type:` to give channels custom names
 - `summary: agent`: the default LLM writes a three-line explanation of the run.
 
 Each rule sends at most one message per step per run. A failing channel never fails the pipeline.
+
+### Send the records of a step
+
+`on: records` with `step:` sends the records that step produced, and only when it produced any:
+a run with nothing to report stays silent.
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+  rules:
+    - on: records
+      step: alerts
+      template: "{sku}: stock {stock} below {minimum}"
+      max_rows: 20
+      to: [slack]
+```
+
+- `template`: one line per record, with `{field}` placeholders. Without it, each record is one
+  line of JSON.
+- `max_rows` (20): lines after that are left out, and a last line says how many.
+
+The message starts with the usual `step.succeeded` header. The records are the step's output as
+the runner holds it: for a writer, that is its summary record, so point the rule at the step that
+produces the rows.
+
+To print or log records as a step instead, use [`console.send` and `log.write`](connectors.md#console-and-log).

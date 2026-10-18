@@ -874,14 +874,19 @@ _STAMPS = {"date": "%Y-%m-%d", "datetime": "%Y-%m-%dT%H%M%S"}
 
 
 def versioned(path: str, now: _dt.datetime | None = None) -> str:
-    """'reports/sales_{date}.xlsx' -> 'reports/sales_2026-10-14.xlsx' (local time)."""
+    """'reports/sales_{date}.xlsx' -> 'reports/sales_2026-10-14.xlsx' (local time). `{run_id}` is
+    the id of the current run (outside a run, a timestamp)."""
     if "{" not in path:
         return path
     now = now or _dt.datetime.now()
+    stamps = {k: now.strftime(f) for k, f in _STAMPS.items()}
+    from ..registry import current_run_id
+
+    stamps["run_id"] = current_run_id() or now.strftime("%Y%m%dT%H%M%S")
     try:
-        return path.format(**{k: now.strftime(f) for k, f in _STAMPS.items()})
+        return path.format(**stamps)
     except (KeyError, IndexError) as e:
-        raise ValueError(f"path '{path}': only {{date}} and {{datetime}} can be used") from e
+        raise ValueError(f"path '{path}': only {{date}}, {{datetime}} and {{run_id}} can be used") from e
 
 
 def publish(
@@ -900,7 +905,7 @@ def publish(
     if keep:
         if "{" not in template:
             raise ValueError("keep needs {date} or {datetime} in the path, so versions have their own names")
-        pattern = template.format(**dict.fromkeys(_STAMPS, "*"))
+        pattern = template.format(**dict.fromkeys([*_STAMPS, "run_id"], "*"))
         # Only names in the template's own format count as versions (not sales_latest.csv).
         name = re.escape(template.replace("\\", "/").rsplit("/", 1)[-1])
         for key, regex in (("date", r"\d{4}-\d{2}-\d{2}"), ("datetime", r"\d{4}-\d{2}-\d{2}T\d{6}")):

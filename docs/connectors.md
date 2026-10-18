@@ -112,6 +112,7 @@ Every file writer (`csv.write`, `json.write`, `parquet.write`, `excel.write`) ta
 | Setting | Example | Effect |
 | --- | --- | --- |
 | `{date}` / `{datetime}` in `path` | `reports/sales_{date}.xlsx` | one file per day (`2026-10-14`) or per run (`2026-10-14T050007`), local time |
+| `{run_id}` in `path` | `out/alerts_{run_id}.json` | one file per run, named after the run id shown in `agentl runs` (outside a run, a timestamp) |
 | `latest` | `reports/sales.xlsx` | a copy of the new file under a fixed name, for people and links |
 | `keep` | `30` | delete all but the 30 newest versions (needs `{date}` or `{datetime}`) |
 
@@ -1206,6 +1207,33 @@ too: `sms.send` with `from: "whatsapp:+1..."` and `to: "whatsapp:+55..."`.
 
 Records are untrusted data: Slack `<!channel>`, Google Chat `<users/all>` and Discord `@everyone`
 in a record are sent as text and ping nobody; Telegram gets plain text (no Markdown or HTML).
+
+## Console and log
+
+`console.send` prints one line per record to stdout (`stream: stderr` for stderr); `log.write`
+logs one message per record through Python logging. Both return their input unchanged, so they
+can also sit in the middle of a pipeline.
+
+```yaml
+- id: show
+  use: console.send
+  input: alerts
+  with: { template: "{sku}: {stock}", max_rows: 50 }
+- id: audit
+  use: log.write
+  input: alerts
+  with: { level: warning, logger: myapp.alerts }
+```
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `template` | JSON | one line per record, with `{field}` placeholders |
+| `max_rows` | all | stop after this many lines and say how many were left out |
+| `level` (`log.write`) | `info` | `debug`, `info`, `warning` or `error` |
+| `logger` (`log.write`) | `agentl.records` | the logger name |
+
+To send a step's records to a chat or an incident tool only when there are any, use a
+[notify rule `on: records`](notifications.md#send-the-records-of-a-step).
 
 ## Discord
 

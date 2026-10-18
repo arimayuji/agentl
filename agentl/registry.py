@@ -246,6 +246,14 @@ def require(module: str, extra: str) -> Any:
         raise ImportError(f"this connector needs '{module}': pip install 'agentl-etl[{extra}]'") from e
 
 
+# The id of the run a connector is called from (`{run_id}` in writer paths); None outside a run.
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("agentl_run_id", default=None)
+
+
+def current_run_id() -> str | None:
+    return _RUN_ID.get()
+
+
 # ---------------------------------------------------------------- after the run
 # Queue consumers acknowledge messages only once the whole run succeeded (at-least-once). A
 # connector registers what to do then; the runner calls it when the run ends.

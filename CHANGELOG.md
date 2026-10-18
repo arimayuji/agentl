@@ -9,6 +9,14 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Added
+
+- Notify rules `on: records` with `step:` send the records a step produced, only when it produced
+  any, one line per record (`template`, or JSON) up to `max_rows` (20) (#290).
+- `console.send` and `log.write` steps print or log one line per record and pass the records
+  through (#290).
+- `{run_id}` in writer paths (`json.write`, `csv.write`, ...) gives each run its own file (#290).
+
 ### Changed
 
 - `on_drift: remap` on a check (#178) no longer stops the run: it hands the new layout to the
