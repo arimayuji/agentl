@@ -328,8 +328,8 @@ def _changeset(
     emit: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """mode: changeset on any SQLAlchemy database, with the semantics of `sqlite.write`: one
-    SELECT of the table, a diff in Python, then batched DELETEs, UPDATEs and INSERTs. Returns the
-    summary and, with `emit`, the changed records (see `sql._changes`)."""
+    SELECT of the table, a diff in Python, then batched DELETE, UPDATE and INSERT
+    statements. Returns the summary and, with `emit`, the changed records (see `sql._changes`)."""
     from .sql import _counts
 
     sa = require("sqlalchemy", "sql")
