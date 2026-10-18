@@ -9,6 +9,10 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Docs
+
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
+
 ### Added
 
 - Run labels and a grouped, exportable dashboard (#295): a free-form `labels:` map of strings in
