@@ -9,6 +9,11 @@ Thanks for your interest. Bug reports, connector ideas and pull requests are wel
   Small fixes (typos, docs, obvious bugs) can go straight to a pull request.
 - Security problems: do **not** open a public issue. See [SECURITY.md](SECURITY.md).
 
+## Credit
+
+Every merged pull request counts: you show up in the README's Contributors section (built from the
+repository's commit history) and the CHANGELOG entry for your change credits you by GitHub handle.
+
 ## Development setup
 
 ```bash

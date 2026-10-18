@@ -9,6 +9,10 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+### Docs
+
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
+
 ### Added
 
 - `agentl repair RUN_ID --pipeline p.yaml` (#299): asks the pipeline's llm (or `--llm NAME`) for a
