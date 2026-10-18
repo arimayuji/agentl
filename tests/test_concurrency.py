@@ -183,14 +183,17 @@ def test_concurrent_runs_one_at_a_time(target):
         {
             "name": name,
             "concurrency": {"key": "{pipeline}:daily"},
-            "steps": [{"id": "a", "use": "test.slow_source", "with": {"delay": 0.5}}],
+            "steps": [{"id": "a", "use": "test.slow_source", "with": {"delay": 2}}],
         }
     )
     statuses = []
+    ready = threading.Barrier(3)  # start the three runs together, after each opened its store
 
     def go():
         with open_store(target) as s:
-            statuses.append(Runner(spec, store=s).run().status)
+            runner = Runner(spec, store=s)
+            ready.wait()
+            statuses.append(runner.run().status)
 
     threads = [threading.Thread(target=go) for _ in range(3)]
     for t in threads:
