@@ -3,6 +3,10 @@
 Connectors are used with `use:` and configured with `with:`. List what is installed with
 `agentl connectors`.
 
+Every connector step also takes `retries:` and `fallback:` (other connectors tried in order with
+the same input); see [retries and fallbacks](concepts.md#retries-and-fallbacks). The `retries`
+setting inside `http.get`'s `with:` keeps its own simple retry loop.
+
 ## Files
 
 <video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/files.jpg" aria-label="Reading a folder of mixed files into records">

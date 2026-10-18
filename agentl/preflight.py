@@ -316,14 +316,19 @@ def plan(spec: PipelineSpec, store: Any, records: dict | None = None) -> Plan:
                         "agent",
                         "estimated",
                         len(recs),
-                        "high: every record also goes to the last llm" if s.escalate else "",
+                        "high: every record also goes to the last llm"
+                        if s.escalate
+                        else "router: each target is planned with every record (upper bound)"
+                        if s.routes is not None
+                        else "",
                         hits,
                         calls,
                         tokens,
                         _cost(spec, s, todo, tokens),
                     )
                 )
-                known[s.id] = [{**r, **dict.fromkeys(s.output or {})} for r in recs]
+                fields = {} if s.routes is not None else dict.fromkeys(s.output or {})
+                known[s.id] = [{**r, **fields} for r in recs]
                 continue
             if s.kind == "check":
                 known[s.id] = inputs[0] if inputs else []

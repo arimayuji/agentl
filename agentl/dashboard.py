@@ -22,9 +22,9 @@ PAGE = """<!doctype html>
 --violet:#4aa8ff;--indigo:#2f8fe6;--teal:#9fd0f5;--green:#2fc46a;--red:#ff7a6b;--amber:#ffd400;--blue:#4aa8ff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(900px 600px at 15% -10%,#0070c91f,transparent 70%),radial-gradient(800px 600px at 100% 110%,#ffd40026,transparent 70%)}
-header{position:relative;display:flex;align-items:center;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line)}
-.wm{font:800 26px/1 Outfit,Inter,system-ui,sans-serif;letter-spacing:-.5px;color:var(--fg)}.wm:after{content:"";display:inline-block;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--sun)}
-.sub{color:var(--muted);font-weight:500}.live{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+header{position:relative;overflow:hidden;display:flex;align-items:center;gap:14px;padding:18px 28px;background:#0070c9;color:#fff}header:before{content:"";position:absolute;right:-60px;top:-110px;width:240px;height:240px;border-radius:50%;background:#005ea8;opacity:.6}header>*{position:relative}
+.wm{font:800 26px/1 Outfit,Inter,system-ui,sans-serif;letter-spacing:-.5px;color:#fff}.wm:after{content:"";display:inline-block;width:7px;height:7px;margin-left:2px;border-radius:50%;background:var(--sun)}
+.sub{color:#ffffffcc;font-weight:500}.live{margin-left:auto;display:flex;align-items:center;gap:8px;color:#ffffffdd;font-size:13px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 #009c3b88;animation:pulse 2s infinite}
 @keyframes pulse{70%{box-shadow:0 0 0 8px #009c3b00}100%{box-shadow:0 0 0 0 #009c3b00}}
 main{position:relative;display:grid;grid-template-columns:300px 1fr;gap:20px;padding:20px 28px 40px}
@@ -167,7 +167,7 @@ def run_detail(store: Store, run_id: str) -> dict | None:
 
 
 _NODE = re.compile(r'^\s*(\w+)\W*"(\w+)<br/><small>(.*?)</small>"')
-_EDGE = re.compile(r"^\s*(\w+) --> (\w+)\s*$")
+_EDGE = re.compile(r"^\s*(\w+) -->(?:\|[^|]*\|)? (\w+)\s*$")
 
 
 def parse_graph(diagram: str) -> dict:
@@ -176,7 +176,15 @@ def parse_graph(diagram: str) -> dict:
     for line in diagram.splitlines():
         if m := _NODE.match(line):
             detail = m.group(3)
-            kind = detail if detail in ("agent", "check", "wait") else "fn" if ":" in detail else "use"
+            kind = (
+                "agent"
+                if detail == "route"
+                else detail
+                if detail in ("agent", "check", "wait")
+                else "fn"
+                if ":" in detail
+                else "use"
+            )
             nodes.append({"id": m.group(1), "detail": m.group(3), "kind": kind})
         elif m := _EDGE.match(line):
             edges.append([m.group(1), m.group(2)])

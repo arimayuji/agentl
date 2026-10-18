@@ -10,6 +10,7 @@ load are labels, not different machinery.
 | Connector | `use: pdf.read` | Reading and writing files, APIs and databases |
 | Function | `fn: my_module:clean` | Your own deterministic code |
 | Agent | `agent: "..."` + `output:` | Semantic work: classify, extract, normalize, audit |
+| Router | `agent: "..."` + `routes:` | Send each record to one branch ([routing](agents.md#route-each-record-to-one-branch)) |
 
 ## Steps form a graph
 
@@ -62,6 +63,45 @@ steps:
   to run something once it is done. `after:` waits for a best-effort step whether it failed or not.
 - Without `after:`, independent destinations still run in parallel.
 - A budget stop (`budget.exceeded`) always fails the run.
+
+### Retries and fallbacks
+
+Any `use`, `fn` or agent step can retry on errors that are likely to pass, and a `use` or `fn`
+step can fall back to other step bodies with the same input. Both are off by default.
+
+```yaml
+- id: prices
+  use: http.get
+  with: { url: https://api.example.com/prices }
+  retries: { attempts: 3, backoff: 2s, max_backoff: 30s, on: [transport, http_5xx, http_429] }
+  fallback:
+    - use: web.crawl
+      with: { url: https://example.com/prices }
+    - use: csv.read
+      with: { path: cache/prices.csv }
+  fallback_tag: true
+```
+
+- `retries`: `attempts` (default 3, the first try included), `backoff` (default `1s`, doubled
+  after each try, times a jitter factor between 0.5 and 1), `max_backoff` (default `30s`) and `on`,
+  the errors that count: `transport` (timeouts and connection errors), `http_5xx`, `http_429` or
+  `any`. A `Retry-After` header on the error (seconds or a date) is honored, up to `max_backoff`.
+  Other errors fail at once. Each wait emits `step.retry` with `attempt`, `error` and `wait`.
+- `fallback`: step bodies `{use, with}` tried in order once the main body (with its retries) has
+  failed. The first that succeeds gives the step output; downstream steps see no difference. Each
+  switch emits `step.fallback` with `from`, `to` and `error`. When every body fails, the step fails
+  with the last error. Fallback bodies are not retried and cannot have fallbacks of their own.
+- `fallback_tag: true` adds `_source` to each record: `main` or `fallback[i]` (from 0).
+- A run that used a fallback ends with outcome `partial` (status `succeeded`);
+  `fallback_outcome: success` keeps it `success`. `RunResult.fallbacks` maps each such step to
+  the body that answered.
+- A writer (`*.write`, `*.send`, `*.upload`, ...) takes a fallback only with
+  `fallback_writer: true`, since a failed write may have written part of the data. Agent steps
+  fall back between llms instead: `fallback:` on the [llm](agents.md) or `llm: [cheap, strong]`.
+- A budget stop (`budget.exceeded`) and `NoChange` are never retried nor sent to a fallback, and a
+  cached result is returned without running the step. Spend of every try counts toward budgets.
+- `agentl lint` checks fallback connectors (AE003) and warns (AL011) about an http source with a
+  fallback but no `retries`, which would switch on the first transient error.
 
 ## Large inputs: chunk_size
 
@@ -211,6 +251,6 @@ stats` and the dashboard show the outcome.
 
 ## Events
 
-Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
+Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
 `wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded`, `run.failed`, `run.skipped` and `run.alert` (see [run outcomes](#run-outcomes)). They feed the run store, the dashboard and
 [notifications](notifications.md).
