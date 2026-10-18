@@ -382,6 +382,49 @@ rejected `max_rounds` times:
     extra calls. Use a cheap reviewer for broad checks, keep `max_rounds` low and try it with
     `agentl eval` on a golden set before turning it on for a large input.
 
+### A jury of llms decides
+
+`jury:` asks several llms the same question for a record, each on its own (same instruction and
+`output:`), and a decision picks the answer:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: { category: str, confidence: float }
+  escalate_below: 0.7
+  jury:
+    llms: [a, b, c]        # at least 2 different entries in `llm:` (3 or more for a real majority)
+    decide: majority       # majority (default) | judge
+    # judge: strong        # required with decide: judge, an entry in `llm:`
+    when: low_confidence   # low_confidence (default) | always
+    fields: [category]     # optional: the fields that must agree (default: every output field)
+  jury_tag: true           # optional: add `_agreement` (share of jurors behind the answer)
+```
+
+- `majority`: answers are grouped by `fields` (strings compared after strip and casefold). The
+  biggest group wins when it has at least two jurors and no other group is as big; its first
+  answer is kept. A tie, or fewer than two agreeing jurors, sends the record to the quarantine
+  with `_error` and `_jury` (each juror's answer).
+- `judge`: when the jurors are not unanimous, the judge llm reads the record and every juror's
+  answer and writes the final answer in the step's schema. Unanimous answers skip the judge.
+- `when: low_confidence`: the step's llm answers first; only records whose `confidence` is below
+  `escalate_below` go to the jury. It needs a `confidence` output field and `escalate_below`
+  (there is no confidence to look at otherwise, so the spec is rejected: use `when: always`).
+  `when: always`: the jurors answer every record and the step's llm is not asked.
+- A juror whose answer is invalid has no vote. The step's spend counts
+  `"jury": {"unanimous", "majority", "judged", "tied"}` and per-model calls; each run logs one
+  `jury.decided` event per step with the same counts (no record data).
+- Juror and judge calls go through the budget. Each juror answer is cached on the record, the
+  juror llm, the instruction and the schema, and the judge on the answers it saw; the decision is
+  cached too, so a re-run pays nothing and changing `decide:` reuses the jurors' answers.
+- With `critic:`, the jury decides first and the critic reviews the decided answer. Works with
+  `rules:` and tools. Not with `output_mode: rows`, `mode: batch` or `records_per_call`.
+
+!!! note "Cost"
+    N jurors cost N calls per record they see, plus one for the judge when they disagree. `when:
+    low_confidence` keeps it cheap: one call for confident records, the jury only for the rest.
+    Use `when: always` on small, high-stakes inputs and check the gain with `agentl eval`.
+
 ### Rules first, the agent for the rest
 
 Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
@@ -411,6 +454,49 @@ record first; only the records they cannot handle are sent to the llm. (On a `ch
   summary count them: `{"rules": 9512, "agent": 488}`.
 - Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
   `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
+
+### Route each record to one branch
+
+A router is an agent step with `routes:`. It labels each record with one of the route keys and
+sends the record only to the step that key names; `drop` (reserved) discards it. The answer is
+constrained to the labels, so there is no `output:` on a router.
+
+```yaml
+- id: route
+  input: docs
+  agent: Which kind of document is this?
+  routes: { invoice: extract_invoice, contract: extract_contract, other: drop }
+  rules:                            # optional, decided before the llm
+    - { when: "type == 'nfe'", route: invoice }
+  route_tag: true                   # optional: add `_route` (the label) to each record
+- id: extract_invoice               # no input: a route target reads the router
+  agent: Extract the invoice fields.
+  output: { total: float }
+- id: extract_contract
+  input: route                      # same thing, written out; it still gets only its branch
+  agent: Extract the parties.
+  output: { parties: list[str] }
+```
+
+- A step named in `routes` reads the router (`input:` left out or naming the router) and receives
+  only the records routed to it; several labels may point at the same step. Any other step that
+  reads the router gets every routed record (dropped and rejected ones left out).
+- `rules:` on a router are `{when: <expression>, route: <label>}`, in the
+  [expression language](connectors.md#expressions-compute) of `compute`. The first rule that is true decides; a record
+  no rule matches (or whose expression errors) goes to the llm.
+- An answer that is not one of the labels is retried like any invalid answer, then goes to the
+  quarantine (`agentl rejected`) with `_error`.
+- Answers are cached per record, keyed on the instruction, the labels and the llm: renaming a
+  target step keeps the cache, adding a label does not. Calls count for budget and spend; cascades
+  (`llm: [cheap, strong]`), `attempts:`, `records_per_call` and batch mode work as on other agent
+  steps. A critic and `output_mode: rows` do not apply.
+- Each run logs one `route.decided` event with `counts` per label, `rules`, `llm`, `cached`,
+  `dropped`, `rejected` and `total` (no record data), and `spend[step]["routes"]` holds the counts.
+- Validation: `routes` is not empty, labels are identifiers, targets exist (or are `drop`), are
+  `use`, `fn` or agent steps that read the router, and no cycle goes through a router. The
+  diagram (`agentl graph`) draws each routed edge with its labels, for example
+  `route -->|invoice| extract_invoice`. `agentl plan` counts every record for each target (an upper
+  bound).
 
 ### Identical records are asked once
 

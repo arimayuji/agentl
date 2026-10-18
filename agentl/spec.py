@@ -175,6 +175,60 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
+RetryOn = Literal["transport", "http_5xx", "http_429", "any"]
+
+
+def _retry_on_default() -> list[RetryOn]:
+    return ["transport"]
+
+
+# The last part of a connector name that marks a writer or a delivery (`postgres.write`, `slack.send`)
+SINK_VERBS = ("write", "upload", "post", "produce", "publish", "send", "mark")
+
+
+def is_sink(use: str | None) -> bool:
+    """A connector that writes or delivers, judged by its name (`*.write`, `*.send`, ...)."""
+    return bool(use) and (use or "").rsplit(".", 1)[-1] in SINK_VERBS
+
+
+class RetrySpec(BaseModel):
+    """Step retries (#296): up to `attempts` tries, waiting `backoff` doubled each time (with
+    jitter) up to `max_backoff`, only for the errors in `on`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: int = Field(default=3, ge=1, le=20)
+    backoff: str | float = "1s"
+    max_backoff: str | float = "30s"
+    on: list[RetryOn] = Field(default_factory=_retry_on_default, min_length=1)
+
+    @model_validator(mode="after")
+    def _durations(self) -> RetrySpec:
+        from .checks import parse_duration
+
+        if parse_duration(self.backoff) < 0 or parse_duration(self.max_backoff) < 0:
+            raise ValueError("retries: backoff and max_backoff must not be negative")
+        return self
+
+
+class FallbackSpec(BaseModel):
+    """One step body tried when the main body fails (#296): a connector and its settings."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    use: str
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flat(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and "fallback" in raw:
+            raise ValueError("a fallback cannot have its own fallback; list every body in one list")
+        if isinstance(raw, dict) and "use" not in raw:
+            raise ValueError("each fallback is a step body {use, with}")
+        return raw
+
+
 class GoldenSpec(BaseModel):
     """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
     `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
@@ -273,6 +327,35 @@ class CriticSpec(BaseModel):
         return v
 
 
+class JurySpec(BaseModel):
+    """Several llms answer each record independently and a decision picks the answer (#299):
+    `majority` (most jurors agree on `fields`, a tie quarantines the record) or `judge` (a judge
+    llm reads the jurors' answers and writes the final one)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llms: list[str] = Field(min_length=2)
+    decide: Literal["majority", "judge"] = "majority"
+    judge: str | None = None
+    # low_confidence: only records whose first answer has `confidence` below `escalate_below`.
+    when: Literal["always", "low_confidence"] = "low_confidence"
+    fields: list[str] = Field(default_factory=list)  # default: every output field
+
+    @model_validator(mode="after")
+    def _judge(self) -> JurySpec:
+        if len(set(self.llms)) != len(self.llms):
+            raise ValueError("jury llms must be different entries")
+        if self.decide == "judge" and not self.judge:
+            raise ValueError("jury decide: judge needs judge: <llm name>")
+        if self.decide != "judge" and self.judge:
+            raise ValueError("jury judge: is only used with decide: judge")
+        return self
+
+
+DROP = "drop"  # reserved route target: the record is discarded
+ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -314,6 +397,14 @@ class StepSpec(BaseModel):
     attempts: list[AttemptSpec] = Field(default_factory=list)
     # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
     critic: CriticSpec | None = None
+    # Several llms answer and a vote or a judge decides (#299). See JurySpec.
+    jury: JurySpec | None = None
+    jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
+    # Router (#299): an agent step that labels each record with one of these keys and sends it
+    # only to the mapped step (`drop` discards it). Each target reads the router as its input and
+    # receives just its branch. `rules:` items here are {when: expr, route: label}.
+    routes: dict[str, str] | None = None
+    route_tag: bool = False  # add `_route` (the label) to each routed record
     concurrency: int = 4
     records_per_call: int = Field(default=1, ge=1, le=200)
     # Compact rows (#215): the model answers one JSON array per line in the column order of
@@ -343,6 +434,34 @@ class StepSpec(BaseModel):
     required: bool = True
     # Order-only dependencies: steps that must finish (succeed, or fail best effort) first.
     after: list[str] = Field(default_factory=list)
+    # Retries and fallbacks (#296): retry the step on matching errors, then try each fallback body
+    # ({use, with}) in order with the same input. See RetrySpec and FallbackSpec.
+    retries: RetrySpec | None = None
+    fallback: list[FallbackSpec] = Field(default_factory=list)
+    fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
+    fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
+    fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
+
+    def _check_jury(self, jury: JurySpec) -> None:
+        sid = self.id
+        if not self.agent:
+            raise ValueError(f"step '{sid}': only agent steps take a jury")
+        if self.output_mode == "rows":
+            raise ValueError(f"step '{sid}': jury is not supported with output_mode rows")
+        if self.mode == "batch" or self.records_per_call > 1:
+            raise ValueError(
+                f"step '{sid}': jury works one record per call; drop mode batch and records_per_call"
+            )
+        unknown = [f for f in jury.fields if f not in (self.output or {})]
+        if unknown:
+            raise ValueError(f"step '{sid}': jury fields not in output: {', '.join(unknown)}")
+        if jury.when == "low_confidence" and (
+            "confidence" not in (self.output or {}) or self.escalate_below is None
+        ):
+            raise ValueError(
+                f"step '{sid}': jury when: low_confidence needs a confidence output field and"
+                " escalate_below; use when: always otherwise"
+            )
 
     @property
     def llms(self) -> list[str]:
@@ -350,6 +469,10 @@ class StepSpec(BaseModel):
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
         if self.critic is not None:
             names.append(self.critic.llm or self.llm)
+        if self.jury is not None:
+            names.extend(self.jury.llms)
+            if self.jury.judge:
+                names.append(self.jury.judge)
         return list(dict.fromkeys(names))
 
     @model_validator(mode="before")
@@ -376,6 +499,13 @@ class StepSpec(BaseModel):
             raw = {**rest, "required": value == "required"}
         if isinstance(raw, dict) and isinstance(raw.get("after"), str):
             raw = {**raw, "after": [raw["after"]]}
+        if isinstance(raw, dict) and raw.get("routes") is not None:
+            # A router answers one label per record; its output schema is implicit.
+            if raw.get("output") not in (None, ROUTE_OUTPUT):
+                raise ValueError(
+                    f"step '{raw.get('id')}': a router has no 'output'; it answers a route label"
+                )
+            raw = {**raw, "output": dict(ROUTE_OUTPUT)}
         return raw
 
     @model_validator(mode="after")
@@ -448,7 +578,9 @@ class StepSpec(BaseModel):
                     "row rejected on its own); attempts: works with whole-record answers only"
                 )
 
-        for rule in self.rules if self.agent else []:
+        if self.routes is not None:
+            self._check_router()
+        for rule in self.rules if self.agent and self.routes is None else []:
             if not isinstance(rule, dict):
                 raise ValueError(
                     f"step '{self.id}': a rule is compute: {{...}}, cast: {{...}} or fn: mod:func"
@@ -491,6 +623,10 @@ class StepSpec(BaseModel):
                     f"step '{self.id}': critic is not supported with output_mode rows; it reviews"
                     " one answer per record"
                 )
+        if self.jury is not None:
+            self._check_jury(self.jury)
+        elif self.jury_tag:
+            raise ValueError(f"step '{self.id}': jury_tag needs jury")
         if self.escalate and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a list of llms")
         if self.escalate and self.mode == "batch":
@@ -508,9 +644,10 @@ class StepSpec(BaseModel):
             if any(a.validate_ == "lenient" for a in self.attempts[:-1]):
                 raise ValueError(f"step '{self.id}': only the last attempt can be lenient")
         if self.escalate_below is not None:
-            if not self.escalate:
+            if not self.escalate and self.jury is None:
                 raise ValueError(
-                    f"step '{self.id}': escalate_below needs a list of llms, e.g. llm: [cheap, strong]"
+                    f"step '{self.id}': escalate_below needs a list of llms or a jury,"
+                    " e.g. llm: [cheap, strong]"
                 )
             if (self.output or {}).get("confidence", "").rstrip("?") not in ("float", "int"):
                 raise ValueError(f"step '{self.id}': escalate_below needs a 'confidence: float' output field")
@@ -531,7 +668,68 @@ class StepSpec(BaseModel):
             rejected_limits(self.expect["rejected_rate"], self.check or "")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
+        if self.retries and (self.check or self.wait_until):
+            raise ValueError(f"step '{self.id}': retries go on use, fn or agent steps")
+        if self.fallback:
+            if self.agent:
+                raise ValueError(
+                    f"step '{self.id}': agent steps fall back between llms; set `fallback:` on the "
+                    "llm instead (llm: {main: {..., fallback: [backup]}}) or use llm: [cheap, strong]"
+                )
+            if not (self.use or self.fn):
+                raise ValueError(f"step '{self.id}': fallback goes on a use or fn step")
+            sinks = [u for u in (self.use, *(f.use for f in self.fallback)) if is_sink(u)]
+            if sinks and not self.fallback_writer:
+                raise ValueError(
+                    f"step '{self.id}': fallback on a writer ({sinks[0]}) may write twice; set "
+                    "`fallback_writer: true` if that is safe"
+                )
+        elif self.fallback_tag or self.fallback_writer or self.fallback_outcome != "partial":
+            raise ValueError(
+                f"step '{self.id}': fallback_tag, fallback_outcome and fallback_writer need a fallback"
+            )
+        if self.route_tag and self.routes is None:
+            raise ValueError(f"step '{self.id}': route_tag goes with routes")
         return self
+
+    def _check_router(self) -> None:
+        routes = self.routes or {}
+        if not self.agent:
+            raise ValueError(f"step '{self.id}': routes go on an agent step (the router's question)")
+        if not routes:
+            raise ValueError(f"step '{self.id}': routes is empty; map each label to a step id or drop")
+        for label, target in routes.items():
+            if not label.isidentifier():
+                raise ValueError(f"step '{self.id}': route label '{label}' must be an identifier")
+            if not isinstance(target, str) or not target:
+                raise ValueError(f"step '{self.id}': route '{label}' needs a target step id or drop")
+            if target == self.id:
+                raise ValueError(f"step '{self.id}': route '{label}' points at the router itself")
+        if self.critic is not None or self.output_mode == "rows":
+            raise ValueError(f"step '{self.id}': a router takes no critic and no output_mode rows")
+        from . import expr
+
+        for rule in self.rules:
+            if not (isinstance(rule, dict) and set(rule) == {"when", "route"}):
+                raise ValueError(f"step '{self.id}': a router rule is {{when: <expression>, route: <label>}}")
+            if rule["route"] not in routes:
+                raise ValueError(
+                    f"step '{self.id}': rule route '{rule['route']}' is not a label in routes "
+                    f"({', '.join(routes)})"
+                )
+            try:
+                expr.compile_expr(str(rule["when"]))
+            except expr.ExprError as e:
+                raise ValueError(f"step '{self.id}': rule when: {e}") from None
+
+    @property
+    def targets(self) -> dict[str, list[str]]:
+        """A router's targets: step id -> the labels it receives (`drop` left out)."""
+        out: dict[str, list[str]] = {}
+        for label, target in (self.routes or {}).items():
+            if target != DROP:
+                out.setdefault(target, []).append(label)
+        return out
 
     @property
     def kind(self) -> str:
@@ -962,6 +1160,7 @@ class PipelineSpec(BaseModel):
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
             raise ValueError(f"duplicate step ids: {sorted(dup)}")
+        self._routers(ids)
         for s in self.steps:
             for ref in s.inputs:
                 if ref not in ids:
@@ -992,6 +1191,35 @@ class PipelineSpec(BaseModel):
                 if name.startswith("mcp:") and server not in self.mcp:
                     raise ValueError(f"step '{s.id}': tool '{name}' needs an mcp server named '{server}'")
         return self
+
+    def _routers(self, ids: list[str]) -> None:
+        """Router targets (#299): each must exist and read the router (a target with no input gets
+        it), never be the router's ancestor, and take one branch only."""
+        routers = [s for s in self.steps if s.routes is not None]
+        for r in routers:
+            for target in r.targets:
+                if target not in ids:
+                    raise ValueError(f"step '{r.id}': route target '{target}' does not exist (or use drop)")
+                t = self.step(target)
+                if t.input is None and not (t.check or t.wait_until):
+                    t.input = r.id
+                if r.id not in t.inputs:
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must read the router (input: {r.id}); "
+                        "it receives only its branch"
+                    )
+                if t.kind in ("check", "wait"):
+                    raise ValueError(
+                        f"step '{r.id}': route target '{target}' must be a use, fn or agent step"
+                    )
+        if routers:
+            deps = {s.id: set(s.depends) & set(ids) for s in self.steps}
+            done: set[str] = set()
+            while len(done) < len(deps):
+                ready = {i for i in deps if i not in done and deps[i] <= done}
+                if not ready:
+                    raise ValueError(f"cycle between steps: {sorted(set(deps) - done)}")
+                done |= ready
 
     def step(self, step_id: str) -> StepSpec:
         return next(s for s in self.steps if s.id == step_id)

@@ -167,7 +167,7 @@ def run_detail(store: Store, run_id: str) -> dict | None:
 
 
 _NODE = re.compile(r'^\s*(\w+)\W*"(\w+)<br/><small>(.*?)</small>"')
-_EDGE = re.compile(r"^\s*(\w+) --> (\w+)\s*$")
+_EDGE = re.compile(r"^\s*(\w+) -->(?:\|[^|]*\|)? (\w+)\s*$")
 
 
 def parse_graph(diagram: str) -> dict:
@@ -176,7 +176,15 @@ def parse_graph(diagram: str) -> dict:
     for line in diagram.splitlines():
         if m := _NODE.match(line):
             detail = m.group(3)
-            kind = detail if detail in ("agent", "check", "wait") else "fn" if ":" in detail else "use"
+            kind = (
+                "agent"
+                if detail == "route"
+                else detail
+                if detail in ("agent", "check", "wait")
+                else "fn"
+                if ":" in detail
+                else "use"
+            )
             nodes.append({"id": m.group(1), "detail": m.group(3), "kind": kind})
         elif m := _EDGE.match(line):
             edges.append([m.group(1), m.group(2)])
