@@ -1,0 +1,20 @@
+name: Labeler
+
+# pull_request_target runs with a token that can write to this repository, even for pull requests
+# from forks. That is safe here only because this job never checks out, builds or runs any code
+# from the pull request: actions/labeler reads the changed file names and .github/labeler.yml from
+# the base branch through the API and only adds labels. Do not add a checkout or a run step.
+on:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] no PR code is checked out or run, see above
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13  # v7.0.0

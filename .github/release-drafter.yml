@@ -1,0 +1,64 @@
+# Release Drafter (v7 config). It only keeps a draft release up to date; a maintainer reviews and
+# publishes it by hand (see "Releases" in CONTRIBUTING.md).
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+categories:
+  - type: pre-exclude
+    when:
+      label: skip-changelog
+  - title: "Breaking changes"
+    semver-increment: major
+    exclusive: true
+    when:
+      - conventional:
+          breaking: true
+      - label: breaking
+  - title: "Features"
+    semver-increment: minor
+    exclusive: true
+    when:
+      - conventional:
+          type: feat
+      - labels: [feature, enhancement]
+  - title: "Fixes"
+    exclusive: true
+    when:
+      - conventional:
+          type: fix
+      - labels: [bug, fix]
+  - title: "Docs"
+    exclusive: true
+    when:
+      - conventional:
+          type: docs
+      - label: docs
+  - title: "CI"
+    exclusive: true
+    when:
+      - conventional:
+          type: ci
+      - label: ci
+  - title: "Dependencies"
+    exclusive: true
+    collapse-after: 5
+    when:
+      - conventional:
+          type: deps
+      - conventional:
+          scope: deps
+      - label: dependencies
+  - title: "Other changes"
+  - type: version-resolver
+    semver-increment: patch
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+change-title-escapes: '\<*_&'
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## New contributors
+
+  $NEW_CONTRIBUTORS
+
+  **Contributors:** $CONTRIBUTORS. Thank you! See https://agentl.com.br/community/#contributors.

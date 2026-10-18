@@ -21,6 +21,11 @@ They are always listed under **Changed** or **Removed**.
   only from `main` or a `v*` tag, release version input validated, a dependency review check on
   pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
   contributions" section in `CONTRIBUTING.md`.
+- Repository bots: a welcome comment on a first issue or pull request, path labels on pull
+  requests (`.github/labeler.yml`), a Release Drafter draft (never published) updated on every
+  merge to `main`, and a `Quality` workflow with the `typos` spell checker (`_typos.toml`) and
+  the `zizmor` workflow security linter. Dependabot waits 7 days before proposing a new release,
+  and the benchmark jobs no longer restore a pip cache (zizmor cache-poisoning).
 ### Docs
 
 - README: a Contributors section; CONTRIBUTING says how contributors are credited.
