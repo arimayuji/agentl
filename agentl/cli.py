@@ -493,6 +493,13 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--provider")
     dr.add_argument("--model")
 
+    rp = cmd("repair", "propose a fix for a failed run as a diff (never applied)")
+    rp.add_argument("run_id")
+    rp.add_argument("--pipeline", required=True, help="the pipeline file the run used")
+    rp.add_argument("--llm", help="llm name from the pipeline's llm: section (default: default)")
+    rp.add_argument("--write", metavar="PATCHED.yaml", help="write the patched YAML to this new file")
+    rp.add_argument("--json", action="store_true", help="print the result as JSON")
+
     st = cmd("stats", "success rate, durations, cost and failures by reason, per pipeline")
     st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
     st.add_argument("--since", default="30d", help="how far back: 7d, 12h, 4w (default 30d)")
@@ -821,6 +828,25 @@ def main(argv: list[str] | None = None) -> int:
             yaml_text = Path(a.pipeline).read_text(encoding="utf-8") if a.pipeline else None
             print(assist.explain(report, llm, yaml_text))
             return 0
+        if a.cmd == "repair":
+            from . import repair
+
+            if a.write and Path(a.write).resolve() == Path(a.pipeline).resolve():
+                print("error: --write must name a new file, not the pipeline itself", file=sys.stderr)
+                return 2
+            text = Path(a.pipeline).read_text(encoding="utf-8")
+            with open_store(a.db) as store:
+                proposal = repair.propose(store, a.run_id, text, a.pipeline, a.llm)
+            if a.write and proposal["valid"]:
+                repair.write_patched(proposal, a.write, a.pipeline)
+                proposal["written"] = a.write
+            if a.json:
+                print(json.dumps(proposal, indent=2, default=str))
+            else:
+                print(repair.text(proposal, color=sys.stdout.isatty()))
+                if proposal.get("written"):
+                    print(f"wrote {a.write} (the pipeline file is unchanged)")
+            return 0 if proposal["valid"] else 1
         if a.cmd == "stats":
             from . import stats
             from .checks import parse_duration
