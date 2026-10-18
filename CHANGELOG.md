@@ -18,6 +18,10 @@ They are always listed under **Changed** or **Removed**.
 - `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
   partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
   comparing their rows. The result reports `partitions_skipped`.
+- `emit: changes` on changeset writes (`sqlite.write`, `postgres.write`, `sql.write`, #289): the
+  step outputs the inserted, updated and deleted rows, each with `_change` and, for updates,
+  `_before` (the stored values of the changed columns), so a downstream step consumes the diff.
+  Works with `dry_run` as a preview; the counts stay in events and the run summary.
 
 ### Changed
 

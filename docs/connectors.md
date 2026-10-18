@@ -212,9 +212,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `checksums`, `dry_run` (changeset only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `checksums`, `dry_run`, `emit` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`, `changeset`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `deletes`, `partition_by`, `checksums`, `dry_run`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`, `changeset`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `deletes`, `partition_by`, `checksums`, `dry_run`, `emit`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -1008,6 +1008,44 @@ updated nor deleted, even with `deletes: missing`. The checksum describes the so
 table: if something else writes to the table, a skipped partition will not notice; run once
 without `checksums` to resync.
 
+#### Changed rows downstream
+
+With `emit: changes` the writer's output is the rows that changed instead of the summary record,
+so the next step (a notification, a send, a file) consumes the diff directly, with no
+`sqlite.read` and `sql` steps to rebuild it:
+
+```yaml
+steps:
+  - id: save
+    use: postgres.write
+    input: prices
+    with:
+      dsn: ${DATABASE_URL}
+      table: prices
+      key: sku
+      mode: changeset
+      deletes: missing
+      emit: changes
+  - id: report
+    use: json.write
+    input: save
+    with: { path: out/price_changes.json }
+```
+
+Each record has `_change`:
+
+| `_change` | Record |
+|---|---|
+| `inserted` | The source record. |
+| `updated` | The source record, plus `_before` with the stored value of each column that changed (`null` for a column the table did not have). |
+| `deleted` | The row as the table had it. |
+
+The changes are read inside the write's transaction, before it applies them. With
+`dry_run: true` they are the changes the write would make, so a pipeline can preview them. No
+change gives an empty output. The counts still go to the `step.succeeded` event and to `writes`
+in the run summary. `emit: changes` needs `mode: changeset` (with `deletes: none` it behaves as
+an upsert that reports its diff); the default is `emit: counts`.
+
 ### History of a dimension (SCD type 2)
 
 `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` keeps every version of a row
@@ -1082,7 +1120,7 @@ and compares them in Python, so those must fit in memory.
 | Parameter | Notes |
 |---|---|
 | `mode` | `append`, `replace` (drop and recreate), `upsert` on `key`, `scd2` or `changeset` (see [Changeset writes](#changeset-writes)) |
-| `deletes`, `partition_by`, `checksums`, `dry_run` | changeset only |
+| `deletes`, `partition_by`, `checksums`, `dry_run`, `emit` | changeset only |
 | `key` | column or list of columns |
 | `schema`, `batch_size`, `create` | target schema, rows per batch (default 1000), create the table when missing (default true) |
 | `engine_options` | passed to `sqlalchemy.create_engine` (pool size, connect args) |

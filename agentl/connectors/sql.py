@@ -8,14 +8,16 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from ..registry import Rejects, connector, stream_reader, stream_writer
+from ..registry import Changes, Rejects, connector, stream_reader, stream_writer
 from ._util import (
     CHECKSUMS_TABLE,
     SCD2_COLUMNS,
     PartitionSums,
+    before,
     changeset_options,
     check_scd2_columns,
     check_update_columns,
+    emit_option,
     null_keys,
     scd2_options,
     single,
@@ -68,6 +70,7 @@ def sqlite_write_chunks(
     partition_by: str | list[str] | None = None,
     dry_run: bool = False,
     checksums: bool = False,
+    emit: str | None = None,
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
@@ -87,8 +90,9 @@ def sqlite_write_chunks(
         )
     keys = [key] if isinstance(key, str) else list(key or [])
     drop, parts = changeset_options("sqlite.write", mode, keys, deletes, partition_by, dry_run, checksums)
+    emit_option("sqlite.write", mode, emit)
     if mode == "changeset":
-        return _changeset(chunks, db, table, keys, drop, parts, dry_run, checksums)
+        return _changeset(chunks, db, table, keys, drop, parts, dry_run, checksums, emit)
     if mode == "upsert" and not keys:
         raise ValueError(
             "sqlite.write mode: upsert needs `key` (the column, or columns, that identify a row)"
@@ -262,6 +266,7 @@ def _changeset(
     parts: list[str],
     dry_run: bool,
     checksums: bool = False,
+    emit: str | None = None,
 ) -> list[dict]:
     """mode: changeset. Every chunk is staged in a temp table first (deletes need the whole
     source), then the diff with the table runs as a handful of set-based statements. With
@@ -269,6 +274,7 @@ def _changeset(
     staged rows of a partition whose checksum equals the stored one are marked `_skip` (and `_hit`)
     and left out of the comparison and of the deletes."""
     sums = PartitionSums(parts) if checksums else None
+    changes: list[dict] | None = [] if emit_option("sqlite.write", "changeset", emit) else None
     skipped = 0
     cols: list[str] = []
     rejected: list[dict] = []  # null keys cannot be matched to a row, as in upsert
@@ -299,6 +305,8 @@ def _changeset(
         if not cols:
             if not have:  # no source rows and no table: nothing to compare
                 empty = [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                if changes is not None:
+                    return Changes([], empty, rejected)
                 return Rejects(empty, rejected) if rejected else empty
             conn.execute(f"CREATE TEMP TABLE {_STAGE} ({', '.join(map(_quote, keys))}, _hit, _diff, _skip)")
             cols = list(keys)
@@ -357,6 +365,8 @@ def _changeset(
                 f"(SELECT (max(s._hit IS NULL OR s._diff = 1){lost}) AS ch "
                 f"FROM temp.{_STAGE} AS s GROUP BY {plist})"
             ).fetchone()
+        if changes is not None:
+            changes.extend(_changes(conn, table, cols, keys, have, gone if deleted else "", match))
         if not dry_run and (inserted or updated or deleted or not have):
             names = ", ".join(map(_quote, cols))
             if not have:
@@ -387,7 +397,45 @@ def _changeset(
         out.update(partitions=total_parts, partitions_unchanged=total_parts - changed_parts)
     if sums:
         out["partitions_skipped"] = skipped
+    if changes is not None:
+        return Changes(changes, [out], rejected)
     return Rejects([out], rejected) if rejected else [out]
+
+
+def _changes(
+    conn: sqlite3.Connection,
+    table: str,
+    cols: list[str],
+    keys: list[str],
+    have: list[str],
+    gone: str,
+    match: str,
+) -> list[dict]:
+    """The records a changeset is about to write, read before it writes them: inserted and updated
+    ones as the source has them (updates with `_before`, the stored value of each changed column),
+    deleted ones as the table has them."""
+    names = ", ".join(f"s.{_quote(c)}" for c in cols)
+    out: list[dict] = []
+    for row in conn.execute(f"SELECT {names} FROM temp.{_STAGE} AS s WHERE s._hit IS NULL ORDER BY s.rowid"):
+        out.append({**dict(zip(cols, row, strict=True)), "_change": "inserted"})
+    if not have:
+        return out
+    rest = [c for c in cols if c not in keys]
+    old = [c for c in rest if c in have]
+    olds = "".join(f", t.{_quote(c)}" for c in old)
+    q = (
+        f'SELECT {names}{olds} FROM temp.{_STAGE} AS s JOIN "{table}" AS t ON {match} '
+        "WHERE s._diff = 1 ORDER BY s.rowid"
+    )
+    for row in conn.execute(q):
+        new = dict(zip(cols, row[: len(cols)], strict=True))
+        prev = dict(zip(old, row[len(cols) :], strict=True))
+        out.append({**new, "_change": "updated", "_before": before(new, prev, rest)})
+    if gone:
+        t_names = ", ".join(f"t.{_quote(c)}" for c in have)
+        for row in conn.execute(f'SELECT {t_names} FROM "{table}" AS t WHERE {gone} ORDER BY t.rowid'):
+            out.append({**dict(zip(have, row, strict=True)), "_change": "deleted"})
+    return out
 
 
 def _gone(table: str, keys: list[str], drop: str, parts: list[str], skip: bool = False) -> str:
@@ -533,6 +581,7 @@ def sqlite_write(
     partition_by: str | list[str] | None = None,
     dry_run: bool = False,
     checksums: bool = False,
+    emit: str | None = None,
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
@@ -545,7 +594,9 @@ def sqlite_write(
     mode: changeset compares with the table and writes only what changed; `deletes: missing` (or
     `partition_replaced` with `partition_by`) also removes rows the source no longer has, and
     `dry_run: true` reports the counts without writing; `checksums: true` (with `partition_by`)
-    skips partitions whose records match the checksum stored by the last changeset write.
+    skips partitions whose records match the checksum stored by the last changeset write;
+    `emit: changes` returns the inserted, updated and deleted records (`_change`, `_before`)
+    instead of the counts.
     scd2 keeps history (slowly changing dimension type 2) in `valid_from`, `valid_to` (NULL while
     current) and `is_current`: a record whose `track` columns (default: all but the key) changed
     closes the current version and adds a new one; on_missing: close also closes keys absent
@@ -563,6 +614,7 @@ def sqlite_write(
         partition_by=partition_by,
         dry_run=dry_run,
         checksums=checksums,
+        emit=emit,
         track=track,
         on_missing=on_missing,
         as_of=as_of,

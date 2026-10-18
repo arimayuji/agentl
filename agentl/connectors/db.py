@@ -8,13 +8,14 @@ import datetime as _dt
 import decimal
 from typing import Any
 
-from ..registry import Rejects, connector, require
+from ..registry import Changes, Rejects, connector, require
 from ._util import (
     CHECKSUMS_TABLE,
     SCD2_COLUMNS,
     PartitionSums,
     changeset_options,
     check_scd2_columns,
+    emit_option,
     null_keys,
     partition_id,
     scd2_options,
@@ -114,6 +115,7 @@ def sql_write(
     partition_by: str | list[str] | None = None,
     dry_run: bool = False,
     checksums: bool = False,
+    emit: str | None = None,
 ) -> list[dict]:
     """Write records to `table`. `mode`: append, replace (drop and recreate), upsert on `key`, or
     scd2 (history in `valid_from`, `valid_to`, `is_current`; see `postgres.write`).
@@ -121,13 +123,14 @@ def sql_write(
     are deleted and re-inserted in the same transaction. scd2 reads the current versions' key
     and tracked columns in one query and compares them in Python, so they must fit in memory.
     changeset compares with the table and writes only what changed (`deletes`, `partition_by`,
-    `checksums` and `dry_run` as on `sqlite.write`); it reads the table's rows in one query and
+    `checksums`, `dry_run` and `emit` as on `sqlite.write`); it reads the table's rows in one query and
     compares them in Python, so they must fit in memory.
     One transaction for the whole write."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     keys = [key] if isinstance(key, str) else list(key or [])
     drop, parts = changeset_options("sql.write", mode, keys, deletes, partition_by, dry_run, checksums)
+    emits = emit_option("sql.write", mode, emit)
     if mode == "upsert" and not keys:
         raise ValueError("mode 'upsert' needs 'key'")
     tracked, missing_rows, when = scd2_options("sql.write", mode, keys, track, on_missing, as_of)
@@ -145,7 +148,7 @@ def sql_write(
         check_scd2_columns("sql.write", tracked, cols if rows else [])
 
     if mode == "changeset":
-        done = _changeset(
+        done, changes = _changeset(
             url,
             engine_options,
             schema,
@@ -159,7 +162,10 @@ def sql_write(
             checksums,
             create,
             batch_size,
+            emits,
         )
+        if emits:
+            return Changes(changes, done, rejected)
         return Rejects(done, rejected) if rejected else done
     engine = _engine(url, engine_options)
     try:
@@ -319,9 +325,11 @@ def _changeset(
     checksums: bool,
     create: bool,
     batch_size: int,
-) -> list[dict]:
+    emit: bool = False,
+) -> tuple[list[dict], list[dict]]:
     """mode: changeset on any SQLAlchemy database, with the semantics of `sqlite.write`: one
-    SELECT of the table, a diff in Python, then batched DELETEs, UPDATEs and INSERTs."""
+    SELECT of the table, a diff in Python, then batched DELETEs, UPDATEs and INSERTs. Returns the
+    summary and, with `emit`, the changed records (see `sql._changes`)."""
     from .sql import _counts
 
     sa = require("sqlalchemy", "sql")
@@ -337,7 +345,7 @@ def _changeset(
             meta = sa.MetaData(schema=schema)
             exists = sa.inspect(conn).has_table(table, schema=schema)
             if not cols and not exists:
-                return [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                return [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)], []
             if not cols:
                 cols = list(keys)
             if missing := [k for k in keys if k not in cols]:
@@ -367,7 +375,7 @@ def _changeset(
             rest = [c for c in cols if c not in keys]
             current: dict[tuple, Any] = {}
             if tbl is not None:
-                read = [c for c in dict.fromkeys([*keys, *parts, *rest]) if c in have]
+                read = have if emit else [c for c in dict.fromkeys([*keys, *parts, *rest]) if c in have]
                 for row in conn.execute(sa.select(*(tbl.c[c] for c in read))):
                     m = row._mapping
                     current[tuple(m[k] for k in keys)] = m
@@ -473,4 +481,13 @@ def _changeset(
         out.update(partitions=len(source_parts), partitions_unchanged=len(source_parts - changed))
     if sums:
         out["partitions_skipped"] = len(skip)
-    return [out]
+    changes: list[dict] = []
+    if emit:
+        changes = [{**r, "_change": "inserted"} for r in inserts]
+        for r in updates:
+            cur = current[tuple(r[k] for k in keys)]
+            prev = {c: cur[c] if c in have else None for c in rest}
+            diff = {c: v for c, v in prev.items() if not _same(r.get(c), v)}
+            changes.append({**r, "_change": "updated", "_before": diff})
+        changes.extend({**dict(current[k]), "_change": "deleted"} for k in gone)
+    return [out], changes

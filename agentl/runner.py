@@ -114,6 +114,8 @@ def _write_counts(out: Any) -> tuple[int, dict[str, int]]:
     and, for upserts, how many were inserted, updated or left unchanged."""
     written = 0
     counts: dict[str, int] = {}
+    if isinstance(out, registry.Changes):  # emit: changes; the summary has the counts
+        out = out.summary
     for r in out if isinstance(out, list) else []:
         if not isinstance(r, dict):
             continue
@@ -128,7 +130,7 @@ def _write_counts(out: Any) -> tuple[int, dict[str, int]]:
 def _seen(out: Any) -> int:
     """Records a step that returned `Rejects` looked at: a writer's rows written plus the ones it
     rejected; any other step's output plus its rejects."""
-    rows = list(out)
+    rows = out.summary if isinstance(out, registry.Changes) else list(out)
     is_writer = any(isinstance(r, dict) and "written" in r for r in rows)
     return (_write_counts(rows)[0] if is_writer else len(rows)) + len(out.rejected)
 
@@ -1413,7 +1415,8 @@ class Runner:
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
             self._rejects(run_id, step.id, out.rejected, _seen(out), result)
-        out = list(out) if out is not None else []
+        if not isinstance(out, registry.Changes):  # emit: changes keeps its summary (counts)
+            out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out, self._ttl(step))
         return out
@@ -2091,7 +2094,7 @@ class Runner:
                     raise
                 if isinstance(wrote, registry.Rejects) and wrote.rejected:
                     self._rejects(run_id, last.id, wrote.rejected, _seen(wrote), result)
-                out = list(wrote or [])
+                out = wrote if isinstance(wrote, registry.Changes) else list(wrote or [])
                 counts[last.id] = len(out)
                 if last.schema_ is not None:
                     out = self._contract(run_id, last, out, result)
