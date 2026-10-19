@@ -314,6 +314,9 @@ class RowRuleSpec(BaseModel):
     values: list[Any] | None = None
     pattern: str | None = None
     on_fail: Literal["drop", "flag", "fail"] = "flag"
+    # What is said about a finding: `digest` puts it in the daily digest, `none` acts silently
+    # (the row is still dropped, flagged in the step's findings or failed as `on_fail` says).
+    notify: Literal["digest", "none"] = "digest"
 
     @model_validator(mode="after")
     def _needs(self) -> RowRuleSpec:
@@ -918,9 +921,55 @@ class Rule(BaseModel):
         return self
 
 
+DigestSection = Literal["new", "resolved", "ongoing"]
+DIGEST_SECTIONS: tuple[DigestSection, ...] = ("new", "resolved", "ongoing")
+
+
+class DigestSpec(BaseModel):
+    """`notify.digest` (#218): the findings of the check rules sent once per period at a set time,
+    with a "sent today" guard per channel. See agentl/digest.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: list[str] = Field(min_length=1)
+    every: str = "1d"  # whole days
+    at: str = "08:00"  # HH:MM in `tz`
+    tz: str = "UTC"
+    sections: list[DigestSection] = Field(default_factory=lambda: list(DIGEST_SECTIONS))
+    heartbeat: bool = True  # send "all clear" on a day with no findings
+    # true: the guard is written after a successful send, so a failed send is retried (at least
+    # once); false: before sending, so a crash in the middle never sends twice (at most once).
+    idempotent: bool = True
+
+    @model_validator(mode="after")
+    def _check(self) -> DigestSpec:
+        from zoneinfo import ZoneInfo
+
+        from .checks import parse_duration
+
+        seconds = parse_duration(self.every)
+        if seconds < 86400 or seconds % 86400:
+            raise ValueError(f"notify.digest.every '{self.every}': use whole days (1d, 7d)")
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.at):
+            raise ValueError(f"notify.digest.at '{self.at}': use HH:MM (e.g. 08:00)")
+        try:
+            ZoneInfo(self.tz)
+        except Exception as e:
+            raise ValueError(f"notify.digest.tz '{self.tz}': not a known time zone") from e
+        return self
+
+
 class NotifySpec(BaseModel):
     channels: dict[str, Channel] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
+    digest: DigestSpec | None = None
+
+    @model_validator(mode="after")
+    def _digest_channels(self) -> NotifySpec:
+        missing = [c for c in (self.digest.to if self.digest else []) if c not in self.channels]
+        if missing:
+            raise ValueError(f"notify.digest.to: unknown channel(s) {', '.join(missing)}")
+        return self
 
 
 class PublicationSpec(BaseModel):

@@ -310,6 +310,26 @@ def _gaps(a: argparse.Namespace) -> int:
     return 1 if a.fail and found.missing else 0
 
 
+def _digest(a: argparse.Namespace) -> int:
+    import datetime as _dt
+
+    from . import digest
+
+    spec = load(a.pipeline, params=_params(a.param))
+    if not (spec.notify and spec.notify.digest):
+        print(f"{a.pipeline}: no notify.digest block", file=sys.stderr)
+        return 2
+    with open_store(a.db) as store:
+        if a.show:
+            today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+            print(digest.render(spec, spec.notify.digest, digest.collect(spec, store, today), today)[0])
+            return 0
+        outcomes = digest.send_due(spec, store, force=a.force)
+    for channel, outcome in outcomes.items():
+        print(f"{channel}: {outcome}")
+    return 1 if any(o.startswith("failed") for o in outcomes.values()) else 0
+
+
 def _snapshot(a: argparse.Namespace) -> int:
     from . import snapshots
 
@@ -776,6 +796,12 @@ def main(argv: list[str] | None = None) -> int:
     sn.add_argument("--no-cache", action="store_true")
     _param_arg(sn)
 
+    dg = cmd("digest", "send the notify.digest of check findings when due (cron), once per period")
+    dg.add_argument("pipeline")
+    dg.add_argument("--force", action="store_true", help="send now, even if not due or already sent")
+    dg.add_argument("--show", action="store_true", help="print the digest, send nothing")
+    _param_arg(dg)
+
     gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
     gp.add_argument("pipeline")
     gp.add_argument("--since", help="first period to check (default: expect.partitions.from)")
@@ -895,6 +921,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "gaps":
             return _gaps(a)
+        if a.cmd == "digest":
+            return _digest(a)
         if a.cmd == "test":
             from . import testing
 

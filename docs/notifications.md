@@ -122,3 +122,9 @@ the runner holds it: for a writer, that is its summary record, so point the rule
 produces the rows.
 
 To print or log records as a step instead, use [`console.send` and `log.write`](connectors.md#console-and-log).
+
+### Daily digest of check findings
+
+`notify.digest` sends the findings of the [check rules](checks.md#scheduled-digest) once a day
+(or every N days) at a set time to any of these channels, with a "sent today" guard and an
+"all clear" heartbeat on clean days.
