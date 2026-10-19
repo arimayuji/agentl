@@ -245,6 +245,39 @@ class GoldenSpec(BaseModel):
         return {"file": raw} if isinstance(raw, str) else raw
 
 
+class ReviewSpec(BaseModel):
+    """Human review of an agent step's answers (#153). An answer whose `confidence` is below
+    `below`, or that matches the expression `when`, or every answer with `always`, goes to the
+    review queue in the run store. With `hold` (the default) the record does not reach the next
+    steps; with `hold: false` it goes on flagged `_review: pending`. An accepted or fixed answer is
+    reused for the same input on later runs, with no llm call; a rejected one drops the record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    below: float | None = Field(default=None, ge=0, le=1)
+    when: str | None = None
+    always: bool = False
+    hold: bool = True
+
+    @field_validator("when")
+    @classmethod
+    def _when(cls, v: str | None) -> str | None:
+        if v is not None:
+            from . import expr
+
+            try:
+                expr.compile_expr(v)
+            except expr.ExprError as e:
+                raise ValueError(f"review when: {e}") from None
+        return v
+
+    @model_validator(mode="after")
+    def _some(self) -> ReviewSpec:
+        if self.below is None and self.when is None and not self.always:
+            raise ValueError("review needs below: <confidence>, when: <expression> or always: true")
+        return self
+
+
 class RowRuleSpec(BaseModel):
     """A per-row rule of a check step (#218). `on_fail`: `drop` removes the row, `flag` keeps it
     and reports it, `fail` stops the step. An error inside the rule never stops the pipeline."""
@@ -367,7 +400,9 @@ class StepSpec(BaseModel):
     # to do when it fails. The records pass through unchanged.
     check: str | None = None
     expect: dict[str, Any] = Field(default_factory=dict)
-    review: str | None = None
+    # On a check step: the instruction of the agent review of the data. On an agent step: the
+    # human review queue (#153), see ReviewSpec.
+    review: str | ReviewSpec | None = None
     on_fail: Literal["stop", "warn"] = "stop"
     # Layout drift (#178): compare the input's columns and types with the last run's. See drift.py.
     on_drift: Literal["warn", "fail", "remap"] | None = None
@@ -464,6 +499,18 @@ class StepSpec(BaseModel):
                 f"step '{sid}': jury when: low_confidence needs a confidence output field and"
                 " escalate_below; use when: always otherwise"
             )
+
+    def _check_review(self, review: ReviewSpec) -> None:
+        sid = self.id
+        if not self.agent:
+            raise ValueError(f"step '{sid}': only agent steps take a review mapping; a check takes text")
+        if self.routes is not None or self.output_mode == "rows":
+            raise ValueError(f"step '{sid}': review does not work on routers or with output_mode rows")
+        if review.below is not None and (self.output or {}).get("confidence", "").rstrip("?") not in (
+            "float",
+            "int",
+        ):
+            raise ValueError(f"step '{sid}': review below needs a 'confidence: float' output field")
 
     @property
     def llms(self) -> list[str]:
@@ -570,7 +617,9 @@ class StepSpec(BaseModel):
             unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
             if unknown_vr:
                 raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
-        if (self.expect or self.review or self.severity) and not self.check:
+        if (
+            self.expect or (isinstance(self.review, str) and not self.agent) or self.severity
+        ) and not self.check:
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
@@ -620,6 +669,12 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': only agent steps take tools")
         if self.golden and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a golden set")
+        if isinstance(self.review, ReviewSpec):
+            self._check_review(self.review)
+        elif self.review is not None and self.agent:
+            raise ValueError(
+                f"step '{self.id}': review on an agent step is a mapping, e.g. review: {{below: 0.8}}"
+            )
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
             raise ValueError(
                 f"step '{self.id}': tools work one record per call; drop mode batch and records_per_call"

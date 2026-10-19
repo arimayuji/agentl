@@ -46,6 +46,11 @@ CREATE INDEX IF NOT EXISTS rejected_pipeline ON rejected(pipeline, step);
 CREATE TABLE IF NOT EXISTS seen (
   scope TEXT, key TEXT, run_id TEXT, ts REAL, PRIMARY KEY (scope, key)
 );
+CREATE TABLE IF NOT EXISTS review (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, pipeline TEXT, step TEXT, key TEXT, ts REAL,
+  reason TEXT, input TEXT, answer TEXT, status TEXT, value TEXT, reviewed REAL
+);
+CREATE INDEX IF NOT EXISTS review_key ON review(pipeline, step, key);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -71,6 +76,10 @@ POSTGRES_SCHEMA = [
     "CREATE INDEX IF NOT EXISTS agentl_rejected_pipeline ON agentl_rejected(pipeline, step)",
     """CREATE TABLE IF NOT EXISTS agentl_seen (
       scope TEXT, key TEXT, run_id TEXT, ts DOUBLE PRECISION, PRIMARY KEY (scope, key))""",
+    """CREATE TABLE IF NOT EXISTS agentl_review (
+      id BIGSERIAL PRIMARY KEY, run_id TEXT, pipeline TEXT, step TEXT, key TEXT, ts DOUBLE PRECISION,
+      reason TEXT, input TEXT, answer TEXT, status TEXT, value TEXT, reviewed DOUBLE PRECISION)""",
+    "CREATE INDEX IF NOT EXISTS agentl_review_key ON agentl_review(pipeline, step, key)",
 ]
 
 
@@ -86,6 +95,7 @@ class Store:
         "rejected": "rejected",
         "locks": "locks",
         "seen": "seen",
+        "review": "review",
     }
     INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts, expires) VALUES (?, ?, ?, ?)"
@@ -465,6 +475,106 @@ class Store:
         for i in ids:
             self._exec("UPDATE {rejected} SET retried_by = ? WHERE id = ?", (run_id, i))
 
+    # human review queue (#153): uncertain agent answers, and the answers people gave
+    REVIEW_COLS: ClassVar[str] = (
+        "id, run_id, pipeline, step, key, ts, reason, input, answer, status, value, reviewed"
+    )
+    REVIEW_STATUSES: ClassVar[tuple[str, ...]] = ("pending", "accepted", "fixed", "rejected")
+
+    def _review_row(self, r: dict) -> dict:
+        return {**r, **{k: self._load(r[k]) for k in ("input", "answer", "value")}}
+
+    def review_add(
+        self, run_id: str, pipeline: str, step: str, key: str, reason: str, record: dict, answer: dict
+    ) -> bool:
+        """Queue one answer. False when this input (key) is already queued or reviewed: the same
+        input never asks a person twice."""
+        found = self._query(
+            "SELECT id FROM {review} WHERE pipeline = ? AND step = ? AND key = ? LIMIT 1",
+            (pipeline, step, key),
+        )
+        if found:
+            return False
+        self._exec(
+            "INSERT INTO {review} (run_id, pipeline, step, key, ts, reason, input, answer, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+            (
+                run_id,
+                pipeline,
+                step,
+                key,
+                time.time(),
+                reason,
+                json.dumps(record, default=str),
+                json.dumps(answer, default=str),
+            ),
+        )
+        return True
+
+    def review_list(
+        self,
+        pipeline: str | None = None,
+        step: str | None = None,
+        status: str | None = "pending",
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Queued answers, oldest first; `status` None lists every status."""
+        clauses = [
+            c for c, v in (("pipeline = ?", pipeline), ("step = ?", step), ("status = ?", status)) if v
+        ]
+        params: list[Any] = [v for v in (pipeline, step, status) if v]
+        sql = f"SELECT {self.REVIEW_COLS} FROM {{review}}"
+        sql += (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [self._review_row(r) for r in self._query(sql, tuple(params))]
+
+    def review_get(self, review_id: int) -> dict | None:
+        rows = self._query(f"SELECT {self.REVIEW_COLS} FROM {{review}} WHERE id = ?", (review_id,))
+        return self._review_row(rows[0]) if rows else None
+
+    def review_resolve(self, review_id: int, status: str, value: dict | None) -> None:
+        """Record a person's decision: accepted or fixed (with the answer to use) or rejected.
+        The answer is also written to the agent cache under the record's key."""
+        if status not in self.REVIEW_STATUSES[1:]:
+            raise ValueError(f"review status must be accepted, fixed or rejected, not {status!r}")
+        row = self.review_get(review_id)
+        if row is None:
+            raise KeyError(review_id)
+        self._exec(
+            "UPDATE {review} SET status = ?, value = ?, reviewed = ? WHERE id = ?",
+            (status, None if value is None else json.dumps(value, default=str), time.time(), review_id),
+        )
+        if value is not None:
+            self.cache_set(row["key"], value)
+        else:
+            self.cache_clear(row["key"])
+
+    def review_decisions(self, pipeline: str, step: str, keys: list[str]) -> dict[str, dict]:
+        """{key: {status, value}} of the reviewed answers among `keys`."""
+        found: dict[str, dict] = {}
+        for i in range(0, len(keys), 500):
+            chunk = keys[i : i + 500]
+            marks = ", ".join("?" * len(chunk))
+            rows = self._query(
+                f"SELECT key, status, value FROM {{review}} WHERE pipeline = ? AND step = ? "
+                f"AND status != 'pending' AND key IN ({marks})",
+                (pipeline, step, *chunk),
+            )
+            for r in rows:
+                found[r["key"]] = {"status": r["status"], "value": self._load(r["value"])}
+        return found
+
+    def review_counts(self, pipeline: str | None = None) -> list[dict]:
+        """[{pipeline, step, status, count}] over the whole queue."""
+        where, params = (" WHERE pipeline = ?", (pipeline,)) if pipeline else ("", ())
+        return self._query(
+            f"SELECT pipeline, step, status, COUNT(*) AS count FROM {{review}}{where} "
+            "GROUP BY pipeline, step, status ORDER BY pipeline, step, status",
+            params,
+        )
+
     def run(self, run_id: str) -> dict | None:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
         return self._with_labels(rows)[0] if rows else None
@@ -479,7 +589,7 @@ class Store:
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
     Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state,
-    agentl_samples, agentl_rejected, agentl_locks."""
+    agentl_samples, agentl_rejected, agentl_locks, agentl_seen, agentl_review."""
 
     T: ClassVar[dict[str, str]] = {
         "runs": "agentl_runs",
@@ -490,6 +600,7 @@ class PostgresStore(Store):
         "rejected": "agentl_rejected",
         "locks": "agentl_locks",
         "seen": "agentl_seen",
+        "review": "agentl_review",
     }
     INSERT_SEEN = (
         "INSERT INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING"
