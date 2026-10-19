@@ -11,6 +11,13 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- `mode: changeset` on `postgres.write` and `sql.write` (#205), with the semantics of
+  `sqlite.write`: inserted, updated, deleted and unchanged counts, `deletes: missing` or
+  `partition_replaced`, `dry_run` and `outcome: no_change`. `postgres.write` diffs set-based in a
+  temp table typed like the destination; `sql.write` compares in Python.
+- `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
+  partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
+  comparing their rows. The result reports `partitions_skipped`.
 - `if_changed` and `on_unchanged` on the file readers that take a `url` (`file.read`,
   `archive.read`, `csv.read`, `json.read`, `txt.read`, `excel.read`, `parquet.read`) (#279): the
   same ETag / Last-Modified / Content-Length / page stamp / hash check as `http.get`, so an

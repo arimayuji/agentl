@@ -236,9 +236,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `dry_run` (changeset only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `checksums`, `dry_run` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`, `changeset`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `deletes`, `partition_by`, `checksums`, `dry_run`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -984,21 +984,22 @@ instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. T
 
 ### Changeset writes
 
-`mode: changeset` on `sqlite.write` compares the source with the table and writes only what
-changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
+`mode: changeset` on `sqlite.write`, `postgres.write` and `sql.write` compares the source with the
+table and writes only what changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
 A table with triggers or versioning sees no write at all when nothing changed.
 
 ```yaml
 load:
   - id: save
-    use: sqlite.write
+    use: postgres.write
     input: rows
     with:
-      db: out/facts.db
+      dsn: ${DATABASE_URL}
       table: facts
       key: [country, month, product]
       mode: changeset
       partition_by: month
+      checksums: true                  # skip the partitions equal to the last run
       deletes: { when: partition_replaced }
 ```
 
@@ -1008,14 +1009,28 @@ load:
 | `deletes: missing` | Delete rows whose key is not in the source (the source is the whole table). |
 | `deletes: partition_replaced` | Delete missing rows only in the partitions (`partition_by` values) the source has. |
 | `partition_by: month` | Also report `partitions` and `partitions_unchanged` (partitions with no insert, update or delete). |
-| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column. |
+| `checksums: true` | With `partition_by`: skip, without comparing their rows, the partitions whose source records have the checksum stored by the last changeset write. Also reports `partitions_skipped`. |
+| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column, no checksum. |
 
 All chunks are staged in a temp table first and the diff runs as a few set-based statements in
 one transaction, so it stays fast on large loads; the last record of a repeated key wins. The
 result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_change` when
 nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
 in the run summary, so a notification rule can use `when: "deleted > 0"`. A record with a null
-key field is rejected, as in upsert, and does not count in the diff. Postgres support is planned.
+key field is rejected, as in upsert, and does not count in the diff.
+
+`sqlite.write` and `postgres.write` stage the source in a temp table and diff it with a few
+set-based statements in one transaction; on Postgres the stage takes the table's column types, so
+values compare as the table stores them (`IS DISTINCT FROM`). `sql.write` reads the table in one
+query and compares in Python (a date read back equals its ISO string), so the table must fit in
+memory.
+
+`checksums: true` keeps one checksum per partition (the count and an order-independent hash of
+the source records) in a `_agentl_checksums` table in the same database, updated in the same
+transaction. A partition whose checksum matches is counted as unchanged and its rows are neither
+updated nor deleted, even with `deletes: missing`. The checksum describes the source, not the
+table: if something else writes to the table, a skipped partition will not notice; run once
+without `checksums` to resync.
 
 ### History of a dimension (SCD type 2)
 
@@ -1090,7 +1105,8 @@ and compares them in Python, so those must fit in memory.
 
 | Parameter | Notes |
 |---|---|
-| `mode` | `append`, `replace` (drop and recreate) or `upsert` on `key` |
+| `mode` | `append`, `replace` (drop and recreate), `upsert` on `key`, `scd2` or `changeset` (see [Changeset writes](#changeset-writes)) |
+| `deletes`, `partition_by`, `checksums`, `dry_run` | changeset only |
 | `key` | column or list of columns |
 | `schema`, `batch_size`, `create` | target schema, rows per batch (default 1000), create the table when missing (default true) |
 | `engine_options` | passed to `sqlalchemy.create_engine` (pool size, connect args) |
