@@ -536,7 +536,7 @@ class Store:
 
     def review_resolve(self, review_id: int, status: str, value: dict | None) -> None:
         """Record a person's decision: accepted or fixed (with the answer to use) or rejected.
-        The answer is also written to the agent cache under the record's key."""
+        Later runs read it through review_decisions, before the agent cache."""
         if status not in self.REVIEW_STATUSES[1:]:
             raise ValueError(f"review status must be accepted, fixed or rejected, not {status!r}")
         row = self.review_get(review_id)
@@ -546,10 +546,6 @@ class Store:
             "UPDATE {review} SET status = ?, value = ?, reviewed = ? WHERE id = ?",
             (status, None if value is None else json.dumps(value, default=str), time.time(), review_id),
         )
-        if value is not None:
-            self.cache_set(row["key"], value)
-        else:
-            self.cache_clear(row["key"])
 
     def review_decisions(self, pipeline: str, step: str, keys: list[str]) -> dict[str, dict]:
         """{key: {status, value}} of the reviewed answers among `keys`."""

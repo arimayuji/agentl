@@ -1,0 +1,1 @@
+The agent cache key includes the version of the built-in prompts, so an upgrade that changes them asks the model again instead of serving answers made under the old prompts (#338). Upgrading to this release re-asks every cached agent answer once; reviewed answers from the human review queue are kept. New step option `cache_version` to invalidate a step's cached results by hand.

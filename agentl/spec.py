@@ -454,6 +454,8 @@ class StepSpec(BaseModel):
     batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
     cache_ttl: str | float | None = None  # cached results expire after this long; default: never
+    # Part of the cache key: change it to stop reusing results after editing a `fn` or transform.
+    cache_version: str | int | None = None
     # Tools the agent may call, per record: "http.get", "sqlite.query", "fn:module:function",
     # "mcp:server" or "mcp:server/tool"; a one-key dict adds settings, e.g. {sqlite.query: {db: x}}.
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)

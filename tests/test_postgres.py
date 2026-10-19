@@ -396,7 +396,7 @@ def test_review_queue_on_postgres():
         assert store.review_decisions(pipeline, "s", ["k1", "k2"]) == {
             "k1": {"status": "fixed", "value": {"c": "y"}}
         }
-        assert store.cache_get("k1") == {"c": "y"}
+        assert store.cache_get("k1") is None  # the queue keeps it; the agent cache has its own keys
         assert store.review_counts(pipeline) == [
             {"pipeline": pipeline, "step": "s", "status": "fixed", "count": 1}
         ]

@@ -169,3 +169,16 @@ def test_spec_validation(step, message):
     text = f"name: p\nsteps:\n  - id: s\n    {step}\n"
     with pytest.raises(SpecError, match=message):
         parse(yaml.safe_load(text))
+
+
+def test_review_answer_survives_a_prompt_version_change(project, monkeypatch):
+    run, store, _ = project
+    run()
+    [item] = store.review_list()
+    store.review_resolve(item["id"], "fixed", {"category": "transport", "confidence": 1.0})
+    monkeypatch.setattr(llm, "PROMPT_VERSION", "upgraded")
+    calls = Unsure.calls
+    result = run()
+    taxi = next(r for r in result.outputs["after"] if r["text"] == "Taxi to airport")
+    assert taxi["category"] == "transport"
+    assert Unsure.calls == calls + 1  # only the flight is asked again under the new prompts

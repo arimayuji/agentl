@@ -7,7 +7,7 @@
     agentl review reject ID...
     agentl review export --golden FILE [--pipeline P] [--step S]
 
-An accepted or fixed answer is stored with the record's agent cache key: the next run that sees
+An accepted or fixed answer is stored under the record's agent cache key: the next run that sees
 the same input uses it with no llm call, and `agentl review export` appends it to a golden set
 (#154) for `agentl eval`."""
 

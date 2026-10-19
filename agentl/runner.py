@@ -227,8 +227,10 @@ def remap_targets(spec: PipelineSpec, check_id: str) -> list[str]:
     return [s.id for s in spec.steps if s.use == "map_schema" and check_id in s.inputs]
 
 
-def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
-    """The per-record cache key of an agent step (also used by `agentl plan` to count hits)."""
+def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict, prompts: bool = True) -> str:
+    """The per-record cache key of an agent step (also used by `agentl plan` to count hits).
+    `prompts` adds the built-in prompt version (#338); the review queue leaves it out, so a
+    person's answer survives an agentl upgrade that only rewords those prompts."""
     # Without a cascade the key stays what it was, so existing caches keep their hits.
     llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
     if step.attempts:
@@ -239,14 +241,24 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
         llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
     if step.jury is not None:  # the cached answer is the jury's decision
         llm_key = [llm_key, step.jury.model_dump(), step.jury_tag]
+    salt = _key_salt(step, prompts)
     # records_per_call is not part of the key: the answer per record is the same.
     if step.routes is not None:  # a router's answer depends on its labels, not on where they go
-        return _hash("route", step.agent, sorted(step.routes), llm_key, step.tools, rec)
+        return _hash("route", step.agent, sorted(step.routes), llm_key, step.tools, rec, *salt)
     if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
-        return _hash("agent-rows", step.agent, step.output, llm_key, rec)
+        return _hash("agent-rows", step.agent, step.output, llm_key, rec, *salt)
     if step.tools:  # tools can change the answer, so they are part of the key
-        return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
-    return _hash("agent", step.agent, step.output, llm_key, rec)
+        return _hash("agent", step.agent, step.output, llm_key, step.tools, rec, *salt)
+    return _hash("agent", step.agent, step.output, llm_key, rec, *salt)
+
+
+def _key_salt(step: StepSpec, prompts: bool = True) -> list:
+    """What every cached llm answer of a step also depends on: the built-in prompt version and the
+    step's own `cache_version`."""
+    salt: list = [llm.PROMPT_VERSION] if prompts else []
+    if step.cache_version is not None:
+        salt.append({"cache_version": step.cache_version})
+    return salt
 
 
 def _review_reason(review: ReviewSpec, answer: dict) -> str | None:
@@ -892,9 +904,16 @@ class Runner:
         review = step.review
         if not isinstance(review, ReviewSpec):
             return self._agent_slots(run_id, step, records, result)
-        keys = [agent_cache_key(self.spec, step, r) for r in records]
+        # The queue is keyed without the built-in prompt version, so reviews survive an upgrade
+        # that rewords those prompts; the slots look answers up by the agent cache key.
+        keys = [agent_cache_key(self.spec, step, r, prompts=False) for r in records]
         decided = self.store.review_decisions(self.spec.name, step.id, keys)
-        slots = self._agent_slots(run_id, step, records, result, decided=decided)
+        by_cache_key = {
+            agent_cache_key(self.spec, step, r): decided[k]
+            for r, k in zip(records, keys, strict=True)
+            if k in decided
+        }
+        slots = self._agent_slots(run_id, step, records, result, decided=by_cache_key)
         counts = {"queued": 0, "held": 0, "flagged": 0, "reused": 0, "dropped": 0}
         fields = list(step.output or {})
         from . import secrets
@@ -1231,7 +1250,7 @@ class Runner:
         out = {k: good.get(k) for k in schema.model_fields}
         exchange: list[dict] = []
         for n in range(1, critic.max_rounds + 1):
-            vkey = _hash("critic", critic.criteria, critic_key, rec, out)
+            vkey = _hash("critic", critic.criteria, critic_key, rec, out, *_key_salt(step))
             verdict = self.store.cache_get(vkey) if cacheable else None
             cached = verdict is not None
             if verdict is None:
@@ -1319,7 +1338,8 @@ class Runner:
 
         def ask(name: str, kind: str, text: str, payload: dict) -> dict | None:
             spec = self.spec.llm[name]
-            ckey = _hash(kind, spec.model_dump(exclude={"price"}), text, step.output, step.tools, payload)
+            dumped = spec.model_dump(exclude={"price"})
+            ckey = _hash(kind, dumped, text, step.output, step.tools, payload, *_key_salt(step))
             hit = self.store.cache_get(ckey) if cacheable else None
             if hit is not None:
                 return hit
