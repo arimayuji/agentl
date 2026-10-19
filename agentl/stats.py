@@ -1,6 +1,7 @@
 """Track record per pipeline: success rate, durations, cost, failures grouped by reason, a
 per-day trend, and per agent step and model what a record, an accepted answer and a cache hit
-cost. Computed from the runs and events the store already keeps; nothing new is stored.
+cost, and the human review queue (#153). Computed from the runs, events and review queue the
+store already keeps; nothing new is stored.
 
     agentl stats [PIPELINE] [--since 30d] [--json]"""
 
@@ -113,9 +114,15 @@ def compute(
             g["last_seen"], g["last_run"], g["last_error"] = r["started"], r["id"], r["error"]
 
     agents = _agent_costs(done_steps, rejected, run_pipeline)
+    queue: dict[str, dict[str, int]] = {}
+    if hasattr(store, "review_counts"):
+        for c in store.review_counts(pipeline):
+            q = queue.setdefault(c["pipeline"], {"pending": 0, "reviewed": 0})
+            q["pending" if c["status"] == "pending" else "reviewed"] += int(c["count"])
     pipelines = []
     for p in out.values():
         p["agents"] = agents.get(p["pipeline"], [])
+        p["review"] = queue.get(p["pipeline"], {"pending": 0, "reviewed": 0})
         secs = sorted(p.pop("_secs"))
         done = p["succeeded"] + p["failed"]
         p["success_rate"] = round(p["succeeded"] / done, 4) if done else None
@@ -157,6 +164,9 @@ def _agent_costs(
                 "answered": 0,
                 "cache_hits": 0,
                 "cost_usd": 0.0,
+                "review_queued": 0,
+                "review_held": 0,
+                "review_reused": 0,
             },
         )
         bad = rejected.get((e["run_id"], e["step"]), 0)
@@ -168,6 +178,10 @@ def _agent_costs(
         row["answered"] += sum((d.get("answered_by") or {}).values())
         row["cache_hits"] += int(d.get("cache_hits") or 0)
         row["cost_usd"] += float(d.get("cost_usd") or 0)
+        rv = d.get("review") or {}
+        row["review_queued"] += int(rv.get("queued") or 0)
+        row["review_held"] += int(rv.get("held") or 0)
+        row["review_reused"] += int(rv.get("reused") or 0) + int(rv.get("dropped") or 0)
     out: dict[str, list[dict]] = {}
     for (pipeline, _, _), row in sorted(rows.items()):
         c = row["cost_usd"]
@@ -216,6 +230,15 @@ def text(report: dict, top: int = 5) -> str:
                     f"    [{a['step']}] {a['model']}: {_usd(a['cost_per_record'])}/record,"
                     f" {_usd(a['cost_per_accepted'])}/accepted ({a['accepted']} of {a['records']}),"
                     f" {a['cache_hits']} cache hits{saved}"
+                )
+        q = p.get("review") or {}
+        if q.get("pending") or q.get("reviewed"):
+            lines.append(f"  review queue: {q['pending']} pending, {q['reviewed']} reviewed")
+        for a in p.get("agents") or []:
+            if a.get("review_queued") or a.get("review_held") or a.get("review_reused"):
+                lines.append(
+                    f"    [{a['step']}] review: {a['review_queued']} queued, {a['review_held']} held,"
+                    f" {a['review_reused']} reused from people"
                 )
         if p["failures"]:
             lines.append("  failures by reason:")

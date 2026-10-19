@@ -138,6 +138,15 @@ answer counts as wrong in every field. When `min_accuracy` is set and any run (t
 `--compare` ones included) is below it, the command exits 1, so CI can block a bad prompt.
 `--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step.
 
+Answers a person corrected in the [review queue](review.md) can be appended to the golden file
+with `agentl review export --golden golden/classify.jsonl`.
+
+## Human review
+
+`review: { below: 0.8 }` holds answers with a low `confidence` (or matching `when:`) in a review
+queue until a person accepts, fixes or rejects them, and reuses the decision on later runs. See
+[Human review queue](review.md).
+
 ## Data privacy
 
 Agent steps send record contents to the configured provider. Use a local provider for data that must

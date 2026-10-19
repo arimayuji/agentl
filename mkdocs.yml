@@ -61,6 +61,7 @@ nav:
       - Integrations: integrations.md
       - Cloud: cloud.md
       - Agent steps: agents.md
+      - Human review: review.md
       - Data checks: checks.md
       - Notifications: notifications.md
       - CLI and dashboard: cli.md

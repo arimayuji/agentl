@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from . import checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
-from .spec import DROP, LLMSpec, PipelineSpec, StepSpec, load
+from .spec import DROP, LLMSpec, PipelineSpec, ReviewSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -247,6 +247,29 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
     if step.tools:  # tools can change the answer, so they are part of the key
         return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
     return _hash("agent", step.agent, step.output, llm_key, rec)
+
+
+def _review_reason(review: ReviewSpec, answer: dict) -> str | None:
+    """Why `answer` goes to the human review queue (#153), or None when it does not. A missing
+    confidence counts as low, and a `when` that fails to evaluate counts as matching."""
+    if review.always:
+        return "always"
+    if review.below is not None:
+        conf = answer.get("confidence")
+        if not isinstance(conf, int | float) or isinstance(conf, bool):
+            return f"no confidence (below {review.below})"
+        if conf < review.below:
+            return f"confidence {conf} below {review.below}"
+    if review.when is not None:
+        from . import expr
+
+        try:
+            hit = expr.evaluate(review.when, answer)
+        except Exception as e:
+            return f"when {review.when!r} failed: {e}"
+        if hit:
+            return f"when {review.when}"
+    return None
 
 
 def _trace(e: BaseException) -> str:
@@ -762,13 +785,13 @@ class Runner:
         if step.output_mode == "rows":
             return self._run_rows(run_id, step, records, result)
         if not step.rules:
-            answered = self._agent_slots(run_id, step, records, result)
+            answered = self._agent_reviewed(run_id, step, list(records), result)
             return self._agent_finish(run_id, step, answered, len(records), result)
         records = list(records)
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
         rest = [i for i, out in enumerate(by_rules) if out is None]
-        asked = self._agent_slots(run_id, step, [records[i] for i in rest], result) if rest else []
+        asked = self._agent_reviewed(run_id, step, [records[i] for i in rest], result) if rest else []
         slots: list[tuple[dict | None, dict | None]] = []
         answers = iter(asked)
         for rec, out in zip(records, by_rules, strict=True):
@@ -860,6 +883,57 @@ class Runner:
         self._rejects(run_id, step.id, bad, len(records), result)
         return out
 
+    def _agent_reviewed(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> list[tuple[dict | None, dict | None]]:
+        """`_agent_slots`, with the human review queue (#153) when the step has `review:`. A record
+        a person already reviewed takes their answer with no llm call (a rejected one is dropped);
+        a new answer the review rule flags is queued, and held back or marked `_review: pending`."""
+        review = step.review
+        if not isinstance(review, ReviewSpec):
+            return self._agent_slots(run_id, step, records, result)
+        keys = [agent_cache_key(self.spec, step, r) for r in records]
+        decided = self.store.review_decisions(self.spec.name, step.id, keys)
+        slots = self._agent_slots(run_id, step, records, result, decided=decided)
+        counts = {"queued": 0, "held": 0, "flagged": 0, "reused": 0, "dropped": 0}
+        fields = list(step.output or {})
+        from . import secrets
+
+        hidden = secrets.sensitive()  # the queue keeps records like the quarantine: secrets masked
+        for i, (good, _) in enumerate(slots):
+            if keys[i] in decided:
+                counts["reused" if decided[keys[i]]["value"] is not None else "dropped"] += 1
+                continue
+            if good is None:
+                continue
+            why = _review_reason(review, good)
+            if why is None:
+                continue
+            answer = {k: good.get(k) for k in fields}
+            shown = _mask_values(records[i], hidden) if hidden else records[i]
+            if self.store.review_add(run_id, self.spec.name, step.id, keys[i], why, shown, answer):
+                counts["queued"] += 1
+            if review.hold:
+                slots[i] = (None, None)
+                counts["held"] += 1
+            else:
+                slots[i] = ({**good, "_review": "pending"}, None)
+                counts["flagged"] += 1
+        with self._spend:
+            result.spend[step.id]["review"] = counts
+        if counts["held"] or counts["flagged"]:
+            self._emit(
+                run_id,
+                "review.pending",
+                step.id,
+                queued=counts["queued"],
+                held=counts["held"],
+                flagged=counts["flagged"],
+            )
+        if counts["reused"] or counts["dropped"]:
+            self._emit(run_id, "review.reused", step.id, reused=counts["reused"], dropped=counts["dropped"])
+        return slots
+
     def _agent_finish(
         self,
         run_id: str,
@@ -886,9 +960,12 @@ class Runner:
         result: RunResult,
         schema: type[BaseModel] | None = None,
         instruction: str | None = None,
+        decided: dict[str, dict] | None = None,
     ) -> list[tuple[dict | None, dict | None]]:
         """Asks the llm about each record: (answered record, None) or (None, rejected record).
-        `schema` and `instruction` replace the ones from `output:` and `agent:` (routers)."""
+        `schema` and `instruction` replace the ones from `output:` and `agent:` (routers).
+        `decided` maps cache keys to answers people reviewed (#153): those records take the
+        person's answer, or (None, None) when they rejected it, and never reach the llm."""
         if schema is None:
             schema = llm.schema_model(f"{step.id}_output", step.output or {})
         base = (step.agent or "") if instruction is None else instruction
@@ -1063,7 +1140,10 @@ class Runner:
         hits = 0
         for i, rec in enumerate(records):
             k = key(rec)
-            if k in first:
+            if decided and k in decided:
+                human = decided[k]["value"]
+                slots[i] = ({**rec, **human}, None) if human is not None else (None, None)
+            elif k in first:
                 copies.append((i, first[k]))
             elif cacheable and (hit := self.store.cache_get(k)) is not None:
                 slots[i] = ({**rec, **hit}, None)
@@ -1580,7 +1660,9 @@ class Runner:
             }
             held = self._check_budget(result, step.id)
             try:
-                res = self._provider(step.llm).structured(_review_instruction(step.review), payload, schema)
+                res = self._provider(step.llm).structured(
+                    _review_instruction(str(step.review)), payload, schema
+                )
             except (ValidationError, ValueError, RuntimeError) as e:
                 self._charge(result, step, llm_spec, e, ticket=held)
                 raise RuntimeError(f"check review did not answer in the expected shape: {e}") from e

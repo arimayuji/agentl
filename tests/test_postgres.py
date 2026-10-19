@@ -380,3 +380,24 @@ def test_upsert_rejects_null_keys(table):
     assert out[0]["written"] == out[0]["inserted"] == 1
     assert [r["v"] for r in out.rejected] == ["x", "y"] and "is null" in out.rejected[0]["_error"]
     assert [r["v"] for r in read(table)] == ["a"]
+
+
+def test_review_queue_on_postgres():
+    import uuid
+
+    from agentl.store import open_store
+
+    pipeline = f"review-{uuid.uuid4().hex[:8]}"
+    with open_store(DSN) as store:
+        assert store.review_add("r1", pipeline, "s", "k1", "low", {"a": 1}, {"c": "x"})
+        assert not store.review_add("r2", pipeline, "s", "k1", "low", {"a": 1}, {"c": "x"})
+        [item] = store.review_list(pipeline)
+        store.review_resolve(item["id"], "fixed", {"c": "y"})
+        assert store.review_decisions(pipeline, "s", ["k1", "k2"]) == {
+            "k1": {"status": "fixed", "value": {"c": "y"}}
+        }
+        assert store.cache_get("k1") == {"c": "y"}
+        assert store.review_counts(pipeline) == [
+            {"pipeline": pipeline, "step": "s", "status": "fixed", "count": 1}
+        ]
+        store.cache_clear("k1")

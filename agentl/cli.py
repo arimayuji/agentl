@@ -156,6 +156,59 @@ def _rejected(a: argparse.Namespace) -> int:
     return _exit_code(spec, result)
 
 
+def _review(a: argparse.Namespace) -> int:
+    from . import review
+
+    with open_store(a.db) as store:
+        if a.action == "list":
+            status = None if a.status == "all" else a.status
+            rows = store.review_list(a.pipeline, a.step, status=status)[-a.n :]
+            for row in rows:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                answer = json.dumps(row["value"] or row["answer"], ensure_ascii=False, default=str)
+                print(
+                    f"{row['id']}  {row['pipeline']}  {row['step']}  {when}  {row['status']}"
+                    f"  {row['reason']}  {answer}"
+                )
+            if not rows:
+                print("no answers waiting for review" if status == "pending" else "no reviewed answers")
+            return 0
+        if a.action == "export":
+            if not a.golden:
+                print("agentl review export needs --golden FILE", file=sys.stderr)
+                return 2
+            added = review.export_golden(store, a.golden, a.pipeline, a.step)
+            print(f"added {added} golden record(s) to {a.golden}")
+            return 0
+        ids = a.args if a.action != "fix" else a.args[:1]
+        if not ids or not all(i.isdigit() for i in ids):
+            print(f"agentl review {a.action} needs a review id (see agentl review list)", file=sys.stderr)
+            return 2
+        try:
+            if a.action == "show":
+                found = store.review_get(int(ids[0]))
+                if found is None:
+                    raise KeyError(ids[0])
+                print(json.dumps(found, ensure_ascii=False, indent=2, default=str))
+            elif a.action == "fix":
+                value = review.fix(store, int(ids[0]), review.parse_assignments(a.args[1:], a.value))
+                print(f"fixed {ids[0]}: {json.dumps(value, ensure_ascii=False, default=str)}")
+            else:
+                for i in ids:
+                    if a.action == "accept":
+                        review.accept(store, int(i))
+                    else:
+                        review.reject(store, int(i))
+                print(f"{a.action}ed {len(ids)} answer(s); the next run reuses the decision")
+        except KeyError as e:
+            print(f"no review item {e.args[0]}", file=sys.stderr)
+            return 1
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        return 0
+
+
 def _exit_code(spec: Any, result: Any) -> int:
     """Per outcome, from `outcomes.exit_codes` (default: 1 for failed, 0 otherwise)."""
     if result.outcome is None:
@@ -611,6 +664,21 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("step", help="the resolve step id")
     rs.add_argument("file", nargs="?", help="JSON file (export: default stdout; import: required)")
 
+    rv = cmd("review", "answers waiting for a person: list, show, accept, fix, reject, export")
+    rv.add_argument("action", choices=["list", "show", "accept", "fix", "reject", "export"])
+    rv.add_argument("args", nargs="*", help="ids; fix: one id, then field=value pairs")
+    rv.add_argument("--pipeline", help="list / export: only this pipeline (by name)")
+    rv.add_argument("--step", help="list / export: only this step")
+    rv.add_argument(
+        "--status",
+        choices=["pending", "accepted", "fixed", "rejected", "all"],
+        default="pending",
+        help="list: which answers (default pending)",
+    )
+    rv.add_argument("--value", help="fix: the corrected fields as a JSON object")
+    rv.add_argument("--golden", help="export: the golden JSONL file to append to")
+    rv.add_argument("-n", type=int, default=50, help="list: at most this many (default 50)")
+
     rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
     rj.add_argument("action", choices=["list", "show", "retry"])
     rj.add_argument("target", nargs="?", help="show: the rejected record id; retry: the pipeline file")
@@ -1013,6 +1081,8 @@ def main(argv: list[str] | None = None) -> int:
             return _mappings(a)
         if a.cmd == "rejected":
             return _rejected(a)
+        if a.cmd == "review":
+            return _review(a)
         if a.cmd == "schedule":
             return _schedule_next(load(a.pipeline), a.n)
 
