@@ -387,8 +387,12 @@ class Runner:
         listeners: list[Listener] | None = None,
         trigger: list[dict] | None = None,
         replay: dict[str, Records] | None = None,
+        resume_from: str | None = None,
     ):
         self.spec = spec
+        # a failed run to resume (#339): its completed steps are skipped and their outputs read back
+        self.resume_from = resume_from
+        self._plan: Any = None
         # step id -> records that step runs on instead of its inputs (retry of rejected records)
         self.replay = dict(replay or {})
         self.trigger = list(trigger or [])  # what started this run; a `use: trigger` step reads it
@@ -2028,6 +2032,7 @@ class Runner:
                 ) | {"cost_usd": 0.0}
         self._emit(run_id, "step.started", step_id, kind=step.kind)
         t0 = time.time()
+        hooks_before = hooks_after = len(self._after_run)
         try:
             if step.cursor:
                 step = self._with_cursor(step)
@@ -2037,6 +2042,7 @@ class Runner:
                 self._release_step(step_id)
             if step.schema_ is not None:
                 out = self._contract(run_id, step, out, result)
+            hooks_after = len(self._after_run)
             self._write_rejected(step, result)
             if step.cursor:
                 self._track_cursor(step, out)
@@ -2096,8 +2102,29 @@ class Runner:
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
         )
+        self._checkpoint(run_id, step, out, hooks_after > hooks_before)
         if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
+
+    def _checkpoint(self, run_id: str, step: StepSpec, out: Any, acked: bool = False) -> None:
+        """Record that `step` completed, keeping its output when that is cheap and safe (#339)."""
+        from . import resume
+
+        reason = None
+        if not resume.enabled():
+            reason = "checkpoints are off (AGENTL_CHECKPOINTS=0)"
+        elif step.use == "unprotect":
+            reason = "decrypted values are never stored"
+        elif step.cursor:
+            reason = "incremental cursor step: it reads again from the stored cursor"
+        elif step.routes is not None:
+            reason = "router step: its branches are not stored"
+        elif acked:
+            reason = "source acknowledged after the run: it reads again"
+        try:
+            resume.record(self.store, run_id, step.id, out, reason)
+        except Exception as e:  # a checkpoint never fails a run
+            log.warning("checkpoint of step %s failed: %s", step.id, e)
 
     def _run_retried(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
         """Runs a step body, retrying it on the errors its `retries.on` lists (#296). A budget stop
@@ -2357,6 +2384,12 @@ class Runner:
                 chunked=True,
                 **self._step_spend(step, result),
             )
+            if step is last:
+                self._checkpoint(run_id, step, out)
+            else:
+                from . import resume
+
+                resume.record(self.store, run_id, step.id, [], "inside a chunked chain")
         if counts[head.id] == 0:
             self._emit(run_id, "source.empty", head.id)
 
@@ -2371,6 +2404,13 @@ class Runner:
         deps = {s.id: set(s.depends) for s in self.spec.steps}
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
+        if self._plan is not None:
+            for step_id, out in self._plan.restored.items():
+                result.outputs[step_id] = out
+            for step_id in self._plan.done:
+                result.outputs[step_id] = []
+            done = set(self._plan.restored) | self._plan.done
+            pending = [i for i in pending if i not in done]
         running: dict[Future, str] = {}
         failure: BaseException | None = None
         with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="agentl-step") as pool:
@@ -2449,8 +2489,32 @@ class Runner:
         self._outputs = result.outputs
         self._source_records = {}
         registry._RUN_ID.set(run_id)
+        from . import resume
+
+        self._plan = None
+        if self.resume_from:  # refused before anything is recorded
+            self._plan = resume.plan(self.spec, self.store, self.resume_from, self._chains())
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
-        self._emit(run_id, "run.started", steps=len(self.spec.steps))
+        resumed: dict[str, Any] = {}
+        if self._plan is not None:
+            resumed = {"resumed_from": self._plan.resumed_from, "resumed_chain": self._plan.ancestors}
+        self._emit(
+            run_id,
+            "run.started",
+            steps=len(self.spec.steps),
+            spec_hash=resume.spec_hash(self.spec),
+            **resumed,
+        )
+        if self._plan is not None:
+            for step_id, data in self._plan.checkpoints.items():  # so this run can be resumed too
+                self.store.event(run_id, "checkpoint", step_id, data)
+            self._emit(
+                run_id,
+                "run.resumed",
+                resumed_from=self._plan.resumed_from,
+                skipped=sorted(self._plan.restored) + sorted(self._plan.done),
+                rerun=self._plan.rerun,
+            )
         started = time.time()
         failure: BaseException | None = None
         try:
@@ -2474,6 +2538,8 @@ class Runner:
             result.reason = f"source unreachable: {result.error}"
         self._finish_after_run(run_id, result)
         self._save_cursors(run_id, result)
+        if result.status in ("succeeded", "no_change"):  # nothing left to resume
+            resume.remove(self.store, [run_id, *(self._plan.ancestors if self._plan else [])])
         partial: dict[str, Any] = {}
         if result.partial:
             partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
@@ -2866,3 +2932,28 @@ def run(
     if raise_on_failure and result.status == "failed":
         raise PipelineFailed(result)
     return result
+
+
+def resume(
+    pipeline: PipelineSpec | str | os.PathLike,
+    run_id: str,
+    *,
+    vars: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    db: str | os.PathLike | None = None,
+    raise_on_failure: bool = False,
+    **kwargs: Any,
+) -> RunResult:
+    """Resume the failed run `run_id` (#339): completed steps are skipped, sinks included, and
+    their outputs are read back from the checkpoints; the new run starts from the first failed or
+    pending step. Raises `agentl.resume.ResumeRefused` when that is not safe (the spec changed, the
+    run did not fail, or a completed writer would have to write again)."""
+    return run(
+        pipeline,
+        vars=vars,
+        params=params,
+        db=db,
+        raise_on_failure=raise_on_failure,
+        resume_from=run_id,
+        **kwargs,
+    )
