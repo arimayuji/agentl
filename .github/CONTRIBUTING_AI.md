@@ -100,8 +100,9 @@ Docs changes: `.venv/bin/pip install -e '.[docs]' && .venv/bin/mkdocs build --st
 ## 3. The pull request
 
 Follow [the pull request template](pull_request_template.md): a summary that links the issue
-(`Closes #123`), the list of changes and the checklist. Every user-facing change gets docs and an
-entry in `CHANGELOG.md` under `[Unreleased]`. One fix per pull request. Commit messages use
+(`Closes #123`), the list of changes and the checklist. Every user-facing change gets docs and a
+changelog fragment in `changes/` (`<slug>.<section>.md`, see `changes/README.md`); do not edit
+`CHANGELOG.md` directly. One fix per pull request. Commit messages use
 Conventional Commits (`fix(connectors): ...`).
 
 ## Rules

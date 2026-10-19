@@ -4,6 +4,7 @@ record, emits events to the store, the dashboard and notifications."""
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import datetime as _dt
 import hashlib
 import inspect
@@ -388,12 +389,15 @@ class Runner:
         self._polars_fed: set[str] = set()
         # router id -> target step id -> the records routed to it this run (#299)
         self._routed: dict[str, dict[str, Records]] = {}
+        self._outputs: dict = {}
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
         self._source_records: dict[str, int] = {}  # records read by steps without inputs, this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
-        self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
+        self.listeners.append(
+            Notifier(spec.notify, spec.name, summarize=self._summarize, records=self._step_records)
+        )
         from . import lineage
 
         lineage_cfg = lineage.from_env(spec.lineage)
@@ -416,6 +420,11 @@ class Runner:
             self.store.event(run_id, type, step, data)
             for listener in self.listeners:
                 listener(event)
+
+    def _step_records(self, step_id: str) -> list | None:
+        """The records a step produced in the current run (for `notify` rules `on: records`)."""
+        out = self._outputs.get(step_id)
+        return out.to_pylist() if out is not None and _is_table(out) else out
 
     # llm ----------------------------------------------------------------
     def _provider(self, name: str) -> llm.Provider:
@@ -2165,9 +2174,21 @@ class Runner:
                     for step_id in [i for i in pending if deps[i] <= done][: limit - len(running)]:
                         pending.remove(step_id)
                         if step_id in chains:
-                            future = pool.submit(self._run_chain, run_id, chains[step_id], result)
+                            future = pool.submit(
+                                contextvars.copy_context().run,
+                                self._run_chain,
+                                run_id,
+                                chains[step_id],
+                                result,
+                            )
                         else:
-                            future = pool.submit(self._run_one, run_id, self.spec.step(step_id), result)
+                            future = pool.submit(
+                                contextvars.copy_context().run,
+                                self._run_one,
+                                run_id,
+                                self.spec.step(step_id),
+                                result,
+                            )
                         running[future] = step_id
                 if not running:
                     break
@@ -2219,7 +2240,9 @@ class Runner:
     def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
+        self._outputs = result.outputs
         self._source_records = {}
+        registry._RUN_ID.set(run_id)
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
         self._emit(run_id, "run.started", steps=len(self.spec.steps))
         started = time.time()
