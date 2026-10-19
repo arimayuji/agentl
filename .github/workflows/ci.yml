@@ -125,6 +125,32 @@ jobs:
       - if: needs.changes.outputs.code == 'true'
         run: pytest -o addopts="" -q
 
+  lowest:
+    # The core at the lowest versions pyproject.toml allows (pyyaml, pydantic) on the oldest Python:
+    # catches a floor that is too low. uv and the test tools come hash-locked from lowest.txt.
+    needs: changes
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements/lowest.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install --require-hashes -r requirements/lowest.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: uv pip install --system --resolution lowest-direct .
+      - if: needs.changes.outputs.code == 'true'
+        run: pip list
+      - if: needs.changes.outputs.code == 'true'
+        run: pytest -o addopts="" -q
+
   build:
     needs: changes
     runs-on: ubuntu-latest
