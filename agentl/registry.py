@@ -40,6 +40,18 @@ class Rejects(list):
         self.rejected = list(rejected)
 
 
+class Changes(Rejects):
+    """A writer's output with `emit: changes` (#289): the records it inserted, updated or deleted,
+    each with `_change` (and `_before` for updates), so a downstream step consumes the diff. The
+    usual summary record (written and the counts) rides along in `summary` for the run's counts."""
+
+    def __init__(
+        self, changes: Iterable[dict] = (), summary: Iterable[dict] = (), rejected: Iterable[dict] = ()
+    ):
+        super().__init__(changes, rejected)
+        self.summary = list(summary)
+
+
 def connector(name: str) -> Callable[[Connector], Connector]:
     def deco(fn: Connector) -> Connector:
         _CONNECTORS[name] = fn
@@ -244,6 +256,14 @@ def require(module: str, extra: str) -> Any:
         return import_module(module)
     except ImportError as e:
         raise ImportError(f"this connector needs '{module}': pip install 'agentl-etl[{extra}]'") from e
+
+
+# The id of the run a connector is called from (`{run_id}` in writer paths); None outside a run.
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("agentl_run_id", default=None)
+
+
+def current_run_id() -> str | None:
+    return _RUN_ID.get()
 
 
 # ---------------------------------------------------------------- after the run

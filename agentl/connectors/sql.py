@@ -8,12 +8,16 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from ..registry import Rejects, connector, stream_reader, stream_writer
+from ..registry import Changes, Rejects, connector, stream_reader, stream_writer
 from ._util import (
+    CHECKSUMS_TABLE,
     SCD2_COLUMNS,
+    PartitionSums,
+    before,
     changeset_options,
     check_scd2_columns,
     check_update_columns,
+    emit_option,
     null_keys,
     scd2_options,
     single,
@@ -65,6 +69,8 @@ def sqlite_write_chunks(
     deletes: str | dict | None = None,
     partition_by: str | list[str] | None = None,
     dry_run: bool = False,
+    checksums: bool = False,
+    emit: str | None = None,
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
@@ -83,9 +89,10 @@ def sqlite_write_chunks(
             f"sqlite.write mode must be append, replace, upsert, scd2 or changeset, got {mode!r}"
         )
     keys = [key] if isinstance(key, str) else list(key or [])
-    drop, parts = changeset_options("sqlite.write", mode, keys, deletes, partition_by, dry_run)
+    drop, parts = changeset_options("sqlite.write", mode, keys, deletes, partition_by, dry_run, checksums)
+    emit_option("sqlite.write", mode, emit)
     if mode == "changeset":
-        return _changeset(chunks, db, table, keys, drop, parts, dry_run)
+        return _changeset(chunks, db, table, keys, drop, parts, dry_run, checksums, emit)
     if mode == "upsert" and not keys:
         raise ValueError(
             "sqlite.write mode: upsert needs `key` (the column, or columns, that identify a row)"
@@ -258,10 +265,17 @@ def _changeset(
     drop: str,
     parts: list[str],
     dry_run: bool,
+    checksums: bool = False,
+    emit: str | None = None,
 ) -> list[dict]:
     """mode: changeset. Every chunk is staged in a temp table first (deletes need the whole
     source), then the diff with the table runs as a handful of set-based statements. With
-    `dry_run` the counts are computed and nothing in the database changes."""
+    `dry_run` the counts are computed and nothing in the database changes. With `checksums`,
+    staged rows of a partition whose checksum equals the stored one are marked `_skip` (and `_hit`)
+    and left out of the comparison and of the deletes."""
+    sums = PartitionSums(parts) if checksums else None
+    changes: list[dict] | None = [] if emit_option("sqlite.write", "changeset", emit) else None
+    skipped = 0
     cols: list[str] = []
     rejected: list[dict] = []  # null keys cannot be matched to a row, as in upsert
     if db and db != ":memory:" and not dry_run:
@@ -271,10 +285,12 @@ def _changeset(
         for rows in chunks:
             rows, bad = null_keys("sqlite.write", list(rows), keys)
             rejected.extend(bad)
+            if sums:
+                sums.add(rows)
             new = [k for k in dict.fromkeys(k for r in rows for k in r) if k not in cols]
             for c in new:
                 if not cols:
-                    conn.execute(f"CREATE TEMP TABLE {_STAGE} ({_quote(c)}, _hit, _diff)")
+                    conn.execute(f"CREATE TEMP TABLE {_STAGE} ({_quote(c)}, _hit, _diff, _skip)")
                 else:
                     conn.execute(f"ALTER TABLE temp.{_STAGE} ADD COLUMN {_quote(c)}")
                 cols.append(c)
@@ -289,8 +305,10 @@ def _changeset(
         if not cols:
             if not have:  # no source rows and no table: nothing to compare
                 empty = [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                if changes is not None:
+                    return Changes([], empty, rejected)
                 return Rejects(empty, rejected) if rejected else empty
-            conn.execute(f"CREATE TEMP TABLE {_STAGE} ({', '.join(map(_quote, keys))}, _hit, _diff)")
+            conn.execute(f"CREATE TEMP TABLE {_STAGE} ({', '.join(map(_quote, keys))}, _hit, _diff, _skip)")
             cols = list(keys)
         if missing := [k for k in keys if k not in cols]:
             raise ValueError(f"sqlite.write: key column(s) not in records: {missing}")
@@ -307,6 +325,11 @@ def _changeset(
                 f"CREATE INDEX temp._agentl_changeset_p ON {_STAGE} ({', '.join(map(_quote, parts))})"
             )
         total = conn.execute(f"SELECT count(*) FROM temp.{_STAGE}").fetchone()[0]
+        if sums and have:
+            equal = sums.equal(_stored_sums(conn, table))
+            where = " AND ".join(f"{_quote(p)} IS ?" for p in parts)
+            conn.executemany(f"UPDATE temp.{_STAGE} SET _hit = 1, _skip = 1 WHERE {where}", equal)
+            skipped = len(equal)
         rest = [c for c in cols if c not in keys]
         match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
         inserted = updated = deleted = 0
@@ -321,11 +344,14 @@ def _changeset(
                 )
                 or "0"
             )
-            scan = f'SELECT s.rowid FROM "{table}" AS t CROSS JOIN temp.{_STAGE} AS s WHERE {match}'
+            scan = (
+                f'SELECT s.rowid FROM "{table}" AS t CROSS JOIN temp.{_STAGE} AS s '
+                f"WHERE s._skip IS NULL AND {match}"
+            )
             conn.execute(f"UPDATE temp.{_STAGE} SET _hit = 1 WHERE rowid IN ({scan})")
             conn.execute(f"UPDATE temp.{_STAGE} SET _diff = 1 WHERE rowid IN ({scan} AND ({differs}))")
             updated = conn.execute(f"SELECT count(*) FROM temp.{_STAGE} WHERE _diff = 1").fetchone()[0]
-            gone = _gone(table, keys, drop, parts)
+            gone = _gone(table, keys, drop, parts, skipped > 0)
             if gone:
                 deleted = conn.execute(f'SELECT count(*) FROM "{table}" AS t WHERE {gone}').fetchone()[0]
         inserted = total - conn.execute(f"SELECT count(*) FROM temp.{_STAGE} WHERE _hit = 1").fetchone()[0]
@@ -339,6 +365,8 @@ def _changeset(
                 f"(SELECT (max(s._hit IS NULL OR s._diff = 1){lost}) AS ch "
                 f"FROM temp.{_STAGE} AS s GROUP BY {plist})"
             ).fetchone()
+        if changes is not None:
+            changes.extend(_changes(conn, table, cols, keys, have, gone if deleted else "", match))
         if not dry_run and (inserted or updated or deleted or not have):
             names = ", ".join(map(_quote, cols))
             if not have:
@@ -361,23 +389,92 @@ def _changeset(
                 conn.execute(
                     f'INSERT INTO "{table}" ({names}) SELECT {names} FROM temp.{_STAGE} WHERE _hit IS NULL'
                 )
+        if sums and not dry_run:
+            _save_sums(conn, table, sums.digests(), drop == "missing")
         conn.execute(f"DROP TABLE temp.{_STAGE}")
     out = _counts(table, total, inserted, updated, deleted, total - inserted - updated, dry_run, parts)
     if parts:
         out.update(partitions=total_parts, partitions_unchanged=total_parts - changed_parts)
+    if sums:
+        out["partitions_skipped"] = skipped
+    if changes is not None:
+        return Changes(changes, [out], rejected)
     return Rejects([out], rejected) if rejected else [out]
 
 
-def _gone(table: str, keys: list[str], drop: str, parts: list[str]) -> str:
-    """WHERE clause (on the table aliased `t`) for rows the changeset deletes; empty for none."""
+def _changes(
+    conn: sqlite3.Connection,
+    table: str,
+    cols: list[str],
+    keys: list[str],
+    have: list[str],
+    gone: str,
+    match: str,
+) -> list[dict]:
+    """The records a changeset is about to write, read before it writes them: inserted and updated
+    ones as the source has them (updates with `_before`, the stored value of each changed column),
+    deleted ones as the table has them."""
+    names = ", ".join(f"s.{_quote(c)}" for c in cols)
+    out: list[dict] = []
+    for row in conn.execute(f"SELECT {names} FROM temp.{_STAGE} AS s WHERE s._hit IS NULL ORDER BY s.rowid"):
+        out.append({**dict(zip(cols, row, strict=True)), "_change": "inserted"})
+    if not have:
+        return out
+    rest = [c for c in cols if c not in keys]
+    old = [c for c in rest if c in have]
+    olds = "".join(f", t.{_quote(c)}" for c in old)
+    q = (
+        f'SELECT {names}{olds} FROM temp.{_STAGE} AS s JOIN "{table}" AS t ON {match} '
+        "WHERE s._diff = 1 ORDER BY s.rowid"
+    )
+    for row in conn.execute(q):
+        new = dict(zip(cols, row[: len(cols)], strict=True))
+        prev = dict(zip(old, row[len(cols) :], strict=True))
+        out.append({**new, "_change": "updated", "_before": before(new, prev, rest)})
+    if gone:
+        t_names = ", ".join(f"t.{_quote(c)}" for c in have)
+        for row in conn.execute(f'SELECT {t_names} FROM "{table}" AS t WHERE {gone} ORDER BY t.rowid'):
+            out.append({**dict(zip(have, row, strict=True)), "_change": "deleted"})
+    return out
+
+
+def _gone(table: str, keys: list[str], drop: str, parts: list[str], skip: bool = False) -> str:
+    """WHERE clause (on the table aliased `t`) for rows the changeset deletes; empty for none.
+    Rows in a partition skipped by checksum are never deleted."""
     if drop == "none":
         return ""
     match = " AND ".join(f"t.{_quote(k)} IS s.{_quote(k)}" for k in keys)
     cond = f"NOT EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE {match})"
+    pmatch = " AND ".join(f"t.{_quote(p)} IS s.{_quote(p)}" for p in parts)
     if drop == "partition_replaced":
-        pmatch = " AND ".join(f"t.{_quote(p)} IS s.{_quote(p)}" for p in parts)
         cond += f" AND EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE {pmatch})"
+    if skip:
+        cond += f" AND NOT EXISTS (SELECT 1 FROM temp.{_STAGE} AS s WHERE s._skip = 1 AND {pmatch})"
     return cond
+
+
+def _stored_sums(conn: sqlite3.Connection, table: str) -> dict[str, str]:
+    """Partition checksums the last changeset write of `table` stored (empty when none)."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", [CHECKSUMS_TABLE]).fetchone():
+        return {}
+    rows = conn.execute(f"SELECT part, digest FROM {_quote(CHECKSUMS_TABLE)} WHERE tbl = ?", [table])
+    return dict(rows.fetchall())
+
+
+def _save_sums(conn: sqlite3.Connection, table: str, digests: dict[str, str], replace: bool) -> None:
+    """Store the source checksums; `replace` (deletes: missing) also forgets partitions the source
+    no longer has, since their rows were deleted. Unchanged digests are not rewritten."""
+    q = _quote(CHECKSUMS_TABLE)
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {q} (tbl TEXT, part TEXT, digest TEXT, PRIMARY KEY (tbl, part))"
+    )
+    stored = _stored_sums(conn, table)
+    if replace and (old := [(table, p) for p in stored if p not in digests]):
+        conn.executemany(f"DELETE FROM {q} WHERE tbl = ? AND part = ?", old)
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {q} (tbl, part, digest) VALUES (?, ?, ?)",
+        [(table, p, d) for p, d in digests.items() if stored.get(p) != d],
+    )
 
 
 def _counts(
@@ -483,6 +580,8 @@ def sqlite_write(
     deletes: str | dict | None = None,
     partition_by: str | list[str] | None = None,
     dry_run: bool = False,
+    checksums: bool = False,
+    emit: str | None = None,
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
@@ -494,7 +593,10 @@ def sqlite_write(
     the update to those columns. The result reports inserted, updated and unchanged.
     mode: changeset compares with the table and writes only what changed; `deletes: missing` (or
     `partition_replaced` with `partition_by`) also removes rows the source no longer has, and
-    `dry_run: true` reports the counts without writing.
+    `dry_run: true` reports the counts without writing; `checksums: true` (with `partition_by`)
+    skips partitions whose records match the checksum stored by the last changeset write;
+    `emit: changes` returns the inserted, updated and deleted records (`_change`, `_before`)
+    instead of the counts.
     scd2 keeps history (slowly changing dimension type 2) in `valid_from`, `valid_to` (NULL while
     current) and `is_current`: a record whose `track` columns (default: all but the key) changed
     closes the current version and adds a new one; on_missing: close also closes keys absent
@@ -511,6 +613,8 @@ def sqlite_write(
         deletes=deletes,
         partition_by=partition_by,
         dry_run=dry_run,
+        checksums=checksums,
+        emit=emit,
         track=track,
         on_missing=on_missing,
         as_of=as_of,

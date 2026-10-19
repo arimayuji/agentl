@@ -135,9 +135,18 @@ class _Builder(HTMLParser):
 
 def parse(html: str) -> Node:
     b = _Builder()
-    b.feed(html)
-    b.close()
+    _feed(b, html)
     return b.root
+
+
+def _feed(parser: HTMLParser, html: str) -> None:
+    """Feed and close, keeping what was parsed so far when markup is too broken: older Python
+    releases raise AssertionError from html.parser on input like '<![' followed by junk."""
+    try:
+        parser.feed(html)
+        parser.close()
+    except AssertionError:
+        pass
 
 
 # ---------------------------------------------------------------- CSS selectors

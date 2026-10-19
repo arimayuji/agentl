@@ -49,6 +49,7 @@ def _no_network(monkeypatch):
         raise AssertionError("agentl report must not use the network")
 
     monkeypatch.setattr("socket.socket.connect", refuse)
+    monkeypatch.setattr(report.subprocess, "run", refuse)  # never the real gh
 
 
 def test_mask_yaml():
@@ -148,3 +149,125 @@ def test_failed_run_with_internal_error_prints_hint(tmp_path, monkeypatch, capsy
     assert main(["run", "p.yaml", "--no-check", "--db", str(tmp_path / "s.db")]) == 1
     err = capsys.readouterr().err
     assert "Looks like an agentl bug: run `agentl report " in err
+
+
+TRACE = """Traceback (most recent call last):
+  File "/venv/lib/agentl/runner.py", line 120, in run_step
+    out = fn(rows)
+  File "/venv/lib/agentl/connectors/files.py", line 88, in read_csv
+    return rows[0].keys()
+AttributeError: 'NoneType' object has no attribute 'keys'
+"""
+
+
+def test_fingerprint_uses_class_top_agentl_frame_and_version():
+    fp = report.fingerprint(None, TRACE, "1.0.0")
+    assert fp.startswith("agentl-fp-") and len(fp) == len("agentl-fp-") + 12
+    moved = TRACE.replace("line 88", "line 90")  # line numbers do not matter
+    assert report.fingerprint(None, moved, "1.0.0") == fp
+    assert report.fingerprint(None, TRACE, "1.0.1") != fp
+    assert report.fingerprint("TypeError: x", TRACE, "1.0.0") != fp
+    assert report._top_frame(TRACE) == "agentl/connectors/files.py:read_csv"
+
+
+def test_fingerprint_is_in_the_body(tmp_path, monkeypatch):
+    path, run_id = _setup(tmp_path, monkeypatch)
+    with Store(tmp_path / "s.db") as store:
+        r = report.build(store, run_id, str(path))
+    assert f"Fingerprint: `{r['fingerprint']}`" in r["markdown"]
+    assert r["fingerprint"] in parse_qs(urlparse(r["url"]).query)["what"][0]
+
+
+class FakeGh:
+    def __init__(self, search="[]", create_code=0):
+        self.calls = []
+        self.search, self.create_code = search, create_code
+
+    def __call__(self, cmd, input=None, **kw):
+        import subprocess
+
+        self.calls.append((cmd, input))
+        if cmd[1] == "search":
+            return subprocess.CompletedProcess(cmd, 0, self.search, "")
+        return subprocess.CompletedProcess(
+            cmd, self.create_code, "https://github.com/arimayuji/agentl/issues/999\n", "boom"
+        )
+
+
+REPORT = {"title": "[bug] x", "markdown": "body fp", "fingerprint": "agentl-fp-abc", "url": "https://u"}
+
+
+def test_submit_without_gh_falls_back_to_url(monkeypatch):
+    monkeypatch.setattr(report.shutil, "which", lambda name: None)
+    got = report.submit(REPORT, lambda q: True, FakeGh())
+    assert got == {"status": "no_gh", "url": "https://u"}
+    assert "https://u" in report.submit_text(got)
+
+
+def test_submit_shows_duplicates_and_files_nothing(monkeypatch):
+    monkeypatch.setattr(report.shutil, "which", lambda name: "/usr/bin/gh")
+    gh = FakeGh(search=json.dumps([{"number": 7, "title": "old", "url": "https://i/7", "state": "OPEN"}]))
+    asked = []
+    got = report.submit(REPORT, lambda q: asked.append(q) or True, gh)
+    assert got["status"] == "duplicate" and not asked
+    assert [c[0][1] for c in gh.calls] == ["search"] and '"agentl-fp-abc"' in gh.calls[0][0]
+    assert "#7" in report.submit_text(got)
+
+
+def test_submit_asks_then_creates(monkeypatch):
+    monkeypatch.setattr(report.shutil, "which", lambda name: "/usr/bin/gh")
+    gh = FakeGh()
+    assert report.submit(REPORT, lambda q: False, gh)["status"] == "declined"
+    assert [c[0][1] for c in gh.calls] == ["search"]
+    got = report.submit(REPORT, lambda q: True, gh)
+    assert got == {"status": "created", "url": "https://github.com/arimayuji/agentl/issues/999"}
+    cmd, body = gh.calls[-1]
+    assert cmd[1:3] == ["issue", "create"] and "--body-file" in cmd and body == "body fp"
+    assert report.submit(REPORT, lambda q: True, FakeGh(create_code=1))["status"] == "failed"
+
+
+def test_cli_submit_confirms(tmp_path, monkeypatch, capsys):
+    _, run_id = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(report.shutil, "which", lambda name: "/usr/bin/gh")
+    gh = FakeGh()
+    monkeypatch.setattr(report.subprocess, "run", gh)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert main(["report", run_id, "--db", str(tmp_path / "s.db"), "--submit"]) == 0
+    assert "Not filed" in capsys.readouterr().out and len(gh.calls) == 1
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert main(["report", run_id, "--db", str(tmp_path / "s.db"), "--submit"]) == 0
+    assert "Filed: https://github.com/arimayuji/agentl/issues/999" in capsys.readouterr().out
+
+
+def _broken_run(tmp_path, monkeypatch, extra=""):
+    from agentl import connector
+
+    @connector("test.report_broken2")
+    def broken(input, **params):
+        raise AttributeError("'NoneType' object has no attribute 'rows'")
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "p.yaml").write_text(f"name: x\n{extra}steps:\n  - id: a\n    use: test.report_broken2\n")
+    return main(["run", "p.yaml", "--no-check", "--db", str(tmp_path / "s.db")])
+
+
+def test_on_bug_off_prints_nothing(tmp_path, monkeypatch, capsys):
+    assert _broken_run(tmp_path, monkeypatch, "report: {on_bug: off}\n") == 1
+    assert "Looks like" not in capsys.readouterr().err
+
+
+def test_on_bug_open_opens_the_form(tmp_path, monkeypatch, capsys):
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    assert _broken_run(tmp_path, monkeypatch, "report: {on_bug: open}\n") == 1
+    err = capsys.readouterr().err
+    assert "Looks like an agentl bug" in err and "nothing is submitted" in err
+    assert opened and "issues/new" in opened[0]
+
+
+def test_on_bug_is_validated():
+    from agentl.spec import SpecError, parse
+
+    assert parse({"name": "x", "steps": []}).report.on_bug == "prompt"
+    with pytest.raises((SpecError, ValueError)):
+        parse({"name": "x", "steps": [], "report": {"on_bug": "always"}})

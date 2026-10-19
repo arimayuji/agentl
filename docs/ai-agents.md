@@ -117,7 +117,9 @@ before side effects ask before running a pipeline or writing a file. It runs wit
 
 When agentl itself fails (an internal error, a missing connector, a confusing message), ask your
 agent to draft the issue: the `report` MCP tool, or `agentl report --pipeline p.yaml` in a terminal,
-builds it locally and sends nothing. To go on to a fix pull request, point the agent at
+builds it locally and sends nothing. `agentl report --submit` files it with the user's `gh`
+after asking, and shows existing issues with the same fingerprint instead of a duplicate; an agent
+asks the user before running it. To go on to a fix pull request, point the agent at
 [CONTRIBUTING_AI.md](https://github.com/arimayuji/agentl/blob/main/.github/CONTRIBUTING_AI.md):
 setup, where connectors and steps live, how to add a test, the checks and the rules.
 

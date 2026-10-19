@@ -1,0 +1,8 @@
+<!-- English with search wording that points people at real terms. Used through theme.language: custom. -->
+{% import "partials/languages/en.html" as language %}
+{% macro t(key) %}{{ {
+  "language": "en",
+  "search.placeholder": "Search docs, connectors and steps",
+  "search.result.placeholder": "Try a connector, a step or a command: postgres.write, critic, retries, agentl cost",
+  "search.result.none": "Nothing found. Try a connector name (csv.read) or a command (agentl run)",
+}[key] or language.t(key) }}{% endmacro %}

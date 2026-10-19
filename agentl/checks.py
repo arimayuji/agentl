@@ -133,11 +133,12 @@ def run_expectations(
     rejected: dict[str, tuple[int, int]] | None = None,
     step: str = "",
     history: list[dict[str, Any]] | None = None,
+    protected: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     """Failed expectations as [{check, detail}]. `previous` is the profile of the last passing run;
     `rejected` maps a step to (rejected records, records it saw) in this run; `step` is the
     checked step, for `rejected_rate` given as a single limit; `history` holds the profiles of
-    the passing runs, newest first, for `vs_runs`."""
+    the passing runs, newest first, for `vs_runs`; values of `protected` fields are never shown."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
     fails: list[dict[str, str]] = []
 
@@ -157,12 +158,18 @@ def run_expectations(
                 if nulls:
                     fail("not_null", f"{c}: {nulls} empty value{'s' if nulls != 1 else ''}")
         elif key == "unique":
-            for c in _names(rule):
-                counts = Counter(str(r.get(c)) for r in records if not _empty(r.get(c)))
-                dup = sum(k - 1 for k in counts.values() if k > 1)
-                if dup:
-                    example = next(v for v, k in counts.items() if k > 1)
-                    fail("unique", f"{c}: {dup} duplicate{'s' if dup != 1 else ''} (e.g. {example!r})")
+            for cols in unique_keys(rule):
+                counts = Counter(k for k in (_key(r, cols) for r in records) if k is not None)
+                dups = [(k, c) for k, c in counts.items() if c > 1]
+                if dups:
+                    extra = sum(c - 1 for _, c in dups)
+                    shown = ", ".join(_show_key(cols, k, protected) for k, _ in dups[:3])
+                    more = f", {len(dups) - 3} more key(s)" if len(dups) > 3 else ""
+                    fail(
+                        "unique",
+                        f"{'+'.join(cols)}: {extra} duplicate{'s' if extra != 1 else ''} in "
+                        f"{len(dups)} key{'s' if len(dups) != 1 else ''} (e.g. {shown}{more})",
+                    )
         elif key == "accepted":
             for c, allowed in rule.items():
                 ok = {str(a) for a in allowed}
@@ -266,7 +273,9 @@ def _change(
         fail(check, f"{label}: {after:g} vs {before:g} on {against} ({delta:+.0%}, limit {limit:.0%})")
 
 
-def failing_rows(records: Records, key: str, rule: Any) -> dict[int, str]:
+def failing_rows(
+    records: Records, key: str, rule: Any, protected: set[str] | frozenset[str] = frozenset()
+) -> dict[int, str]:
     """Index -> reason for each record a row rule (`ROW_RULES`) fails, for `severity: reject`.
     For `unique`, the first record with a value is kept and the later ones are rejected."""
     bad: dict[int, str] = {}
@@ -276,15 +285,15 @@ def failing_rows(records: Records, key: str, rule: Any) -> dict[int, str]:
                 if _empty(r.get(c)):
                     bad.setdefault(i, f"not_null: {c} is empty")
     elif key == "unique":
-        for c in _names(rule):
-            seen: set[str] = set()
+        for cols in unique_keys(rule):
+            seen: set[tuple[str, ...]] = set()
             for i, r in enumerate(records):
-                if _empty(r.get(c)):
+                k = _key(r, cols)
+                if k is None:
                     continue
-                v = str(r.get(c))
-                if v in seen:
-                    bad.setdefault(i, f"unique: duplicate {c} {v!r}")
-                seen.add(v)
+                if k in seen:
+                    bad.setdefault(i, f"unique: duplicate {'+'.join(cols)} {_show_key(cols, k, protected)}")
+                seen.add(k)
     elif key == "accepted":
         for c, allowed in rule.items():
             ok = {str(a) for a in allowed}
@@ -300,6 +309,32 @@ def failing_rows(records: Records, key: str, rule: Any) -> dict[int, str]:
     else:
         raise ValueError(f"severity reject works only for row rules ({', '.join(ROW_RULES)})")
     return bad
+
+
+def unique_keys(rule: Any) -> list[tuple[str, ...]]:
+    """`unique` -> the keys to check. A string or a flat list checks each column on its own; a
+    nested list (`[[date, currency]]`) is one composite key. The two mix: `[id, [date, currency]]`."""
+    items = [rule] if isinstance(rule, str) else rule
+    if not isinstance(items, list) or not items:
+        raise ValueError("unique: use a column, a list of columns, or lists of columns for composite keys")
+    out: list[tuple[str, ...]] = []
+    for item in items:
+        cols = [item] if isinstance(item, str) else item
+        if not isinstance(cols, list) or not cols or not all(isinstance(c, str) and c for c in cols):
+            raise ValueError(f"unique: {item!r} is not a column name or a non-empty list of column names")
+        out.append(tuple(cols))
+    return out
+
+
+def _key(r: dict[str, Any], cols: tuple[str, ...]) -> tuple[str, ...] | None:
+    """The key of a record, or None when one of its columns is empty (that is not_null's job)."""
+    values = [r.get(c) for c in cols]
+    return None if any(_empty(v) for v in values) else tuple(str(v) for v in values)
+
+
+def _show_key(cols: tuple[str, ...], key: tuple[str, ...], protected: set[str] | frozenset[str]) -> str:
+    shown = ["<protected>" if c in protected else repr(v) for c, v in zip(cols, key, strict=True)]
+    return shown[0] if len(shown) == 1 else f"({', '.join(shown)})"
 
 
 def _names(value: str | list[str]) -> list[str]:
