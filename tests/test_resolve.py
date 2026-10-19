@@ -166,3 +166,51 @@ def test_reference_from_a_previous_step(store):
     )
     res = Runner(spec, store=store).run()
     assert [r["region_match"] for r in res.outputs["match"]] == ["MG"]
+
+
+# ---------------------------------------------------------------- fuzzy backends
+def _block_rapidfuzz(monkeypatch):
+    import builtins
+
+    real = builtins.__import__
+
+    def fake(name, *args, **kwargs):
+        if name == "rapidfuzz" or name.startswith("rapidfuzz."):
+            raise ImportError("blocked for the test")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake)
+
+
+def test_difflib_backend_without_rapidfuzz(monkeypatch):
+    import difflib
+
+    from agentl import resolve as mod
+
+    _block_rapidfuzz(monkeypatch)
+    score = mod._scorer()
+    assert score("rio de janiero", "rio de janeiro") == pytest.approx(
+        difflib.SequenceMatcher(None, "rio de janiero", "rio de janeiro").ratio()
+    )
+    out, counts, _ = resolve([{"region": "Rio de Janiero"}], REGIONS, "region", threshold=0.85)
+    assert out[0]["region_match"] == "RJ" and counts["fuzzy"] == 1
+
+
+def test_rapidfuzz_backend_is_used_when_installed(monkeypatch):
+    import sys
+    import types
+
+    from agentl import resolve as mod
+
+    calls = []
+    fuzz = types.SimpleNamespace(ratio=lambda a, b: calls.append((a, b)) or 50.0)
+    pkg = types.ModuleType("rapidfuzz")
+    pkg.fuzz = fuzz  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidfuzz", pkg)
+    assert mod._scorer()("a", "b") == 0.5 and calls == [("a", "b")]
+
+
+def test_real_rapidfuzz_agrees_on_the_match():
+    pytest.importorskip("rapidfuzz")
+    out, counts, _ = resolve([{"region": "Rio de Janiero"}], REGIONS, "region", threshold=0.85)
+    assert out[0]["region_match"] == "RJ" and counts["fuzzy"] == 1
