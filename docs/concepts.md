@@ -214,6 +214,18 @@ Agent steps cache each record's result in `.agentl/agentl.db`, keyed by the inst
 the model and the record. Re-running a pipeline only pays for records that changed or failed.
 Set `cache: true` on other steps to cache them too, or run with `--no-cache` to ignore the cache.
 
+The key also holds the version of agentl's built-in prompts, so an upgrade that changes them asks
+the model again instead of serving old answers. After you edit a `fn` or change what a step should
+produce in a way the key cannot see, set `cache_version` on the step (any string or number) and
+change it whenever the old results should no longer be reused:
+
+```yaml
+- id: classify
+  agent: Classify the ticket
+  output: {category: str}
+  cache_version: 2  # bump to invalidate this step's cached answers
+```
+
 ## Run outcomes
 
 Success or failure alone hides what happened: most polling runs find nothing new, and a source that
@@ -251,6 +263,6 @@ stats` and the dashboard show the outcome.
 
 ## Events
 
-Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
+Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `llm.throttled`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
 `wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded`, `run.failed`, `run.skipped` and `run.alert` (see [run outcomes](#run-outcomes)). They feed the run store, the dashboard and
 [notifications](notifications.md).

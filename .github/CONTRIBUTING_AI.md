@@ -16,6 +16,7 @@ agentl report --pipeline pipeline.yaml          # the latest failed run
 agentl report RUN_ID --pipeline pipeline.yaml -o bug.md
 agentl report --crash                           # the last CLI crash (a Python traceback)
 agentl report --json                            # the same, as data
+agentl report --submit                          # ask, then file it with your logged-in gh
 ```
 
 With the agentl MCP server (`agentl mcp`), call the read-only `report` tool instead.
@@ -23,8 +24,9 @@ With the agentl MCP server (`agentl mcp`), call the read-only `report` tool inst
 The report holds the agentl version, Python and OS, the failing step, the error and its traceback,
 what `agentl doctor` sees, the pipeline YAML with secret values and `${VAR:-default}` defaults
 masked, and a minimal repro suggestion. It ends with a prefilled GitHub issue URL (or, when that is
-too long, asks to paste the markdown into the Bug report form). `agentl report` sends nothing over
-the network.
+too long, asks to paste the markdown into the Bug report form), and a fingerprint (error class, top
+agentl frame and version) that identifies the same bug across reports. `agentl report` sends
+nothing over the network unless you pass `--submit`.
 
 Before the user files it:
 
@@ -32,7 +34,9 @@ Before the user files it:
    names, file paths, data values in the traceback).
 2. Replace the pipeline with the smallest one that still fails, with 2 or 3 made-up records and
    local files instead of real services. Run it once to confirm the same error.
-3. Search the [open issues](https://github.com/arimayuji/agentl/issues) for the same error first.
+3. Search the [open issues](https://github.com/arimayuji/agentl/issues) for the same error first
+   (`--submit` searches for the fingerprint and shows matches instead of filing a duplicate).
+4. Agents: ask the user before running `agentl report --submit`.
 
 Not a bug? A missing connector goes in the **Connector request** form, a new idea in **Feature
 request**. A confusing error message is a bug: say what you expected it to tell you.
@@ -100,8 +104,9 @@ Docs changes: `.venv/bin/pip install -e '.[docs]' && .venv/bin/mkdocs build --st
 ## 3. The pull request
 
 Follow [the pull request template](pull_request_template.md): a summary that links the issue
-(`Closes #123`), the list of changes and the checklist. Every user-facing change gets docs and an
-entry in `CHANGELOG.md` under `[Unreleased]`. One fix per pull request. Commit messages use
+(`Closes #123`), the list of changes and the checklist. Every user-facing change gets docs and a
+changelog fragment in `changes/` (`<slug>.<section>.md`, see `changes/README.md`); do not edit
+`CHANGELOG.md` directly. One fix per pull request. Commit messages use
 Conventional Commits (`fix(connectors): ...`).
 
 ## Rules

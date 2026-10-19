@@ -315,3 +315,59 @@ def test_severity_spec_errors():
     with pytest.raises(Exception, match="vs_runs"):
         check(expect={"vs_runs": {"last": 0, "rows": "10%"}})
     assert check(expect={"rows": {"min": 1}}, severity={"rows": "warn"}).steps[1].severity == {"rows": "warn"}
+
+
+# ---------------------------------------------------------------- composite unique keys (#348)
+FX = [
+    {"date": "2026-10-13", "currency": "USD", "rate": 5.4},
+    {"date": "2026-10-13", "currency": "EUR", "rate": 5.9},
+    {"date": "2026-10-14", "currency": "USD", "rate": 5.5},
+    {"date": "2026-10-14", "currency": "EUR", "rate": 6.0},
+]
+
+
+def test_flat_unique_list_checks_each_column_on_its_own():
+    fails = run_expectations(FX, {"unique": ["date", "currency"]}, None, now=NOW)
+    assert [f["detail"] for f in fails] == [
+        "date: 2 duplicates in 2 keys (e.g. '2026-10-13', '2026-10-14')",
+        "currency: 2 duplicates in 2 keys (e.g. 'USD', 'EUR')",
+    ]
+
+
+def test_nested_unique_list_is_one_composite_key():
+    assert run_expectations(FX, {"unique": [["date", "currency"]]}, None, now=NOW) == []
+    rows = [*FX, dict(FX[0]), dict(FX[0]), dict(FX[3])]
+    (f,) = run_expectations(rows, {"unique": [["date", "currency"]]}, None, now=NOW)
+    assert f["detail"] == (
+        "date+currency: 3 duplicates in 2 keys (e.g. ('2026-10-13', 'USD'), ('2026-10-14', 'EUR'))"
+    )
+
+
+def test_unique_mixes_plain_columns_and_composite_keys():
+    rows = [{**r, "id": i} for i, r in enumerate(FX)] + [{**FX[1], "id": 0}]
+    fails = run_expectations(rows, {"unique": ["id", ["date", "currency"]]}, None, now=NOW)
+    assert [f["detail"].split(":")[0] for f in fails] == ["id", "date+currency"]
+
+
+def test_unique_message_hides_protected_values_and_caps_examples():
+    rows = [{"date": "d", "email": f"u{i}@x"} for i in range(5)] * 2
+    (f,) = run_expectations(rows, {"unique": [["date", "email"]]}, None, now=NOW, protected={"email"})
+    assert "@x" not in f["detail"] and "('d', <protected>)" in f["detail"]
+    assert f["detail"].startswith("date+email: 5 duplicates in 5 keys") and "2 more key(s)" in f["detail"]
+
+
+def test_composite_unique_reject_keeps_the_first_row(tmp_path):
+    DATA["rows"] = [*FX, {**FX[2], "rate": 9.9}]
+    spec = pipeline({"unique": [["date", "currency"]]})
+    spec.steps[1].severity = {"unique": "reject"}
+    r, _ = run(tmp_path, spec)
+    assert r.status == "succeeded" and SAVED == [4]
+    assert [x["_error"] for x in r.rejected["verify"]] == [
+        "unique: duplicate date+currency ('2026-10-14', 'USD')"
+    ]
+
+
+@pytest.mark.parametrize("rule", [[], [[]], [["date", 1]], {"date": True}])
+def test_bad_unique_rule_is_rejected_at_parse(rule):
+    with pytest.raises(ValueError, match="unique"):
+        pipeline({"unique": rule})

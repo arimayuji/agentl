@@ -25,6 +25,8 @@ _WHEN = re.compile(r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?[\d.]+)\s*$")
 
 def matches(rule: Rule, event: dict) -> bool:
     kinds = [rule.on] if isinstance(rule.on, str) else rule.on
+    if "records" in kinds and event["type"] == "step.succeeded" and event.get("step") == rule.step:
+        return True  # the runner hands the step's records over; empty steps are skipped there
     if event["type"] not in kinds and "*" not in kinds:
         return False
     if not rule.when:
@@ -49,6 +51,24 @@ def format_text(event: dict, pipeline: str) -> str:
     if data.get("summary"):
         lines.append(data["summary"])
     return "\n".join(lines)
+
+
+def format_records(rows: list, template: str | None = None, max_rows: int | None = None) -> list[str]:
+    """One line per record: `template.format(**record)`, or compact JSON without a template. With
+    `max_rows`, the lines stop there and a last line says how many were left out."""
+    shown = rows if max_rows is None else rows[:max_rows]
+    lines = []
+    for r in shown:
+        if template is None or not isinstance(r, dict):
+            lines.append(json.dumps(r, ensure_ascii=False, default=str))
+            continue
+        try:
+            lines.append(template.format(**r))
+        except (KeyError, IndexError, ValueError) as e:
+            raise ValueError(f"template {template!r}: {e!r} not in record") from e
+    if len(rows) > len(shown):
+        lines.append(f"... {len(rows) - len(shown)} more")
+    return lines
 
 
 def _post(url: str, payload: dict, headers: dict | None = None) -> None:
@@ -229,11 +249,16 @@ def send(channel_name: str, channel: Channel, text: str, event: dict) -> None:
 
 class Notifier:
     def __init__(
-        self, spec: NotifySpec | None, pipeline: str, summarize: Callable[[dict], str] | None = None
+        self,
+        spec: NotifySpec | None,
+        pipeline: str,
+        summarize: Callable[[dict], str] | None = None,
+        records: Callable[[str], list | None] | None = None,
     ):
         self.spec = spec or NotifySpec()
         self.pipeline = pipeline
         self.summarize = summarize
+        self.records = records  # step id -> the records it produced in the current run
         self._sent: set[tuple[str, str, str]] = set()
 
     def __call__(self, event: dict) -> None:
@@ -241,6 +266,11 @@ class Notifier:
             try:
                 if not matches(rule, event):
                     continue
+                rows = None
+                if rule.step and event["type"] == "step.succeeded":
+                    rows = self.records(rule.step) if self.records else None
+                    if not rows:  # `on: records` sends only when the step produced records
+                        continue
                 key = (event["type"], event.get("step") or "", json.dumps(rule.to))
                 if key in self._sent:  # one message per rule/step per run
                     continue
@@ -248,6 +278,8 @@ class Notifier:
                 if rule.summary == "agent" and self.summarize:
                     event = {**event, "data": {**event.get("data", {}), "summary": self.summarize(event)}}
                 text = format_text(event, self.pipeline)
+                if rows:
+                    text += "\n" + "\n".join(format_records(rows, rule.template, rule.max_rows))
                 for name in rule.to:
                     if name not in self.spec.channels:
                         log.warning("notify: unknown channel %s", name)

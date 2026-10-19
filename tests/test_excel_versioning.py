@@ -51,7 +51,7 @@ def test_versioned_paths():
     assert versioned("out/sales_{date}.xlsx", NOW) == "out/sales_2026-10-14.xlsx"
     assert versioned("out/sales_{datetime}.csv", NOW) == "out/sales_2026-10-14T050007.csv"
     assert versioned("out/plain.csv", NOW) == "out/plain.csv"
-    with pytest.raises(ValueError, match=r"only \{date\} and \{datetime\}"):
+    with pytest.raises(ValueError, match=r"only \{date\}, \{datetime\} and \{run_id\}"):
         versioned("out/{user}.csv")
 
 

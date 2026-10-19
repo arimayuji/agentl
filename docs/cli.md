@@ -2,6 +2,7 @@
 
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
+agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -34,6 +35,7 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
+`agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
 
 ## Run ledger and LLM cost
 
@@ -118,6 +120,7 @@ set. Exit code 2 when there are errors.
 | AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 | AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
 | AL011 | an `http.*` source has a `fallback` but no `retries`, so it switches on the first transient error |
+| AL012 | a field of a local CSV source looks like personal data in its sample and reaches an agent step with no `pii:` setting and no `protect` step for it |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
@@ -276,6 +279,11 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+The store records its schema version (`schema_version`, or `agentl_schema_version` on Postgres) and
+upgrades itself when a newer agentl opens it, keeping cache, state, seen keys and run history.
+Stores created before versioning are upgraded the same way. On Postgres, workers that start
+together take an advisory lock, so only one of them migrates; the user needs `ALTER` on the tables.
+
 Cached results can be dropped by key, by prefix or all at once:
 
 ```bash
@@ -411,6 +419,7 @@ agentl report --pipeline invoices.yaml            # the latest failed run
 agentl report 20261014-091203-ab12cd --pipeline invoices.yaml -o bug.md
 agentl report --crash                              # the last CLI crash
 agentl report --json
+agentl report --submit                             # ask, then file it with your gh account
 ```
 
 `report` builds a ready-to-paste bug report: the agentl version, Python and OS, the failing step
@@ -418,7 +427,18 @@ with its error and traceback, what `agentl doctor` sees, the pipeline YAML and a
 suggestion. It prints markdown that matches the Bug report issue form, and a prefilled
 `https://github.com/arimayuji/agentl/issues/new?template=bug_report.yml&...` URL; when the URL
 would pass 8000 characters it asks you to paste the markdown (or the `-o` file) into the form
-instead. **Nothing is sent over the network**: it only prints. Read it before you share it.
+instead. **Nothing is sent over the network** unless you pass `--submit`. Read it before you share
+it.
+
+Every report carries a fingerprint, `agentl-fp-` plus 12 hex characters, made of the error class,
+the innermost agentl frame of the traceback (file and function, no line number) and the agentl
+version. The same bug gets the same fingerprint, so it can be found among existing issues.
+
+`--submit` prints the report first, then uses your logged-in [GitHub CLI](https://cli.github.com/)
+(`gh`): it searches the agentl issues for the fingerprint and, when one matches, lists the matches
+and files nothing (add your details there with `gh issue comment`). Otherwise it asks
+`File this report as a new issue ... [y/N]` and runs `gh issue create` only on yes. Without `gh`
+installed it prints the prefilled URL instead. No project token is used: `gh` acts as you.
 
 In the YAML, `${VAR:-default}` loses its default, values of secret-looking keys (`token`,
 `password`, `dsn`, `api_key`...) that are not `${VAR}` references become `***`, and secret values
@@ -431,6 +451,15 @@ line after the error:
 
 ```text
 Looks like an agentl bug: run `agentl report <run_id>` to file it (silence with AGENTL_NO_REPORT_HINT=1)
+```
+
+Per pipeline, `report.on_bug` chooses what happens then:
+
+```yaml
+report:
+  on_bug: prompt   # the default: print the line above
+  # open: also open the prefilled issue form in the browser (nothing is submitted)
+  # off: print nothing
 ```
 
 A CLI crash keeps its traceback in `.agentl/last-crash.txt` for `agentl report --crash`. Set

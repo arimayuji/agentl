@@ -7,17 +7,22 @@ import decimal
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-from ..registry import Rejects, arrow_writer, connector, require, stream_reader, stream_writer
+from ..registry import Changes, Rejects, arrow_writer, connector, require, stream_reader, stream_writer
 from ._util import (
+    CHECKSUMS_TABLE,
+    PartitionSums,
+    before,
+    changeset_options,
     check_scd2_columns,
     check_update_columns,
+    emit_option,
     null_keys,
     scd2_options,
     single,
     upsert_options,
 )
 
-MODES = ("append", "replace", "upsert", "scd2")
+MODES = ("append", "replace", "upsert", "scd2", "changeset")
 
 
 def _pg_type(values: list[Any]) -> str:
@@ -94,13 +99,25 @@ def postgres_write_chunks(
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
+    deletes: str | dict | None = None,
+    partition_by: str | list[str] | None = None,
+    dry_run: bool = False,
+    checksums: bool = False,
+    emit: str | None = None,
 ) -> list[dict]:
     """Writes every chunk in one transaction. The table is created from the first chunk with
     records; columns that first appear later are added, typed from the chunk they appear in.
-    scd2 stages the input in a temp table and merges it once at the end (see `postgres_write`)."""
+    scd2 and changeset stage the input in a temp table and merge it once at the end (see
+    `postgres_write`)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     keys = [key] if isinstance(key, str) else list(key or [])
+    drop, parts = changeset_options("postgres.write", mode, keys, deletes, partition_by, dry_run, checksums)
+    changes = emit_option("postgres.write", mode, emit)
+    if mode == "changeset":
+        return _pg_changeset(
+            chunks, dsn, table, keys, drop, parts, dry_run, checksums, create, batch_size, changes
+        )
     if mode == "upsert" and not keys:
         raise ValueError("mode 'upsert' needs 'key'")
     conflict, upd = upsert_options("postgres.write", mode, keys, on_conflict, update_columns)
@@ -337,6 +354,292 @@ def _pg_scd2(
     }
 
 
+def _pg_changeset(
+    chunks: Iterable[list[dict]],
+    dsn: str,
+    table: str,
+    keys: list[str],
+    drop: str,
+    parts: list[str],
+    dry_run: bool,
+    checksums: bool,
+    create: bool,
+    batch_size: int,
+    emit: bool = False,
+) -> list[dict]:
+    """mode: changeset, with the semantics of `sqlite.write`: the source is staged in a temp table
+    typed like the destination (so values compare as the table stores them), then a fixed number
+    of set-based statements mark hits (`_hit`) and changed rows (`_diff`) and apply the diff.
+    `_skip` marks rows of partitions whose checksum matches the stored one."""
+    from .sql import _counts
+
+    psycopg = require("psycopg", "postgres")
+    sql = require("psycopg.sql", "postgres")
+    jsonb = require("psycopg.types.json", "postgres").Jsonb
+    ident = sql.Identifier
+    tbl = _ident(table)
+    stage = ident("_agentl_changeset")
+    sums = PartitionSums(parts) if checksums else None
+    changes: list[dict] | None = [] if emit else None
+    cols: list[str] = []
+    types: dict[str, str] = {}
+    rejected: list[dict] = []
+    skipped = 0
+
+    def val(v: Any) -> Any:
+        return jsonb(v) if isinstance(v, (dict, list)) else v
+
+    def same(cols_: list[str], a: str, b: str) -> Any:
+        return sql.SQL(" AND ").join(
+            sql.SQL("{}.{} IS NOT DISTINCT FROM {}.{}").format(ident(a), ident(c), ident(b), ident(c))
+            for c in cols_
+        )
+
+    with psycopg.connect(dsn) as conn, conn.transaction():
+        have = dict(
+            conn.execute(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a "
+                "WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped "
+                "ORDER BY a.attnum",
+                [tbl.as_string(conn)],
+            ).fetchall()
+        )
+        conn.execute(
+            sql.SQL(
+                "CREATE TEMP TABLE {} (_ord bigint GENERATED ALWAYS AS IDENTITY, _hit boolean, "
+                "_diff boolean, _skip boolean) ON COMMIT DROP"
+            ).format(stage)
+        )
+
+        def add(c: str, t: str) -> None:
+            conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(stage, ident(c), sql.SQL(t)))
+            types[c] = t
+            cols.append(c)
+
+        for rows in chunks:
+            rows, bad = null_keys("postgres.write", list(rows), keys)
+            rejected.extend(bad)
+            if sums:
+                sums.add(rows)
+            for c in dict.fromkeys(k for r in rows for k in r):
+                if c not in types:
+                    add(c, have.get(c) or _pg_type([r.get(c) for r in rows]))
+            if rows:
+                stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+                    stage,
+                    sql.SQL(", ").join(map(ident, cols)),
+                    sql.SQL(", ").join(sql.Placeholder() * len(cols)),
+                )
+                with conn.cursor() as cur:
+                    for i in range(0, len(rows), batch_size):
+                        cur.executemany(
+                            stmt, [[val(r.get(c)) for c in cols] for r in rows[i : i + batch_size]]
+                        )
+        if not cols:
+            if not have:  # no source rows and no table: nothing to compare
+                empty = [_counts(table, 0, 0, 0, 0, 0, dry_run, parts)]
+                if changes is not None:
+                    return Changes([], empty, rejected)
+                return Rejects(empty, rejected) if rejected else empty
+            for k in keys:
+                if k in have:
+                    add(k, have[k])
+        if missing := [k for k in keys if k not in cols]:
+            raise ValueError(f"postgres.write: key column(s) not in records: {missing}")
+        if have and (absent := [k for k in keys if k not in have]):
+            raise ValueError(f"postgres.write: key column(s) not in table {table!r}: {absent}")
+        if not have and not create and not dry_run:
+            raise ValueError(f"postgres.write: table {table!r} does not exist (create: false)")
+        k_ids = sql.SQL(", ").join(map(ident, keys))
+        conn.execute(  # last record of a key wins, as in upsert
+            sql.SQL("DELETE FROM {0} AS a USING {0} AS b WHERE {1} AND a._ord < b._ord").format(
+                stage, same(keys, "a", "b")
+            )
+        )
+        conn.execute(sql.SQL("CREATE INDEX ON {} ({})").format(stage, k_ids))
+        conn.execute(sql.SQL("ANALYZE {}").format(stage))
+        total = conn.execute(sql.SQL("SELECT count(*) FROM {}").format(stage)).fetchone()[0]
+        if sums and have:
+            equal = sums.equal(_pg_stored_sums(conn, sql, table))
+            if equal:
+                where = sql.SQL(" AND ").join(
+                    sql.SQL("{} IS NOT DISTINCT FROM %s").format(ident(p)) for p in parts
+                )
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        sql.SQL("UPDATE {} SET _hit = true, _skip = true WHERE {}").format(stage, where),
+                        [[val(v) for v in vals] for vals in equal],
+                    )
+            skipped = len(equal)
+        rest = [c for c in cols if c not in keys]
+        inserted = updated = deleted = 0
+        gone: Any = None
+        if have:
+            differs = (
+                sql.SQL(" OR ").join(
+                    sql.SQL("s.{0} IS DISTINCT FROM t.{0}").format(ident(c))
+                    if c in have
+                    else sql.SQL("s.{} IS NOT NULL").format(ident(c))
+                    for c in rest
+                )
+                if rest
+                else sql.SQL("false")
+            )
+            conn.execute(
+                sql.SQL(
+                    "UPDATE {} AS s SET _hit = true, _diff = ({}) FROM {} AS t WHERE s._skip IS NULL AND {}"
+                ).format(stage, differs, tbl, same(keys, "t", "s"))
+            )
+            updated = conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE _diff").format(stage)).fetchone()[0]
+            gone = _pg_gone(sql, stage, keys, drop, parts, skipped > 0)
+            if gone is not None:
+                deleted = conn.execute(
+                    sql.SQL("SELECT count(*) FROM {} AS t WHERE {}").format(tbl, gone)
+                ).fetchone()[0]
+        hits = conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE _hit").format(stage)).fetchone()[0]
+        inserted = total - hits
+        changed_parts = total_parts = 0
+        if parts:
+            plist = sql.SQL(", ").join(sql.SQL("s.{}").format(ident(p)) for p in parts)
+            lost = (
+                sql.SQL(" OR EXISTS (SELECT 1 FROM {} AS t WHERE {} AND {})").format(
+                    tbl, same(parts, "t", "s"), gone
+                )
+                if deleted
+                else sql.SQL("")
+            )
+            total_parts, changed_parts = conn.execute(
+                sql.SQL(
+                    "SELECT count(*), coalesce(sum(ch::int), 0) FROM "
+                    "(SELECT (bool_or(s._hit IS NULL OR coalesce(s._diff, false)){}) AS ch "
+                    "FROM {} AS s GROUP BY {}) AS p"
+                ).format(lost, stage, plist)
+            ).fetchone()
+        if changes is not None:
+            changes.extend(
+                _pg_changes(conn, sql, tbl, stage, cols, keys, list(have), gone if deleted else None)
+            )
+        if not dry_run and (inserted or updated or deleted or not have):
+            names = sql.SQL(", ").join(map(ident, cols))
+            if not have:
+                defs = sql.SQL(", ").join(sql.SQL("{} {}").format(ident(c), sql.SQL(types[c])) for c in cols)
+                conn.execute(sql.SQL("CREATE TABLE {} ({})").format(tbl, defs))
+            for c in cols:
+                if have and c not in have:
+                    conn.execute(
+                        sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(tbl, ident(c), sql.SQL(types[c]))
+                    )
+            if deleted:
+                conn.execute(sql.SQL("DELETE FROM {} AS t WHERE {}").format(tbl, gone))
+            if updated:
+                sets = sql.SQL(", ").join(sql.SQL("{0} = s.{0}").format(ident(c)) for c in rest)
+                conn.execute(
+                    sql.SQL("UPDATE {} AS t SET {} FROM {} AS s WHERE s._diff AND {}").format(
+                        tbl, sets, stage, same(keys, "t", "s")
+                    )
+                )
+            if inserted:
+                conn.execute(
+                    sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {} WHERE _hit IS NULL ORDER BY _ord").format(
+                        tbl, names, names, stage
+                    )
+                )
+        if sums and not dry_run:
+            _pg_save_sums(conn, sql, table, sums.digests(), drop == "missing")
+        conn.execute(sql.SQL("DROP TABLE {}").format(stage))
+    out = _counts(table, total, inserted, updated, deleted, total - inserted - updated, dry_run, parts)
+    out["mode"] = "changeset"
+    if parts:
+        out.update(partitions=total_parts, partitions_unchanged=total_parts - changed_parts)
+    if sums:
+        out["partitions_skipped"] = skipped
+    if changes is not None:
+        return Changes(changes, [out], rejected)
+    return Rejects([out], rejected) if rejected else [out]
+
+
+def _pg_changes(
+    conn: Any, sql: Any, tbl: Any, stage: Any, cols: list[str], keys: list[str], have: list[str], gone: Any
+) -> list[dict]:
+    """The records a changeset is about to write (see `sql._changes`), read before writing."""
+    ident = sql.Identifier
+    names = sql.SQL(", ").join(sql.SQL("s.{}").format(ident(c)) for c in cols)
+    out: list[dict] = []
+    q = sql.SQL("SELECT {} FROM {} AS s WHERE s._hit IS NULL ORDER BY s._ord").format(names, stage)
+    for row in conn.execute(q):
+        out.append({**dict(zip(cols, row, strict=True)), "_change": "inserted"})
+    if not have:
+        return out
+    rest = [c for c in cols if c not in keys]
+    old = [c for c in rest if c in have]
+    olds = sql.SQL("").join(sql.SQL(", t.{}").format(ident(c)) for c in old)
+    match = sql.SQL(" AND ").join(sql.SQL("t.{0} = s.{0}").format(ident(k)) for k in keys)
+    q = sql.SQL("SELECT {}{} FROM {} AS s JOIN {} AS t ON {} WHERE s._diff ORDER BY s._ord").format(
+        names, olds, stage, tbl, match
+    )
+    for row in conn.execute(q):
+        new = dict(zip(cols, row[: len(cols)], strict=True))
+        prev = dict(zip(old, row[len(cols) :], strict=True))
+        out.append({**new, "_change": "updated", "_before": before(new, prev, rest)})
+    if gone is not None:
+        t_names = sql.SQL(", ").join(sql.SQL("t.{}").format(ident(c)) for c in have)
+        q = sql.SQL("SELECT {} FROM {} AS t WHERE {} ORDER BY {}").format(
+            t_names, tbl, gone, sql.SQL(", ").join(sql.SQL("t.{}").format(ident(k)) for k in keys)
+        )
+        for row in conn.execute(q):
+            out.append({**dict(zip(have, row, strict=True)), "_change": "deleted"})
+    return out
+
+
+def _pg_gone(sql: Any, stage: Any, keys: list[str], drop: str, parts: list[str], skip: bool) -> Any:
+    """WHERE clause (on the table aliased `t`) for rows the changeset deletes; None for none."""
+    if drop == "none":
+        return None
+
+    def match(cols: list[str]) -> Any:
+        return sql.SQL(" AND ").join(
+            sql.SQL("t.{0} IS NOT DISTINCT FROM s.{0}").format(sql.Identifier(c)) for c in cols
+        )
+
+    cond = sql.SQL("NOT EXISTS (SELECT 1 FROM {} AS s WHERE {})").format(stage, match(keys))
+    if drop == "partition_replaced":
+        cond = sql.SQL("{} AND EXISTS (SELECT 1 FROM {} AS s WHERE {})").format(cond, stage, match(parts))
+    if skip:
+        cond = sql.SQL("{} AND NOT EXISTS (SELECT 1 FROM {} AS s WHERE s._skip AND {})").format(
+            cond, stage, match(parts)
+        )
+    return cond
+
+
+def _pg_stored_sums(conn: Any, sql: Any, table: str) -> dict[str, str]:
+    if not conn.execute("SELECT to_regclass(%s)", [CHECKSUMS_TABLE]).fetchone()[0]:
+        return {}
+    q = sql.SQL("SELECT part, digest FROM {} WHERE tbl = %s").format(sql.Identifier(CHECKSUMS_TABLE))
+    return dict(conn.execute(q, [table]).fetchall())
+
+
+def _pg_save_sums(conn: Any, sql: Any, table: str, digests: dict[str, str], replace: bool) -> None:
+    """Store the source checksums (see `sql._save_sums`)."""
+    q = sql.Identifier(CHECKSUMS_TABLE)
+    conn.execute(
+        sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {} (tbl text, part text, digest text, PRIMARY KEY (tbl, part))"
+        ).format(q)
+    )
+    stored = _pg_stored_sums(conn, sql, table)
+    with conn.cursor() as cur:
+        if replace and (old := [(table, p) for p in stored if p not in digests]):
+            cur.executemany(sql.SQL("DELETE FROM {} WHERE tbl = %s AND part = %s").format(q), old)
+        if new := [(table, p, d) for p, d in digests.items() if stored.get(p) != d]:
+            cur.executemany(
+                sql.SQL(
+                    "INSERT INTO {} (tbl, part, digest) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (tbl, part) DO UPDATE SET digest = EXCLUDED.digest"
+                ).format(q),
+                new,
+            )
+
+
 def _insert(
     sql: Any, tbl: Any, cols: list[str], keys: list[str], conflict: str, upd: list[str] | None
 ) -> Any:
@@ -379,6 +682,11 @@ def postgres_write(
     track: str | list[str] | None = None,
     on_missing: str | None = None,
     as_of: Any = None,
+    deletes: str | dict | None = None,
+    partition_by: str | list[str] | None = None,
+    dry_run: bool = False,
+    checksums: bool = False,
+    emit: str | None = None,
 ) -> list[dict]:
     """Write records to `table` (optionally `schema.table`).
 
@@ -392,7 +700,9 @@ def postgres_write(
     `track` columns (default: all but the key) changed closes the current version and adds a new
     one; on_missing: close also closes keys absent from the input. `as_of` (default now, needs a
     time zone) is stamped as timestamptz. The result reports inserted, versioned, unchanged
-    (and closed). All batches run in one transaction."""
+    (and closed). changeset compares with the table and writes only what changed, with
+    `deletes`, `partition_by`, `checksums`, `dry_run` and `emit` as on `sqlite.write`.
+    All batches run in one transaction."""
     return postgres_write_chunks(
         [single(input)],
         dsn=dsn,
@@ -406,6 +716,11 @@ def postgres_write(
         track=track,
         on_missing=on_missing,
         as_of=as_of,
+        deletes=deletes,
+        partition_by=partition_by,
+        dry_run=dry_run,
+        checksums=checksums,
+        emit=emit,
     )
 
 

@@ -317,3 +317,23 @@ def test_excel_to_a_shared_folder_in_one_pipeline(api, tmp_path):
 
 def rows(input=None):
     return [{"region": "south", "total": 10}]
+
+
+# ---------------------------------------------------------------- google-auth transport
+def test_google_transport_uses_urllib_without_requests(api, monkeypatch):
+    pytest.importorskip("google.auth")
+    import builtins
+
+    real = builtins.__import__
+
+    def no_requests(name, *args, **kwargs):
+        if name == "requests" or name.startswith("requests."):
+            raise ImportError("blocked for the test")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_requests)
+    req = saas._google_request()
+    ok = req(f"{api}/drive/v3/files?q=x", headers={"Authorization": "Bearer g-token"})
+    assert ok.status == 200 and isinstance(ok.data, bytes)
+    missing = req(f"{api}/nowhere", method="POST", body=b"{}", headers={"X": "1"})
+    assert missing.status == 404
