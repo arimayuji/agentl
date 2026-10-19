@@ -779,6 +779,19 @@ class Rule(BaseModel):
     to: list[str]
     when: str | None = None
     summary: str | None = None  # "agent" -> LLM summary of the run
+    # `on: records`: send the records `step` produced, only when it produced any
+    step: str | None = None
+    template: str | None = None  # one line per record, e.g. "{id}: {message}"; default JSON
+    max_rows: int = Field(default=20, ge=1)
+
+    @model_validator(mode="after")
+    def _records_rule(self) -> Rule:
+        kinds = [self.on] if isinstance(self.on, str) else self.on
+        if "records" in kinds and not self.step:
+            raise ValueError("notify rule 'on: records' needs 'step: <step id>'")
+        if self.step and "records" not in kinds:
+            raise ValueError("notify rule 'step:' is only used with 'on: records'")
+        return self
 
 
 class NotifySpec(BaseModel):
