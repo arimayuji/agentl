@@ -63,7 +63,6 @@ POSTGRES_SCHEMA = [
     "CREATE INDEX IF NOT EXISTS agentl_events_run ON agentl_events(run_id)",
     "CREATE INDEX IF NOT EXISTS agentl_runs_started ON agentl_runs(started DESC)",
     "CREATE TABLE IF NOT EXISTS agentl_cache (key TEXT PRIMARY KEY, value JSONB, ts DOUBLE PRECISION)",
-    "ALTER TABLE agentl_cache ADD COLUMN IF NOT EXISTS expires DOUBLE PRECISION",
     "CREATE TABLE IF NOT EXISTS agentl_locks (key TEXT PRIMARY KEY, owner TEXT, expires DOUBLE PRECISION)",
     """CREATE TABLE IF NOT EXISTS agentl_state (
       pipeline TEXT, step TEXT, value JSONB, run_id TEXT, ts DOUBLE PRECISION,
@@ -83,6 +82,18 @@ POSTGRES_SCHEMA = [
 ]
 
 
+# Ordered schema migrations: (version, table key in Store.T, column, SQLite type, Postgres type).
+# The base schema above only ever gains new tables (CREATE ... IF NOT EXISTS); a change to an
+# existing table is appended here and never edited. Each step is idempotent, so a store created
+# before versioning (schema_version missing) replays them all safely.
+MIGRATIONS: list[tuple[int, str, str, str, str]] = [
+    (1, "runs", "outcome", "TEXT", "TEXT"),  # run outcomes (#188)
+    (2, "runs", "labels", "TEXT", "TEXT"),  # run labels (#295)
+    (3, "cache", "expires", "REAL", "DOUBLE PRECISION"),  # cache TTLs (#204)
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+
+
 class Store:
     """SQLite store. Thread-safe within one process."""
 
@@ -96,6 +107,7 @@ class Store:
         "locks": "locks",
         "seen": "seen",
         "review": "review",
+        "schema_version": "schema_version",
     }
     INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
     UPSERT_CACHE = "INSERT OR REPLACE INTO {cache} (key, value, ts, expires) VALUES (?, ?, ?, ?)"
@@ -118,16 +130,37 @@ class Store:
         self._conn: Any = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SQLITE_SCHEMA)
-        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)")}
-        if "outcome" not in cols:  # stores created before #188
-            self._conn.execute("ALTER TABLE runs ADD COLUMN outcome TEXT")
-        if "labels" not in cols:  # stores created before run labels (#295)
-            self._conn.execute("ALTER TABLE runs ADD COLUMN labels TEXT")
+        self._conn.execute("BEGIN IMMEDIATE")  # one process migrates at a time
+        try:
+            self._migrate()
             self._conn.commit()
-        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache)")}
-        if "expires" not in cols:  # stores created before cache TTLs
-            self._conn.execute("ALTER TABLE cache ADD COLUMN expires REAL")
-            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def _migrate(self) -> None:
+        """Bring the schema to SCHEMA_VERSION. Callers hold the database write lock."""
+        table = self.T["schema_version"]
+        self._conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" (version INTEGER NOT NULL)')
+        row = self._conn.execute(f'SELECT version FROM "{table}"').fetchone()
+        current = row["version"] if row else 0
+        for version, key, column, sqlite_type, pg_type in MIGRATIONS:
+            if version > current:
+                self._add_column(self.T[key], column, sqlite_type, pg_type)
+        if row is None:
+            self._conn.execute(f'INSERT INTO "{table}" (version) VALUES ({SCHEMA_VERSION})')
+        elif current < SCHEMA_VERSION:  # a newer store (later agentl) is left alone
+            self._conn.execute(f'UPDATE "{table}" SET version = {SCHEMA_VERSION}')
+
+    def _add_column(self, table: str, column: str, sqlite_type: str, pg_type: str) -> None:
+        cols = {r[1] for r in self._conn.execute(f'PRAGMA table_info("{table}")')}
+        if column not in cols:  # stores created before versioning may already have it
+            self._conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sqlite_type}')
+
+    def schema_version(self) -> int:
+        """The store's schema version (SCHEMA_VERSION once opened)."""
+        rows = self._query("SELECT version FROM {schema_version}")
+        return int(rows[0]["version"]) if rows else 0
 
     def close(self) -> None:
         with self._lock:
@@ -597,6 +630,7 @@ class PostgresStore(Store):
         "locks": "agentl_locks",
         "seen": "agentl_seen",
         "review": "agentl_review",
+        "schema_version": "agentl_schema_version",
     }
     INSERT_SEEN = (
         "INSERT INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING"
@@ -625,10 +659,15 @@ class PostgresStore(Store):
         self.dsn = dsn
         self._lock = threading.Lock()
         self._conn = psycopg.connect(dsn, autocommit=True, row_factory=rows.dict_row)
-        for stmt in POSTGRES_SCHEMA:
-            self._conn.execute(stmt)
-        self._conn.execute("ALTER TABLE agentl_runs ADD COLUMN IF NOT EXISTS outcome TEXT")
-        self._conn.execute("ALTER TABLE agentl_runs ADD COLUMN IF NOT EXISTS labels TEXT")
+        # Workers may start together: an advisory lock serializes the schema setup.
+        with self._conn.transaction():
+            self._conn.execute("SELECT pg_advisory_xact_lock(hashtext('agentl_schema'))")
+            for stmt in POSTGRES_SCHEMA:
+                self._conn.execute(stmt)
+            self._migrate()
+
+    def _add_column(self, table: str, column: str, sqlite_type: str, pg_type: str) -> None:
+        self._conn.execute(f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{column}" {pg_type}')
 
     def _sql(self, sql: str) -> str:
         return super()._sql(sql).replace("?", "%s")

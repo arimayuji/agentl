@@ -279,6 +279,11 @@ In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
 
+The store records its schema version (`schema_version`, or `agentl_schema_version` on Postgres) and
+upgrades itself when a newer agentl opens it, keeping cache, state, seen keys and run history.
+Stores created before versioning are upgraded the same way. On Postgres, workers that start
+together take an advisory lock, so only one of them migrates; the user needs `ALTER` on the tables.
+
 Cached results can be dropped by key, by prefix or all at once:
 
 ```bash
