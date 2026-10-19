@@ -742,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("pipeline")
     sc.add_argument("--n", type=int, default=10, help="how many firings (default 10)")
 
-    mc = cmd("mcp", "serve agentl as an MCP server over stdio, or install it in an MCP client")
+    mc = cmd("mcp", "serve agentl as an MCP server (stdio or HTTP), or install it in an MCP client")
     mc.add_argument(
         "action",
         nargs="?",
@@ -762,6 +762,16 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-code",
         action="store_true",
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
+    )
+    mc.add_argument(
+        "--http",
+        metavar="[HOST]:PORT",
+        help="serve streamable HTTP at /mcp instead of stdio, e.g. :7072 (default host 127.0.0.1)",
+    )
+    mc.add_argument(
+        "--token-env",
+        default="AGENTL_MCP_TOKEN",
+        help="--http: env var holding the bearer token clients must send (default AGENTL_MCP_TOKEN)",
     )
 
     sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
@@ -1200,7 +1210,7 @@ def main(argv: list[str] | None = None) -> int:
             if a.action == "serve":
                 from .mcp_server import serve as serve_mcp
 
-                serve_mcp(a.db, a.root, a.allow_code)
+                serve_mcp(a.db, a.root, a.allow_code, http=a.http, token_env=a.token_env)
                 return 0
             return _mcp_install(a)
         if a.cmd == "dashboard" and a.action == "export":

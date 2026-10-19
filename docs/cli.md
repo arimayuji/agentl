@@ -23,6 +23,7 @@ agentl stats [PIPELINE] [--since 30d] [--label KEY=VALUE ...] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
 agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
+agentl mcp --http [HOST]:PORT [--token-env AGENTL_MCP_TOKEN] [--root DIR]   # streamable HTTP at /mcp
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
 agentl dashboard [--host 127.0.0.1] [--port 7070]
