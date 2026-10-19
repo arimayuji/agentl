@@ -1049,6 +1049,15 @@ class OutcomesSpec(BaseModel):
         return self.exit_codes.get(outcome, default)  # type: ignore[call-overload]
 
 
+class ReportSpec(BaseModel):
+    """What a failed run does when its error looks like an agentl bug (#286). `prompt` prints the
+    `agentl report` hint, `open` also opens the prefilled issue form in the browser (nothing is
+    submitted), `off` prints nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+    on_bug: Literal["prompt", "open", "off"] = "prompt"
+
+
 class WindowSpec(BaseModel):
     """Fetch windows: `${window.start}` / `${window.end}` (ISO dates, end exclusive) in a step's
     `with:`. A run re-reads the last `lookback`; `agentl backfill` covers any range. Either way the
@@ -1209,6 +1218,8 @@ class PipelineSpec(BaseModel):
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
     outcomes: OutcomesSpec = Field(default_factory=OutcomesSpec)
+    # After a failed run whose error looks like an agentl bug; see agentl.report.
+    report: ReportSpec = Field(default_factory=ReportSpec)
     concurrency: ConcurrencySpec | None = None
     # OpenLineage events for data catalogs; see agentl.lineage.
     lineage: LineageSpec | None = None

@@ -225,10 +225,29 @@ def _bug_hint(store: Any, spec: Any, result: Any) -> None:
     found = assist.diagnose(store, result.run_id)
     step = next((s for s in spec.steps if s.id == found["failed_step"]), None)
     error = (found.get("failure") or {}).get("error") or found.get("error")
-    if report.likely_bug(error, "fn" if step is not None and step.fn else None):
-        line = report.hint(result.run_id)
-        if line:
-            print(line, file=sys.stderr)
+    mode = spec.report.on_bug
+    if mode == "off" or not report.likely_bug(error, "fn" if step is not None and step.fn else None):
+        return
+    line = report.hint(result.run_id)
+    if line is None:
+        return
+    print(line, file=sys.stderr)
+    if mode == "open":
+        import webbrowser
+
+        url = (
+            report.build(store, result.run_id)["url"]
+            or f"{report.REPO}/issues/new?template={report.TEMPLATE}"
+        )
+        print(f"Opening the prefilled issue form (nothing is submitted): {url}", file=sys.stderr)
+        webbrowser.open(url)
+
+
+def _confirm(question: str) -> bool:
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
 
 
 def _report(a: argparse.Namespace) -> int:
@@ -256,6 +275,10 @@ def _report(a: argparse.Namespace) -> int:
         print(json.dumps(built, indent=2, default=str))
     else:
         print(report.text(built, a.output))
+    if a.submit:
+        result = report.submit(built, _confirm)
+        print(report.submit_text(result))
+        return 1 if result["status"] == "failed" else 0
     return 0
 
 
@@ -619,12 +642,17 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--write", metavar="PATCHED.yaml", help="write the patched YAML to this new file")
     rp.add_argument("--json", action="store_true", help="print the result as JSON")
 
-    rb = cmd("report", "a ready-to-paste bug report and prefilled issue URL (prints only, sends nothing)")
+    rb = cmd("report", "a ready-to-paste bug report and prefilled issue URL (sends nothing unless --submit)")
     rb.add_argument("run_id", nargs="?", help="default: the latest failed run")
     rb.add_argument("--pipeline", help="the pipeline file the run used (secrets are masked)")
     rb.add_argument("--crash", action="store_true", help="report the last CLI crash instead of a run")
     rb.add_argument("-o", "--output", help="also write the markdown to this file")
     rb.add_argument("--json", action="store_true", help="print the report as JSON")
+    rb.add_argument(
+        "--submit",
+        action="store_true",
+        help="after printing, ask and then file it with your logged-in gh CLI (checks for duplicates first)",
+    )
 
     st = cmd("stats", "success rate, durations, cost and failures by reason, per pipeline")
     st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
