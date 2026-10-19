@@ -258,3 +258,66 @@ steps:
     sql: select count(*) from orders
 """
     assert check_text(text).errors == []
+
+
+def test_empty_input_keeps_known_columns_for_joins(tmp_path):
+    """#288: a left join against an empty input returns every left row."""
+    import sqlite3
+
+    db = str(tmp_path / "prev.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute("create table previous (k integer, v text)")
+    query = "select r.order_id, p.v from rows r left join previous p on r.order_id = p.k order by 1"
+    r = run(
+        tmp_path,
+        {
+            "name": "p",
+            "steps": [
+                {"id": "rows", "use": "test.sql_orders"},
+                {
+                    "id": "previous",
+                    "use": "sqlite.read",
+                    "with": {"db": db, "query": "select * from previous"},
+                },
+                {
+                    "id": "j",
+                    "input": ["rows", "previous"],
+                    "sql": query,
+                },
+            ],
+        },
+    )
+    assert r.status == "succeeded", r.error
+    assert r.outputs["j"] == [{"order_id": i, "v": None} for i in (1, 2, 3)]
+    # Columns given directly (the runner passes a step's declared `schema:` or `output:`).
+    query = "select t.order_id, e.v from t left join e on t.order_id = e.k"
+    out = duck.run("s", {"t": ORDERS[:1], "e": []}, query=query, columns={"e": ["k", "v"]})
+    assert out == [{"order_id": 1, "v": None}]
+
+
+def test_empty_input_with_unknown_columns_fails_loudly_in_a_join():
+    with pytest.raises(ValueError, match=r"sql step 's'.*'e' has no records and no known columns"):
+        duck.run(
+            "s", {"t": ORDERS, "e": []}, query="select t.order_id from t left join e on t.order_id = e.k"
+        )
+
+
+def test_empty_input_uses_the_declared_schema(tmp_path):
+    r = run(
+        tmp_path,
+        {
+            "name": "p",
+            "steps": [
+                {"id": "rows", "use": "test.sql_orders"},
+                {"id": "none", "use": "test.sql_empty", "schema": {"k": "int", "v": "text"}},
+                {
+                    "id": "j",
+                    "input": ["rows", "none"],
+                    "sql": "select r.order_id, n.v from rows r left join none n on "
+                    "r.order_id = n.k order by 1",
+                },
+            ],
+        },
+    )
+    assert r.status == "succeeded", r.error
+    assert [x["order_id"] for x in r.outputs["j"]] == [1, 2, 3]

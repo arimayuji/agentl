@@ -537,6 +537,8 @@ agentl gaps pipeline.yaml --since 2025-06-01 --until 2025-06-30
 agentl gaps pipeline.yaml --json                  # missing periods, ranges and commands
 agentl gaps pipeline.yaml --commands              # also print `agentl backfill` lines
 agentl gaps pipeline.yaml --fail                  # exit 1 when something is missing
+agentl gaps pipeline.yaml --fill --max 30         # backfill only what is missing, 30 runs at most
+agentl gaps pipeline.yaml --notify ops            # send the gaps to a notify: channel
 ```
 
 `to:` defaults to the last complete period (yesterday, or the previous hour), in UTC. Values read
@@ -546,9 +548,27 @@ from the destination are normalised (dates, datetimes and ISO strings) to `forma
 `--commands` prints one `agentl backfill pipeline.yaml --from A --to B` line per contiguous run of
 missing days (with `--param key=value` for composite keys), for the `agentl backfill` command and
 run params of [#182](https://github.com/arimayuji/agentl/issues/182). Hourly gaps and custom
-formats get no lines. Running only the missing periods automatically (`--fill`, within request
-budgets) is not part of this release; for a scheduled check, run `agentl gaps --fail` from cron or
-CI and alert on the exit code.
+formats get no lines.
+
+`--fill` runs the pipeline once per missing partition through the same code as `agentl backfill`,
+so it is resumable: partitions finished in an earlier call are recorded in the run store and
+skipped. The period goes to the pipeline's only `date` param (hourly or custom `format:`
+partitions: its only `str` param that is not a composite key); pass `--param-name` when there are
+several. Composite keys are passed as params of the same name, so declare them under `params:`.
+Other `--param key=value` pairs are passed to every run. `--max N` is the run budget for one call:
+the oldest N missing partitions run and the rest are reported as deferred (with `--fail`, exit 1
+while some are deferred). `--concurrency` sets the runs at a time. Shared per-hour request budgets
+across runs are not part of this release (#212).
+
+Required params that `--param` does not give get a placeholder while `expect:` is read, so a
+pipeline with a required `day: date` param can be checked without passing one; `expect:` itself
+should not use params.
+
+For a periodic check, run `agentl gaps --notify ops` (or `--fill --notify ops`) from cron, a
+scheduler or CI. `--notify` takes a channel declared under the pipeline's `notify.channels`, is
+repeatable, and sends the summary (event type `gaps.found`, with the missing partitions as data)
+only when something is missing. A failing channel is reported on stderr and does not stop
+`--fill`; an unknown channel name exits 2.
 
 ## Diagram
 

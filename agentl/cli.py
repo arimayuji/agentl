@@ -285,21 +285,45 @@ def _report(a: argparse.Namespace) -> int:
 def _gaps(a: argparse.Namespace) -> int:
     from . import gaps
 
-    spec = load(a.pipeline)
+    spec = gaps.load_spec(a.pipeline, _params(a.param))
     if spec.expect is None:
         print(f"{a.pipeline}: no expect: block (expect.partitions and expect.present_in)", file=sys.stderr)
         return 2
     found = gaps.find(spec.expect, a.since, a.until, spec.base_dir)
-    cmds = gaps.backfill_commands(a.pipeline, found, spec.expect.partitions.fmt)
+    fmt = spec.expect.partitions.fmt
+    cmds = gaps.backfill_commands(a.pipeline, found, fmt)
+    if a.notify and found.missing:
+        _gaps_notify(spec, found, a.notify)
+    if a.fill:
+
+        def progress(item: str, status: str, err: str | None) -> None:
+            print(f"{status} {item}" + (f": {err}" if err else ""), file=sys.stderr)
+
+        filled = gaps.fill(
+            a.pipeline,
+            found,
+            fmt,
+            max_runs=a.max,
+            param=a.param_name,
+            params=_params(a.param),
+            db=a.db,
+            concurrency=a.concurrency,
+            on_done=progress,
+        )
+        if a.json:
+            print(json.dumps({**found.to_dict(), "fill": filled.to_dict()}, indent=2, ensure_ascii=False))
+        else:
+            print(gaps.summary(spec.name, found))
+            for r in filled.reports:
+                print(r.text())
+            if filled.deferred:
+                print(f"{len(filled.deferred)} partition(s) over --max {a.max}: run again to continue")
+        return 0 if filled.ok and not (a.fail and filled.deferred) else 1
     if a.json:
         print(json.dumps({**found.to_dict(), "commands": cmds}, indent=2, ensure_ascii=False))
     else:
+        print(gaps.summary(spec.name, found))
         n = len(found.missing)
-        print(f"{spec.name}: {n} of {found.expected} partitions missing")
-        for keys, first, last in found.ranges():
-            label = " ".join(f"{k}={v}" for k, v in keys.items())
-            span = first if first == last else f"{first} .. {last}"
-            print(f"  {label + '  ' if label else ''}{span}")
         if a.commands:
             if cmds:
                 print("\nbackfill:")
@@ -308,6 +332,24 @@ def _gaps(a: argparse.Namespace) -> int:
             elif n:
                 print("\n(no backfill lines: only daily partitions in %Y-%m-%d map to --from/--to)")
     return 1 if a.fail and found.missing else 0
+
+
+def _gaps_notify(spec: Any, found: Any, names: list[str]) -> None:
+    """Send the gaps summary to channels declared under the pipeline's `notify.channels`."""
+    from . import gaps, notify
+
+    channels = spec.notify.channels if spec.notify else {}
+    event = {"type": "gaps.found", "pipeline": spec.name, "data": found.to_dict()}
+    text = gaps.summary(spec.name, found)
+    for name in names:
+        if name not in channels:
+            raise ValueError(
+                f"--notify {name}: no such channel under notify.channels ({', '.join(channels)})"
+            )
+        try:
+            notify.send(name, channels[name], text, event)
+        except Exception as e:  # a broken channel must not hide the gaps or stop --fill
+            print(f"notify {name} failed: {e}", file=sys.stderr)
 
 
 def _snapshot(a: argparse.Namespace) -> int:
@@ -793,6 +835,16 @@ def main(argv: list[str] | None = None) -> int:
     gp.add_argument("--json", action="store_true", help="print the report as JSON")
     gp.add_argument("--commands", action="store_true", help="print `agentl backfill` lines for the gaps")
     gp.add_argument("--fail", action="store_true", help="exit 1 when something is missing (cron, CI)")
+    gp.add_argument("--fill", action="store_true", help="backfill only the missing partitions")
+    gp.add_argument("--max", type=int, help="with --fill: at most this many runs (oldest first)")
+    gp.add_argument(
+        "--param-name", help="with --fill: the param that gets each period (default: the only one)"
+    )
+    gp.add_argument("--concurrency", type=int, default=1, help="with --fill: runs at a time")
+    gp.add_argument(
+        "--notify", action="append", metavar="CHANNEL", help="send the gaps to a notify: channel (repeatable)"
+    )
+    _param_arg(gp)
 
     bf = cmd(
         "backfill",

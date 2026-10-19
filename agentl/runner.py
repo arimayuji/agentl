@@ -1608,7 +1608,14 @@ class Runner:
                 tables = data if isinstance(data, dict) else {(refs or ["input"])[0]: data}
             else:
                 tables = {r: raw(r) for r in refs}
-            return duck.run(step.id, tables, base_dir=self.spec.base_dir, **step.with_)
+            known = {}  # an empty input keeps the columns its step declares (#288)
+            for name, rows in tables.items():
+                src = next((s for s in self.spec.steps if s.id == name), None)
+                if rows is not None and not _is_table(rows) and not rows and src is not None:
+                    cols = getattr(rows, "columns", None) or list(src.schema_ or src.output or {})
+                    if cols:
+                        known[name] = cols
+            return duck.run(step.id, tables, base_dir=self.spec.base_dir, columns=known, **step.with_)
         if step.use == "map_schema":
             return self._run_map_schema(run_id, step, data, result)
 
@@ -1631,7 +1638,7 @@ class Runner:
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
             self._rejects(run_id, step.id, out.rejected, _seen(out), result)
-        if not isinstance(out, registry.Changes):  # emit: changes keeps its summary (counts)
+        if not isinstance(out, (registry.EmptyRows, registry.Changes)):  # columns (#288), changes summary
             out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out, self._ttl(step))
