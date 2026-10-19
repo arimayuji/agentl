@@ -62,9 +62,9 @@ table (`agentl_review` on Postgres).
 
 ## Reuse of the answers
 
-An accepted or fixed answer is stored with the record's agent cache key, in the queue and in the
-agent cache. On later runs a record with the same input (and the same prompt, output and llm
-settings, as for the cache) takes the person's answer with no llm call, and the step's spend counts
+An accepted or fixed answer is stored in the queue under the record's agent cache key, minus the
+built-in prompt version, so an agentl upgrade that only rewords those prompts keeps it. On later runs a record with the same input (and the same instruction, output and llm
+settings) takes the person's answer with no llm call, and the step's spend counts
 it under `review.reused`. A rejected record is dropped on later runs without an llm call
 (`review.dropped`). Changing the prompt, the output fields or the llm changes the key, so the step
 asks the llm again.
