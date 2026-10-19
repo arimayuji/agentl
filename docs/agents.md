@@ -149,8 +149,63 @@ queue until a person accepts, fixes or rejects them, and reuses the decision on 
 
 ## Data privacy
 
-Agent steps send record contents to the configured provider. Use a local provider for data that must
-not leave your machine, and select only the fields the agent needs with a `select` step first.
+### What is sent to the provider
+
+For each record, an agent step sends the step's instruction (`agent:`), the output schema and the
+**whole input record** as JSON: every field, nested values included, whether or not the
+instruction mentions it. With `records_per_call`, several records go in one request; with
+`tools`, tool results go back to the model too; a `critic` or `jury` sends the record and the
+answer to those llms. Nothing is sent for records answered by `rules:`, by the cache or by the
+review queue.
+
+To send less:
+
+1. Keep only the fields the agent needs with a `select` step before it.
+2. Hash, mask, encrypt or drop identifiers with a [`protect`](connectors.md) step before it.
+3. Use a local provider for data that must not leave your machine.
+4. Set `pii:` on the step (below).
+
+### Personal data before the call
+
+Each agent step looks for personal data in the records it is about to send (the detectors of
+`agentl.pii`: e-mail, CPF, CNPJ, SSN, phone, payment card, IBAN, IP address and names in name-like
+fields; e-mails, tax ids, cards and phones are also found inside free text).
+
+```yaml
+- id: triage
+  agent: Classify the support ticket.
+  input: tickets
+  output: {category: str, reply: str}
+  pii:
+    before_llm: mask        # warn (default) | mask | block | off
+    fields: [body, email]   # optional: only these fields (default: all)
+    kinds: [email, cpf, phone]  # optional: only these kinds (default: all)
+```
+
+- `warn` (the default): the record is sent as is and a `pii.detected` event reports the number
+  of records, and counts per field and per kind. Values are never logged.
+- `mask`: each detected value becomes a placeholder such as `[EMAIL_1]` or `[CPF_2]`, the same
+  one for the same value within a record, before the record is sent. When the answer comes back,
+  placeholders in its string fields (and in the passed-through input fields) get the original
+  values back, so `reply: "We wrote to [EMAIL_1]"` reaches the next step with the real address.
+  The model never sees the raw values, so it cannot reason about them (a domain, a phone's area
+  code); a tool the agent calls receives the placeholder too.
+- `block`: a record with personal data is rejected to the quarantine (with the fields and kinds
+  in `_error`, not the values) and never reaches the llm, nor the `rules:` of a hybrid step.
+- `off`: no detection.
+
+`pii: mask` is short for `pii: {before_llm: mask}`. `mask` does not support `output_mode: rows`
+yet. Detection is pattern based: it misses personal data written in ways the detectors do not
+know (a name in free text, an address), so `select` and `protect` stay the stronger guarantee.
+
+**Cache.** With `mask`, the cache key is made from the masked record and the cache stores the
+answer **with placeholders**; the original values are put back after the lookup, from the record
+being processed. So no raw personal data reaches the cache or the provider, and two records that
+differ only in their personal data share one cached answer. The review queue and the critic also
+see the masked record.
+
+`agentl lint` warns (AL012) when the sample of a local CSV source has a field that looks like
+personal data and that reaches an agent step with no `pii:` setting and no `protect` step for it.
 
 ## Budget
 

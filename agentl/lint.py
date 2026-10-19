@@ -66,6 +66,7 @@ RULES = {
     "AL009": "cron trigger without a time zone",
     "AL010": "cast without locale reads numbers that look en-US",
     "AL011": "http source with a fallback but no retries",
+    "AL012": "personal data in sample records reaches an agent step without protect or pii",
 }
 
 
@@ -503,6 +504,7 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                 )
             )
     out += _locale_hints(spec, pos)
+    out += _pii_hints(spec, pos)
     for s in spec.steps:
         if s.fallback and s.retries is None and (s.use or "").startswith("http.") and not s.inputs:
             line, col = pos.step(s.id, "fallback")
@@ -617,6 +619,55 @@ def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
                     line,
                     col,
                     "set `locale: en-US` in its `with` (or `locale: pt-BR` to keep the default)",
+                )
+            )
+    return out
+
+
+def _pii_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """AL012 (#337): an agent step with no `pii:` setting whose input comes from a local CSV
+    where `pii.scan` flags a field that no `protect` step before it covers. Only local CSV
+    sources are sampled (no network, no secrets); the message never carries a value."""
+    from .pii import scan
+
+    out: list[Finding] = []
+    by_id = {s.id: s for s in spec.steps}
+    base = Path(spec.base_dir or ".")
+    samples: dict[str, list[dict]] = {}
+    for s in spec.steps:
+        if s.kind != "agent" or s.pii is not None:
+            continue
+        ancestors = _ancestors(spec, s.id)
+        covered: set[str] = set()
+        for a in ancestors:
+            fields = by_id[a].with_.get("fields") if by_id[a].use == "protect" else None
+            if isinstance(fields, dict | list):
+                covered |= {str(f) for f in fields}
+        hits: dict[str, str] = {}
+        for a in sorted(ancestors):
+            src = by_id[a]
+            path = src.with_.get("path")
+            if src.use != "csv.read" or not isinstance(path, str) or "$" in path or "*" in path:
+                continue
+            if a not in samples:
+                p = Path(path) if Path(path).is_absolute() else base / path
+                samples[a] = _sample_csv(p) if p.is_file() else []
+            for f in scan(samples[a]):
+                if f["field"] not in covered:
+                    hits.setdefault(f["field"], f["kind"])
+        if hits:
+            pairs = [f"{f} ({k})" for f, k in hits.items()]
+            line, col = pos.step(s.id)
+            out.append(
+                Finding(
+                    "AL012",
+                    "warning",
+                    f"agent step '{s.id}' sends {', '.join(pairs)} to the llm provider; sample "
+                    "records look like personal data",
+                    line,
+                    col,
+                    "set `pii: {before_llm: mask}` (or block) on the step, or `protect` or drop "
+                    "those fields before it",
                 )
             )
     return out
