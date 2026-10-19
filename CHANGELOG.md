@@ -18,6 +18,11 @@ They are always listed under **Changed** or **Removed**.
 - `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
   partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
   comparing their rows. The result reports `partitions_skipped`.
+- `if_changed` and `on_unchanged` on the file readers that take a `url` (`file.read`,
+  `archive.read`, `csv.read`, `json.read`, `txt.read`, `excel.read`, `parquet.read`) (#279): the
+  same ETag / Last-Modified / Content-Length / page stamp / hash check as `http.get`, so an
+  unchanged file ends the run as `no_change` (or gives no records) instead of being downloaded
+  and read again.
 - `emit: changes` on changeset writes (`sqlite.write`, `postgres.write`, `sql.write`, #289): the
   step outputs the inserted, updated and deleted rows, each with `_change` and, for updates,
   `_before` (the stored values of the changed columns), so a downstream step consumes the diff.

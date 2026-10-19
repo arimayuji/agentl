@@ -81,7 +81,25 @@ def _changed_get(
     if_changed: dict,
     on_unchanged: str,
 ) -> list[dict]:
-    """GET `url` only when it changed since the last successful run. Strategies run cheapest
+    body = conditional_get(
+        url, {"Accept": "application/json", **headers}, timeout, retries, if_changed, on_unchanged
+    )
+    return [] if body is None else _as_records(_parse(body), items)
+
+
+def conditional_get(
+    url: str,
+    headers: dict,
+    timeout: float,
+    retries: int,
+    if_changed: dict,
+    on_unchanged: str,
+) -> bytes | None:
+    """The body of `url`, or None (`on_unchanged: continue_empty`) when it did not change since
+    the last successful run; `on_unchanged: stop` raises NoChange instead. Shared by `http.get`
+    and the file readers that take a `url`.
+
+    GET `url` only when it changed since the last successful run. Strategies run cheapest
     first: `page_stamp` (a regex on another, small page), `content_length` (a HEAD request),
     `etag` / `last_modified` (a conditional GET answered with 304), then a hash of the body,
     which is always the last resort. The validators are kept in the run store (`agentl state`)
@@ -100,17 +118,16 @@ def _changed_get(
     saved: dict = dict((state.get() if state else None) or {})
     new: dict = {}
 
-    def unchanged(reason: str) -> list[dict]:
+    def unchanged(reason: str) -> bytes | None:
         if on_unchanged == "stop":
             raise NoChange(f"{url}: {reason}")
-        return []
+        return None
 
     def save() -> None:
         if state is not None:
             value = {**saved, **new}
             after_run(lambda: state.set(value))
 
-    headers = {"Accept": "application/json", **headers}
     if "page_stamp" in by:
         if not isinstance(stamp_cfg, dict) or not stamp_cfg.get("regex"):
             raise ValueError("if_changed.page_stamp needs {url, regex}")
@@ -145,7 +162,7 @@ def _changed_get(
         save()  # the validators may have changed even though the content did not
         return unchanged("content hash unchanged")
     save()
-    return _as_records(_parse(body), items)
+    return body
 
 
 def _fill(value: Any, rec: dict) -> Any:
