@@ -116,12 +116,13 @@ def read_json(p: Path, key: str | None = None, encoding: Encoding = "utf-8", **_
         return list(_tagged(read_json(p, key, resolved), encoding, resolved))
     text = p.read_text(encoding=resolved)
     if p.suffix.lower() in (".jsonl", ".ndjson"):
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
-    data = json.loads(text)
-    if key:
-        for part in key.split("."):
-            data = data[part]
-    rows = data if isinstance(data, list) else [data]
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    else:
+        data = json.loads(text)
+        if key:
+            for part in key.split("."):
+                data = data[part]
+        rows = data if isinstance(data, list) else [data]
     return [r if isinstance(r, dict) else {"value": r} for r in rows]
 
 
@@ -274,8 +275,10 @@ def html_tables(
     among them."""
     lowered = html.lower()
     if header_rows == 1 and not select and "colspan" not in lowered and "rowspan" not in lowered:
+        from .htmldom import _feed
+
         parser = _Tables()  # no spans and one header row: the streaming reader is enough, and faster
-        parser.feed(html)
+        _feed(parser, html)
         plain: Records = []
         for i, rows in enumerate(parser.tables):
             if (table is not None and i != table) or len(rows) < 2:

@@ -59,9 +59,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements/ci.txt
       - if: needs.changes.outputs.code == 'true'
-        run: pip install -e '.[dev]'
+        run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
       - if: needs.changes.outputs.code == 'true'
         run: ruff check .
       - if: needs.changes.outputs.code == 'true'
@@ -91,9 +91,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements/ci.txt
       - if: needs.changes.outputs.code == 'true'
-        run: pip install -e '.[dev]'
+        run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
       - if: needs.changes.outputs.code == 'true'
         run: pytest --cov --cov-report=term-missing
       - if: needs.changes.outputs.code == 'true'
@@ -138,9 +138,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements/build.txt
       - if: needs.changes.outputs.code == 'true'
-        run: pip install build twine
+        run: pip install --require-hashes -r requirements/build.txt  # build and twine, pinned by hash
       - if: needs.changes.outputs.code == 'true'
         run: python -m build
       - if: needs.changes.outputs.code == 'true'
@@ -170,8 +170,8 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
+          cache-dependency-path: requirements/ci.txt
+      - run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
       - run: pytest tests/test_postgres.py tests/test_store.py tests/test_sql.py -v
 
   browser:
@@ -186,7 +186,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev,browser]'
+          cache-dependency-path: requirements/browser.txt
+      - run: pip install --require-hashes -r requirements/browser.txt && pip install --no-deps --no-build-isolation -e .
       - run: playwright install --with-deps chromium
       - run: pytest tests/test_browser.py -v
