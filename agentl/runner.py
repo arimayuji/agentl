@@ -1750,7 +1750,13 @@ class Runner:
         with self._spend:
             stats = {k: (v[0], v[1]) for k, v in self._reject_stats.items()}
         findings = checks.run_expectations(
-            records, step.expect, previous, rejected=stats, step=step.check or "", history=history
+            records,
+            step.expect,
+            previous,
+            rejected=stats,
+            step=step.check or "",
+            history=history,
+            protected=self._protected_fields(),
         )
         rules = {k: "passed" for k in step.expect}
         for f in findings:
@@ -1761,7 +1767,9 @@ class Runner:
             bad: dict[int, str] = {}
             for key in step.expect:
                 if key in rejecting:
-                    for i, why in checks.failing_rows(records, key, step.expect[key]).items():
+                    for i, why in checks.failing_rows(
+                        records, key, step.expect[key], self._protected_fields()
+                    ).items():
                         bad.setdefault(i, why)
             dropped = [{**records[i], "_error": bad[i]} for i in sorted(bad)]
             total = len(records)
@@ -1828,6 +1836,14 @@ class Runner:
             if "vs_runs" in step.expect:
                 self.store.cache_set(history_key, [kept, *history][: checks.HISTORY])
         return records
+
+    def _protected_fields(self) -> set[str]:
+        """Fields a `protect` step in this pipeline marks: check messages never show their values."""
+        out: set[str] = set()
+        for s in self.spec.steps:
+            if s.use == "protect" and isinstance(s.with_.get("fields"), dict):
+                out.update(str(f) for f in s.with_["fields"])
+        return out
 
     def _check_drift(self, run_id: str, step: StepSpec, data: Any) -> None:
         """Compares the input's layout with the one recorded for this pipeline and step (#178).
