@@ -42,6 +42,34 @@ mypy
 pytest --cov
 ```
 
+### Locked CI dependencies
+
+CI installs its tools from hash-locked files in `requirements/` (`pip install --require-hashes`),
+then agentl itself with `pip install --no-deps --no-build-isolation -e .`. Each `.txt` is generated
+from the `.in` next to it; the command is in the `.in` header. After changing the `dev` extra in
+`pyproject.toml`, update `requirements/ci.in` to match and regenerate:
+
+```bash
+for f in fuzz ci build browser; do
+  uv pip compile --universal --python-version 3.10 --generate-hashes -o requirements/$f.txt requirements/$f.in
+done
+```
+
+`--universal` writes one lock for Python 3.10 to 3.13 on Linux, Windows and macOS. Dependabot
+proposes updates weekly.
+
+### Fuzzing
+
+`fuzz/` holds [Atheris](https://github.com/google/atheris) targets for the parsers that read
+untrusted input (pipeline YAML, CSV, JSON, XML and HTML, `${VAR}` and `{field}` templates).
+ClusterFuzzLite (`.clusterfuzzlite/`, `.github/workflows/cflite.yml`) runs them briefly on pull
+requests and longer every week. To run one locally:
+
+```bash
+pip install atheris -e .
+python fuzz/fuzz_csv.py -max_total_time=30
+```
+
 ## Guidelines
 
 - **Core stays light.** The core depends only on `pyyaml` and `pydantic`. Connectors that need

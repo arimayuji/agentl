@@ -1,0 +1,5 @@
+# The CI browser job (ci.yml): the test toolchain plus Playwright, locked with hashes in browser.txt.
+# Regenerate with:
+#   uv pip compile --universal --python-version 3.10 --generate-hashes -o requirements/browser.txt requirements/browser.in
+-r ci.in
+playwright>=1.40
