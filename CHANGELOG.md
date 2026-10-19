@@ -11,6 +11,11 @@ They are always listed under **Changed** or **Removed**.
 
 ### Added
 
+- Notify rules `on: records` with `step:` send the records a step produced, only when it produced
+  any, one line per record (`template`, or JSON) up to `max_rows` (20) (#290).
+- `console.send` and `log.write` steps print or log one line per record and pass the records
+  through (#290).
+- `{run_id}` in writer paths (`json.write`, `csv.write`, ...) gives each run its own file (#290).
 - `mode: changeset` on `postgres.write` and `sql.write` (#205), with the semantics of
   `sqlite.write`: inserted, updated, deleted and unchanged counts, `deletes: missing` or
   `partition_replaced`, `dry_run` and `outcome: no_change`. `postgres.write` diffs set-based in a

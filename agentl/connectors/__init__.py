@@ -8,6 +8,7 @@ from . import (  # noqa: F401  (registers connectors)
     aws,
     browser,
     chat,
+    console,
     db,
     duck,
     files,
