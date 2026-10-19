@@ -151,3 +151,22 @@ def test_jsonl_scalar_lines_become_value_records(tmp_path, encoding):
         {"value": 0},
         {"value": "x"},
     ]
+
+
+def test_broken_markup_assertion_keeps_partial_tree(monkeypatch):
+    # Older Python releases raise AssertionError from html.parser on input like "<![" + junk.
+    from html.parser import HTMLParser
+
+    from agentl.connectors import files, htmldom
+
+    real = HTMLParser.feed
+
+    def feed(self, data):
+        real(self, data.split("<![")[0])
+        raise AssertionError("expected name token")
+
+    monkeypatch.setattr(HTMLParser, "feed", feed)
+    root = htmldom.parse("<p>kept</p><![\x00junk")
+    assert [n.tag for n in root.iter() if n.tag == "p"] == ["p"]
+    rows = files.html_tables("<table><tr><th>a</th></tr><tr><td>1</td></tr></table><![\x00")
+    assert rows == [{"table": 0, "a": "1"}]

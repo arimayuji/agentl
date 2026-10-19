@@ -275,8 +275,10 @@ def html_tables(
     among them."""
     lowered = html.lower()
     if header_rows == 1 and not select and "colspan" not in lowered and "rowspan" not in lowered:
+        from .htmldom import _feed
+
         parser = _Tables()  # no spans and one header row: the streaming reader is enough, and faster
-        parser.feed(html)
+        _feed(parser, html)
         plain: Records = []
         for i, rows in enumerate(parser.tables):
             if (table is not None and i != table) or len(rows) < 2:
