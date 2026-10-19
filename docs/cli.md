@@ -2,6 +2,7 @@
 
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
+agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -34,6 +35,7 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
+`agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
 
 ## Run ledger and LLM cost
 
