@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from . import checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
-from .spec import DROP, LLMSpec, PipelineSpec, ReviewSpec, StepSpec, load
+from .spec import DROP, LLMSpec, PiiSpec, PipelineSpec, ReviewSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -792,18 +792,23 @@ class Runner:
         records they cannot handle are sent to the llm; the output keeps the input order and each
         record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
         (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        records = self._pii_gate(run_id, step, records, result)
         if step.routes is not None:
             return self._run_route(run_id, step, records, result)
         if step.output_mode == "rows":
             return self._run_rows(run_id, step, records, result)
         if not step.rules:
-            answered = self._agent_reviewed(run_id, step, list(records), result)
+            answered = self._pii_masked(run_id, step, list(records), result, self._agent_reviewed)
             return self._agent_finish(run_id, step, answered, len(records), result)
         records = list(records)
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
         rest = [i for i, out in enumerate(by_rules) if out is None]
-        asked = self._agent_reviewed(run_id, step, [records[i] for i in rest], result) if rest else []
+        asked = (
+            self._pii_masked(run_id, step, [records[i] for i in rest], result, self._agent_reviewed)
+            if rest
+            else []
+        )
         slots: list[tuple[dict | None, dict | None]] = []
         answers = iter(asked)
         for rec, out in zip(records, by_rules, strict=True):
@@ -842,13 +847,14 @@ class Runner:
         schema = create_model(f"{step.id}_route", route=(Literal[tuple(labels)], ...))  # type: ignore[arg-type]
         bad: Records = []
         slots = (
-            self._agent_slots(
+            self._pii_masked(
                 run_id,
                 step,
                 [records[i] for i in rest],
                 result,
-                schema,
-                _route_instruction(step.agent or "", labels),
+                lambda r, s, recs, res: self._agent_slots(
+                    r, s, recs, res, schema, _route_instruction(step.agent or "", labels)
+                ),
             )
             if rest
             else []
@@ -894,6 +900,82 @@ class Runner:
         )
         self._rejects(run_id, step.id, bad, len(records), result)
         return out
+
+    def _pii_found(self, run_id: str, step: StepSpec, maskers: list, action: str) -> int:
+        """Emits `pii.detected` with counts per field and kind (never a value); the number of
+        records with personal data."""
+        fields: dict[str, int] = {}
+        kinds: dict[str, int] = {}
+        hit = 0
+        for m in maskers:
+            hit += bool(m.found)
+            for (f, k), n in m.found.items():
+                fields[f] = fields.get(f, 0) + n
+                kinds[k] = kinds.get(k, 0) + n
+        if hit:
+            self._emit(
+                run_id,
+                "pii.detected",
+                step.id,
+                action=action,
+                records=hit,
+                total=len(maskers),
+                fields=fields,
+                kinds=kinds,
+            )
+        return hit
+
+    def _pii_gate(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """`pii.before_llm` warn and block (#337), before any path of an agent step. Warn only
+        reports; block rejects each record with personal data to the quarantine, so it never
+        reaches the llm (nor the rules of a hybrid step). Mask happens next to the call."""
+        from .pii import Masker
+
+        cfg = step.pii or PiiSpec()
+        if cfg.before_llm not in ("warn", "block") or not records:
+            return records
+        records = list(records)
+        maskers = [Masker(cfg.fields, cfg.kinds) for _ in records]
+        for m, r in zip(maskers, records, strict=True):
+            m.mask(r)
+        if not self._pii_found(run_id, step, maskers, cfg.before_llm) or cfg.before_llm == "warn":
+            return records
+        keep: Records = []
+        bad: Records = []
+        for m, r in zip(maskers, records, strict=True):
+            if not m.found:
+                keep.append(r)
+                continue
+            where = sorted({f"{f} ({k})" for f, k in m.found})
+            bad.append({**r, "_error": f"personal data in {', '.join(where)}; pii.before_llm is block"})
+        self._rejects(run_id, step.id, bad, len(bad), result)
+        return keep
+
+    def _pii_masked(
+        self,
+        run_id: str,
+        step: StepSpec,
+        records: Records,
+        result: RunResult,
+        ask: Callable[[str, StepSpec, Records, RunResult], list[tuple[dict | None, dict | None]]],
+    ) -> list[tuple[dict | None, dict | None]]:
+        """`ask` (slots aligned with `records`), with `pii.before_llm: mask` (#337): each record
+        goes out with placeholders, so the prompt, the cache key, the cached answer, the review
+        queue and the critic only ever see those; the answer and the passed-through fields get
+        the original values back afterwards."""
+        cfg = step.pii
+        if cfg is None or cfg.before_llm != "mask" or not records:
+            return ask(run_id, step, records, result)
+        from .pii import Masker
+
+        maskers = [Masker(cfg.fields, cfg.kinds) for _ in records]
+        masked = [m.mask(r) for m, r in zip(maskers, records, strict=True)]
+        self._pii_found(run_id, step, maskers, "mask")
+        slots = ask(run_id, step, masked, result)
+        return [
+            (m.restore(good) if good is not None else None, m.restore(bad) if bad is not None else None)
+            for m, (good, bad) in zip(maskers, slots, strict=True)
+        ]
 
     def _agent_reviewed(
         self, run_id: str, step: StepSpec, records: Records, result: RunResult
