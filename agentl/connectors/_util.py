@@ -215,6 +215,22 @@ def changeset_options(
     return drop, parts
 
 
+def emit_option(name: str, mode: str, emit: str | None) -> bool:
+    """True for `emit: changes` (#289): the writer returns the changed records, not the counts."""
+    if emit in (None, "counts"):
+        return False
+    if emit != "changes":
+        raise ValueError(f"{name}: emit must be counts or changes, got {emit!r}")
+    if mode != "changeset":
+        raise ValueError(f"{name}: emit: changes needs mode: changeset (got mode: {mode})")
+    return True
+
+
+def before(new: dict, old: Any, cols: list[str]) -> dict:
+    """`_before` of an updated record: the stored value of each of `cols` that differs."""
+    return {c: old.get(c) for c in cols if new.get(c) != old.get(c)}
+
+
 CHECKSUMS_TABLE = "_agentl_checksums"
 
 

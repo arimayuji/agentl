@@ -201,3 +201,42 @@ def test_date_partitions_match_values_read_back(b):
     out = b.write(rows[:1], partition_by="day", deletes="partition_replaced", checksums=True)[0]
     assert (out["deleted"], out["unchanged"], out["partitions"]) == (1, 1, 1)
     assert [r[0] for r in b.rows("id")] == [0, 1, 3]
+
+
+def changes(out):
+    return sorted(((r["_change"], r["id"]) for r in out), key=lambda c: (c[0], c[1]))
+
+
+def test_emit_changes_returns_the_changed_records(b):
+    first = b.write(ROWS[:2], emit="changes")
+    assert changes(first) == [("inserted", 0), ("inserted", 1)]
+    assert first.summary[0]["inserted"] == 2
+    new = [{"id": 0, "month": "2026-01", "v": "x"}, {"id": 7, "month": "2026-02", "v": "n"}]
+    out = b.write(new, deletes="missing", emit="changes")
+    assert changes(out) == [("deleted", 1), ("inserted", 7), ("updated", 0)]
+    upd = next(r for r in out if r["_change"] == "updated")
+    assert upd["v"] == "x" and upd["_before"] == {"v": "v0"}
+    gone = next(r for r in out if r["_change"] == "deleted")
+    assert (gone["month"], gone["v"]) == ("2026-02", "v1")
+    assert (out.summary[0]["written"], out.summary[0]["deleted"]) == (3, 1)
+
+
+def test_emit_changes_is_empty_without_change_and_works_on_dry_run(b):
+    b.write(ROWS)
+    assert list(b.write(ROWS, emit="changes")) == []
+    preview = b.write([dict(ROWS[0], v="y")], emit="changes", dry_run=True)
+    assert changes(preview) == [("updated", 0)] and preview[0]["_before"] == {"v": "v0"}
+    assert b.rows()[0] == (0, "2026-01", "v0")
+
+
+def test_emit_changes_reports_new_columns_in_before(b):
+    b.write(ROWS[:1])
+    out = b.write([dict(ROWS[0], extra=5)], emit="changes")
+    assert out[0]["_before"] == {"extra": None} and out[0]["extra"] == 5
+
+
+def test_emit_is_validated(b):
+    with pytest.raises(ValueError, match="emit must be counts or changes"):
+        b.write(ROWS, emit="rows")
+    with pytest.raises(ValueError, match="emit: changes needs mode: changeset"):
+        get(b.use)(ROWS, table=b.table, mode="upsert", key="id", emit="changes", **b.args)

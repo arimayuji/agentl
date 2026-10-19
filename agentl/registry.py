@@ -40,6 +40,18 @@ class Rejects(list):
         self.rejected = list(rejected)
 
 
+class Changes(Rejects):
+    """A writer's output with `emit: changes` (#289): the records it inserted, updated or deleted,
+    each with `_change` (and `_before` for updates), so a downstream step consumes the diff. The
+    usual summary record (written and the counts) rides along in `summary` for the run's counts."""
+
+    def __init__(
+        self, changes: Iterable[dict] = (), summary: Iterable[dict] = (), rejected: Iterable[dict] = ()
+    ):
+        super().__init__(changes, rejected)
+        self.summary = list(summary)
+
+
 def connector(name: str) -> Callable[[Connector], Connector]:
     def deco(fn: Connector) -> Connector:
         _CONNECTORS[name] = fn
