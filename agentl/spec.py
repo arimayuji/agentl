@@ -649,6 +649,13 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': unknown expectation {unknown}. Use {', '.join(_EXPECTATIONS)}"
             )
+        if "unique" in self.expect:
+            from .checks import unique_keys
+
+            try:
+                unique_keys(self.expect["unique"])
+            except ValueError as e:
+                raise ValueError(f"step '{self.id}': {e}") from None
         if self.severity:
             from .checks import ROW_RULES
 
