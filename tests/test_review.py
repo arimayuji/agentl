@@ -182,3 +182,26 @@ def test_review_answer_survives_a_prompt_version_change(project, monkeypatch):
     taxi = next(r for r in result.outputs["after"] if r["text"] == "Taxi to airport")
     assert taxi["category"] == "transport"
     assert Unsure.calls == calls + 1  # only the flight is asked again under the new prompts
+
+
+def test_stats_count_what_people_approved(project):
+    """#156: cost per approved answer counts the answers people accepted, not the fixed ones."""
+    run, store, _ = project
+    run()  # the flight goes out, the taxi is held
+    [held] = store.review_list()
+    store.review_resolve(held["id"], "accepted", held["answer"])
+    run()  # the flight from the cache, the taxi reused from the person
+    [row] = compute(store, 0)["pipelines"][0]["agents"]
+    assert (row["records"], row["accepted"], row["review_accepted"]) == (3, 3, 1)
+    assert row["approved"] == 3  # 1 + the accepted taxi, then the cached flight
+    assert (row["review_fixed"], row["review_rejected"], row["review_pending"]) == (0, 0, 0)
+
+
+def test_stats_do_not_approve_fixed_or_pending_answers(project):
+    run, store, _ = project
+    run("{always: true, hold: false}")  # both flagged, both queued
+    first, _ = store.review_list()
+    store.review_resolve(first["id"], "fixed", {"category": "transport", "confidence": 1.0})
+    [row] = compute(store, 0)["pipelines"][0]["agents"]
+    assert row["accepted"] == 2 and row["approved"] == 0
+    assert (row["review_fixed"], row["review_pending"]) == (1, 1)

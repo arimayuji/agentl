@@ -158,7 +158,10 @@ agentl eval pipeline.yaml --json
 ```
 
 The report gives, per run: the share of records with every field right, the accuracy per field,
-the cost and tokens, and the lines that differ (expected and got). A record without a valid
+the cost and tokens, the cost per right answer (the spend over the records with every field
+right, `cost_per_right` in `--json`), and the lines that differ (expected and got). The cost per
+right answer is the number to compare models with: a cheaper model that gets fewer answers right
+can cost more per right answer. A record without a valid
 answer counts as wrong in every field. When `min_accuracy` is set and any run (the
 `--compare` ones included) is below it, the command exits 1, so CI can block a bad prompt.
 `--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step.
