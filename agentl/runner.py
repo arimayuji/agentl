@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from . import checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
-from .spec import DROP, LLMSpec, PiiSpec, PipelineSpec, ReviewSpec, StepSpec, load
+from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, ReviewSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -49,6 +49,7 @@ class RunResult:
     llm_calls: int = 0
     tool_calls: int = 0
     cost_usd: float = 0.0
+    throttled_s: float = 0.0  # seconds llm calls waited for a client-side rate_limit
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
     # per upsert, changeset or scd2 step: {"inserted": n, "updated": n, "deleted": n, "unchanged": n}
     # (scd2 also: versioned, closed)
@@ -232,13 +233,14 @@ def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict, prompts: bool
     `prompts` adds the built-in prompt version (#338); the review queue leaves it out, so a
     person's answer survives an agentl upgrade that only rewords those prompts."""
     # Without a cascade the key stays what it was, so existing caches keep their hits.
-    llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
+    llm_key: Any = spec.llm[step.llm].model_dump(exclude=LLM_KEY_EXCLUDE)
     if step.attempts:
         llm_key = [
-            [spec.llm[a.llm or step.llm].model_dump(exclude={"price"}), a.validate_] for a in step.attempts
+            [spec.llm[a.llm or step.llm].model_dump(exclude=LLM_KEY_EXCLUDE), a.validate_]
+            for a in step.attempts
         ]
     elif step.escalate:
-        llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
+        llm_key = [spec.llm[n].model_dump(exclude=LLM_KEY_EXCLUDE) for n in [step.llm, *step.escalate]]
     if step.jury is not None:  # the cached answer is the jury's decision
         llm_key = [llm_key, step.jury.model_dump(), step.jury_tag]
     salt = _key_salt(step, prompts)
@@ -369,20 +371,7 @@ def _retry_matches(e: BaseException, on: list[str]) -> bool:
 def _retry_after(e: BaseException) -> float | None:
     """Seconds asked by a `Retry-After` header (a number or an HTTP date), if the error has one."""
     headers = _http_status(e)[1]
-    value = headers.get("Retry-After") if hasattr(headers, "get") else None
-    if value is None:
-        return None
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
-
-        when = parsedate_to_datetime(str(value))
-        return max(0.0, (when - _dt.datetime.now(when.tzinfo or _dt.timezone.utc)).total_seconds())
-    except (TypeError, ValueError):
-        return None
+    return llm.parse_retry_after(headers.get("Retry-After") if hasattr(headers, "get") else None)
 
 
 def _hash(*parts: Any) -> str:
@@ -416,6 +405,9 @@ class Runner:
         self._tickets = itertools.count(1)
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
+        self._limiters: dict[str, llm.RateLimiter] = {}  # llm name -> bucket shared by its calls
+        self._calling = threading.local()  # step id of the call this thread is about to make
+        self._result: RunResult | None = None
         self._arrow_out: set[str] = set()
         self._reject_stats: dict[str, list[int]] = {}  # step id -> [rejected, seen], for checks
         # on_drift: remap (#178): map_schema step id -> (signature key, new layout) to record
@@ -466,14 +458,38 @@ class Runner:
         with self._provider_lock:
             if name not in self._providers:
                 spec = self.spec.llm[name]
-                prov = llm.provider(spec)
+                prov = self._throttled(name, llm.provider(spec))
                 if spec.fallback:
                     chain = [(name, spec, prov)]
-                    chain += [(f, self.spec.llm[f], llm.provider(self.spec.llm[f])) for f in spec.fallback]
+                    chain += [
+                        (f, self.spec.llm[f], self._throttled(f, llm.provider(self.spec.llm[f])))
+                        for f in spec.fallback
+                    ]
                     prov = llm.FallbackProvider(chain)
                     prov.on_fallback = self._on_fallback
                 self._providers[name] = prov
             return self._providers[name]
+
+    def _throttled(self, name: str, prov: llm.Provider) -> llm.Provider:
+        """`prov` behind the llm's rate limiter, if it has one. Called under `_provider_lock`."""
+        limit = self.spec.llm[name].rate_limit
+        if limit is None:
+            return prov
+        if name not in self._limiters:
+            self._limiters[name] = llm.rate_limiter(limit)
+        return llm.ThrottledProvider(prov, self._limiters[name], lambda wait: self._on_throttled(name, wait))
+
+    def _on_throttled(self, name: str, wait: float) -> None:
+        step = getattr(self._calling, "step", None) or None
+        result = self._result
+        if result is not None:
+            with self._spend:
+                result.throttled_s += wait
+                mine = result.spend.get(step) if step else None
+                if mine is not None:
+                    mine["throttled_s"] = mine.get("throttled_s", 0.0) + wait
+        if self._run_id:
+            self._emit(self._run_id, "llm.throttled", step, llm=name, wait=round(wait, 3))
 
     def _on_fallback(self, failed: str, to: str, error: Exception) -> None:
         if self._run_id:
@@ -498,6 +514,8 @@ class Runner:
             if spend is None:
                 return {}
             spend["cost_usd"] = round(spend["cost_usd"], 6)
+            if "throttled_s" in spend:
+                spend["throttled_s"] = round(spend["throttled_s"], 3)
             out = dict(spend)
             if "models" in spend:
                 out["models"] = {
@@ -548,6 +566,7 @@ class Runner:
     def _check_budget(self, result: RunResult, step_id: str = "", reserve: bool = True) -> int:
         """Raise BudgetExceeded when the budget is spent, counting calls in flight. Returns a
         ticket for the call about to be made (0 when nothing is reserved); pass it to `_charge`."""
+        self._calling.step = step_id
         with self._spend:
             reason = self._over_budget(result, len(self._inflight))
             ticket = 0
@@ -579,6 +598,8 @@ class Runner:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
         if b.max_tool_calls is not None and result.tool_calls >= b.max_tool_calls:
             return f"max_tool_calls {b.max_tool_calls} reached"
+        if b.max_calls is not None and result.llm_calls + inflight >= b.max_calls:
+            return f"max_calls {b.max_calls} reached ({result.llm_calls} made)"
         return None
 
     # tools --------------------------------------------------------------
@@ -1327,7 +1348,7 @@ class Runner:
         cacheable = self.use_cache and step.cached
         name = critic.llm or step.llm
         critic_spec = self.spec.llm[name]
-        critic_key = critic_spec.model_dump(exclude={"price"})
+        critic_key = critic_spec.model_dump(exclude=LLM_KEY_EXCLUDE)
         verdict_schema = llm.schema_model(f"{step.id}_critic", {"approved": "bool", "feedback": "str"})
         out = {k: good.get(k) for k in schema.model_fields}
         exchange: list[dict] = []
@@ -1420,7 +1441,7 @@ class Runner:
 
         def ask(name: str, kind: str, text: str, payload: dict) -> dict | None:
             spec = self.spec.llm[name]
-            dumped = spec.model_dump(exclude={"price"})
+            dumped = spec.model_dump(exclude=LLM_KEY_EXCLUDE)
             ckey = _hash(kind, dumped, text, step.output, step.tools, payload, *_key_salt(step))
             hit = self.store.cache_get(ckey) if cacheable else None
             if hit is not None:
@@ -2424,6 +2445,7 @@ class Runner:
     def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
+        self._result = result
         self._outputs = result.outputs
         self._source_records = {}
         registry._RUN_ID.set(run_id)
@@ -2461,6 +2483,9 @@ class Runner:
         if result.outcome in self.spec.outcomes.alert_on:
             extra = {"error": result.error} if result.error else {}
             self._emit(run_id, "run.alert", outcome=result.outcome, **extra)
+        throttled: dict[str, Any] = (
+            {"throttled_s": round(result.throttled_s, 3)} if result.throttled_s else {}
+        )
         self._emit(
             run_id,
             f"run.{result.status}",
@@ -2469,6 +2494,7 @@ class Runner:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cost_usd=round(result.cost_usd, 6),
+            **throttled,
             rejected=sum(len(v) for v in result.rejected.values()),
             **partial,
             **({"reason": result.reason} if result.reason else {}),

@@ -50,6 +50,26 @@ class PriceSpec(BaseModel):
     batch: float = Field(default=1.0, gt=0, le=1)  # multiplier for batch mode, e.g. 0.5; default: no discount
 
 
+class RateLimitSpec(BaseModel):
+    """Client-side limits for one llm (#336): requests and tokens per minute, shared by every
+    step and thread of a run that uses it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rpm: int | None = Field(default=None, gt=0)
+    tpm: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _some_limit(self) -> RateLimitSpec:
+        if self.rpm is None and self.tpm is None:
+            raise ValueError("rate_limit needs rpm, tpm or both")
+        return self
+
+
+LLM_KEY_EXCLUDE = {"price", "rate_limit"}
+"""LLMSpec fields that do not change an answer, left out of cache keys."""
+
+
 class LLMSpec(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-opus-5-5"
@@ -58,6 +78,7 @@ class LLMSpec(BaseModel):
     price: PriceSpec | None = None
     # Other llms (by name) to try, in order, when a call to this one fails.
     fallback: list[str] = Field(default_factory=list)
+    rate_limit: RateLimitSpec | None = None
 
     def cost(self, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float:
         """`input_tokens` is all input; `cache_read` and `cache_write` are the parts of it that hit
@@ -80,6 +101,7 @@ class BudgetSpec(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)
     max_usd: float | None = Field(default=None, gt=0)
     max_tool_calls: int | None = Field(default=None, gt=0)  # tool calls by agent steps, whole run
+    max_calls: int | None = Field(default=None, gt=0)  # llm calls, whole run
 
 
 class MCPServerSpec(BaseModel):

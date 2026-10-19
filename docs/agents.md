@@ -105,6 +105,31 @@ llms cannot have fallbacks of their own; list the whole chain on the first one. 
 the first llm. With tools, a call that fails mid-way starts over on the next llm, so its tools may
 run again.
 
+### Rate limits
+
+`rate_limit` keeps an llm under your provider's quota on the client side, instead of relying on
+retries after a 429:
+
+```yaml
+llm:
+  default:
+    provider: openai
+    model: gpt-4.1-mini
+    rate_limit: { rpm: 500, tpm: 200000 }   # requests and tokens per minute; one or both
+```
+
+- Each limit is a token bucket that starts full and refills over a minute. One bucket per llm is
+  shared by every step and every thread of the run that uses it, fallbacks each with their own.
+- For `tpm`, each call is estimated before it is sent (4 characters per token of the instruction
+  and the record, the same estimate as `agentl plan`) and corrected with the usage the provider
+  reports afterwards, so output tokens count against the next calls.
+- Every wait is an `llm.throttled` event (`llm`, `wait` in seconds). The total is in
+  `RunResult.throttled_s`, the step's spend (`throttled_s`), `run.succeeded` / `run.failed` and
+  `agentl stats`.
+- The OpenAI-compatible providers (`openai`, `ollama`, `openrouter`, `azure-openai`,
+  `openai-compatible`) also wait what a 429 or 5xx asks in `Retry-After` (seconds or an HTTP date,
+  at most 60 seconds per retry) before falling back to exponential backoff.
+
 ## Golden sets: test a prompt or model change
 
 Give an agent step a JSONL file of records with the expected answer, and `agentl eval` scores
@@ -220,6 +245,7 @@ Stop a run before it costs more than you expect:
 budget:
   max_tokens: 2000000   # input + output, all agent steps
   max_usd: 5.00
+  max_calls: 2000       # llm calls, all agent steps
 
 llm:
   default:
@@ -232,6 +258,8 @@ llm:
   `budget.exceeded` (with tokens and cost so far), fails the step and ends the run as failed.
 - `max_usd` needs a `price` on every LLM used by an agent step (except `echo` and `ollama`).
   agentl ships no price table, because prices change; copy them from your provider.
+- `max_calls` counts every model call, cached records excluded; calls in flight are reserved, so
+  parallel workers do not go past it.
 - Calls already in flight finish, so with `concurrency > 1` a run can go slightly over the limit.
 - Cached records cost nothing and do not count. Answers rejected for not matching the schema
   still count, since the provider charged for them.
