@@ -10,42 +10,6 @@ They are always listed under **Changed** or **Removed**.
 ## [Unreleased]
 
 Unreleased changes live as fragments in [`changes/`](https://github.com/arimayuji/agentl/tree/main/changes) until the next release.
-### Added
-
-- Notify rules `on: records` with `step:` send the records a step produced, only when it produced
-  any, one line per record (`template`, or JSON) up to `max_rows` (20) (#290).
-- `console.send` and `log.write` steps print or log one line per record and pass the records
-  through (#290).
-- `{run_id}` in writer paths (`json.write`, `csv.write`, ...) gives each run its own file (#290).
-- `mode: changeset` on `postgres.write` and `sql.write` (#205), with the semantics of
-  `sqlite.write`: inserted, updated, deleted and unchanged counts, `deletes: missing` or
-  `partition_replaced`, `dry_run` and `outcome: no_change`. `postgres.write` diffs set-based in a
-  temp table typed like the destination; `sql.write` compares in Python.
-- `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
-  partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
-  comparing their rows. The result reports `partitions_skipped`.
-- `if_changed` and `on_unchanged` on the file readers that take a `url` (`file.read`,
-  `archive.read`, `csv.read`, `json.read`, `txt.read`, `excel.read`, `parquet.read`) (#279): the
-  same ETag / Last-Modified / Content-Length / page stamp / hash check as `http.get`, so an
-  unchanged file ends the run as `no_change` (or gives no records) instead of being downloaded
-  and read again.
-
-### Changed
-
-- `on_drift: remap` on a check (#178) no longer stops the run: it hands the new layout to the
-  `map_schema` steps that read the check, which reuse a stored or pinned mapping or infer a new
-  one, and stop for review when they have `review: required`. The new layout is recorded only
-  once it has been mapped. A check with `on_drift: remap` now needs such a step.
-### Docs
-
-- Docs search: hint and empty-state text that name real connectors and commands, matches inside
-  dotted names (`html.select`, `on_drift`), a share link, and a brand-styled panel with a blue focus
-  ring and highlighted matches.
-
-### Fixed
-
-- Release workflow: when a draft release for the tag already exists (Release Drafter), it now
-  publishes the draft on the built commit instead of only attaching files to it.
 
 ## [0.12.0] - 2026-10-18
 
