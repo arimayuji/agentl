@@ -519,6 +519,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
 
+    rs = cmd("resume", "resume a failed run: skip the steps that completed, sinks included")
+    rs.add_argument("run_id")
+    rs.add_argument("pipeline", help="the pipeline file of that run (its spec must be unchanged)")
+    rs.add_argument("--no-cache", action="store_true")
+    _param_arg(rs)
+    rs.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    rs.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    rs.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
+
     v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
     v.add_argument("--format", choices=["text", "json", "github"], default="text")
@@ -829,6 +840,24 @@ def main(argv: list[str] | None = None) -> int:
                 _bug_hint(store, spec, result)
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
+            return _exit_code(spec, result)
+        if a.cmd == "resume":
+            from .resume import ResumeRefused
+
+            spec = load(a.pipeline, params=_params(a.param))
+            with open_store(a.db) as store:
+                runner = Runner(
+                    spec,
+                    store=store,
+                    use_cache=not a.no_cache,
+                    listeners=_listeners(a),
+                    resume_from=a.run_id,
+                )
+                try:
+                    result = runner.run()
+                except ResumeRefused as e:
+                    print(f"cannot resume: {e}", file=sys.stderr)
+                    return 2
             return _exit_code(spec, result)
         if a.cmd == "snapshot":
             return _snapshot(a)

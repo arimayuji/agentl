@@ -56,7 +56,7 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | --- | --- | --- |
 | `rows` | `{ min: 1000, max: 50000 }` | the row count is outside the range |
 | `not_null` | `[order_id, total]` | a column has empty values |
-| `unique` | `order_id` or `[a, b]` | a column has duplicates |
+| `unique` | `order_id`, `[a, b]` or `[[date, currency]]` | a column, or a composite key, has duplicates (below) |
 | `accepted` | `{ region: [north, south] }` | a column has a value outside the list |
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
@@ -74,6 +74,16 @@ field, the kind, a masked example (`*******4321`, never the full value) and the 
 action. From Python, `agentl.pii.scan(records)` returns the findings and
 `agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
 expect misses (free-text fields, unformatted phones) and some false positives.
+
+`unique` takes a column or a list. A flat list checks each column on its own: `[date, currency]`
+fails as soon as two rows share a date, even with different currencies. A nested list is one
+composite key, unique as a whole: `[[date, currency]]` allows many currencies per date and many
+dates per currency, but not the same pair twice. The two forms mix:
+`unique: [id, [date, currency]]` checks `id` alone and the pair. Rows with an empty value in a key
+column are left to `not_null`. The failure gives the number of duplicates and of duplicated keys,
+with up to three example keys; values of fields a `protect` step in the pipeline marks show as
+`<protected>`. With `severity: reject`, the first row of each key is kept and the later ones are
+rejected.
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
