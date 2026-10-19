@@ -173,8 +173,8 @@ def test_schema_model_types():
 
 
 def test_file_connectors(tmp_path):
-    import docx
-    import openpyxl
+    docx = pytest.importorskip("docx")
+    openpyxl = pytest.importorskip("openpyxl")
 
     from agentl.registry import get
 
