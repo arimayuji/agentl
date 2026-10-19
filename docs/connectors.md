@@ -374,8 +374,11 @@ order by day
   `read_parquet('data/*.parquet')`.
 - Errors name the step and keep DuckDB's `LINE n` pointer; a table that is not an input suggests
   the closest step id. `agentl validate` reports the same (AE009) when DuckDB is installed.
-- An input with no records has no columns: `count(*)` gives 0 and a query that names its columns
-  returns no records.
+- An input with no records keeps its columns when they are known: a `sqlite.read` of an empty
+  table, or the step's `schema:` or `output:`. A `left join` against it then returns every left
+  row. When they are unknown, `count(*)` gives 0; a query that names its columns returns no
+  records if every input is empty, and fails with an error otherwise (declare `schema:` on the
+  empty step).
 - With `chunk_size`, a `sql` step is a boundary: it collects its inputs before it runs.
 
 When to use which: `compute`, `aggregate`, `cast` and the other transforms above need no extra and
