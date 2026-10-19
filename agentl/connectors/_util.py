@@ -3,6 +3,8 @@ from __future__ import annotations
 import atexit
 import datetime as dt
 import glob as _glob
+import hashlib
+import json
 import re
 import shutil
 import tempfile
@@ -185,12 +187,14 @@ def changeset_options(
     deletes: str | dict | None,
     partition_by: str | list[str] | None,
     dry_run: bool,
+    checksums: bool = False,
 ) -> tuple[str, list[str]]:
     """Check the mode: changeset options before any I/O. `deletes` takes a name or `{when: name}`."""
     if mode != "changeset":
-        if deletes is not None or partition_by is not None or dry_run:
+        if deletes is not None or partition_by is not None or dry_run or checksums:
             raise ValueError(
-                f"{name}: deletes, partition_by and dry_run need mode: changeset (got mode: {mode})"
+                f"{name}: deletes, partition_by, checksums and dry_run need mode: changeset "
+                f"(got mode: {mode})"
             )
         return "none", []
     if not keys:
@@ -206,7 +210,54 @@ def changeset_options(
         raise ValueError(f"{name}: partition_by must be a column name or a list of names")
     if drop == "partition_replaced" and not parts:
         raise ValueError(f"{name}: deletes: partition_replaced needs partition_by")
+    if checksums and not parts:
+        raise ValueError(f"{name}: checksums needs partition_by (a checksum is kept per partition)")
     return drop, parts
+
+
+CHECKSUMS_TABLE = "_agentl_checksums"
+
+
+class PartitionSums:
+    """Order-independent checksum of the source records of each partition, built chunk by chunk:
+    the count and the sum (mod 2**256) of each record's SHA-256. A partition whose checksum equals
+    the one stored by the last changeset write is skipped without comparing its rows."""
+
+    def __init__(self, parts: list[str]) -> None:
+        self.parts = parts
+        self.sums: dict[str, list[int]] = {}
+        self.values: dict[str, tuple] = {}
+
+    def add(self, rows: list[dict]) -> None:
+        for r in rows:
+            vals = tuple(r.get(p) for p in self.parts)
+            part = partition_id(vals)
+            line = json.dumps(r, sort_keys=True, default=str, separators=(",", ":"))
+            h = int.from_bytes(hashlib.sha256(line.encode()).digest(), "big")
+            acc = self.sums.get(part)
+            if acc is None:
+                self.sums[part] = [1, h]
+                self.values[part] = vals
+            else:
+                acc[0] += 1
+                acc[1] = (acc[1] + h) % (1 << 256)
+
+    def digests(self) -> dict[str, str]:
+        return {p: f"{n}:{h:064x}" for p, (n, h) in self.sums.items()}
+
+    def equal(self, stored: dict[str, str]) -> list[tuple]:
+        """Partition values whose checksum matches `stored` (partition id -> digest)."""
+        return [self.values[p] for p, d in self.digests().items() if stored.get(p) == d]
+
+
+def partition_id(values: tuple) -> str:
+    """Text id of a partition's values; dates and times as ISO 8601, so a value read back from a
+    table matches the string or date the source had."""
+    return json.dumps(list(values), default=_iso, separators=(",", ":"))
+
+
+def _iso(v: Any) -> str:
+    return v.isoformat() if isinstance(v, (dt.date, dt.datetime, dt.time)) else str(v)
 
 
 def null_keys(name: str, rows: list[dict], keys: list[str]) -> tuple[list[dict], list[dict]]:
