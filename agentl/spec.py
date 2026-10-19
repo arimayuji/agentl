@@ -411,6 +411,35 @@ DROP = "drop"  # reserved route target: the record is discarded
 ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
 
 
+class PiiSpec(BaseModel):
+    """Personal data in the records an agent step sends to its llm (#337). `before_llm`: `warn`
+    (the default: a `pii.detected` event with counts, the record goes as is), `mask` (detected
+    values become placeholders like `[EMAIL_1]` before the call and are put back in the answer),
+    `block` (a record with personal data is rejected to the quarantine, never sent) or `off`.
+    `fields` and `kinds` narrow what is looked at; see agentl/pii.py for the kinds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    before_llm: Literal["warn", "mask", "block", "off"] = "warn"
+    fields: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _short(cls, raw: Any) -> Any:
+        return {"before_llm": raw} if isinstance(raw, str) else raw  # `pii: mask`
+
+    @field_validator("kinds")
+    @classmethod
+    def _known_kinds(cls, kinds: list[str]) -> list[str]:
+        from .pii import ACTIONS
+
+        unknown = [k for k in kinds if k not in ACTIONS]
+        if unknown:
+            raise ValueError(f"unknown pii kinds {unknown}. Use {', '.join(ACTIONS)}")
+        return kinds
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -459,6 +488,8 @@ class StepSpec(BaseModel):
     # Several llms answer and a vote or a judge decides (#299). See JurySpec.
     jury: JurySpec | None = None
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
+    # Personal data before the llm call (#337): warn (default), mask, block or off. See PiiSpec.
+    pii: PiiSpec | None = None
     # Router (#299): an agent step that labels each record with one of these keys and sends it
     # only to the mapped step (`drop` discards it). Each target reads the router as its input and
     # receives just its branch. `rules:` items here are {when: expr, route: label}.
@@ -645,6 +676,13 @@ class StepSpec(BaseModel):
             self.expect or (isinstance(self.review, str) and not self.agent) or self.severity
         ) and not self.check:
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
+        if self.pii is not None and not self.agent:
+            raise ValueError(f"step '{self.id}': pii belongs to agent steps (what is sent to the llm)")
+        if self.pii is not None and self.pii.before_llm == "mask" and self.output_mode == "rows":
+            raise ValueError(
+                f"step '{self.id}': pii mask does not support output_mode rows yet; use block, "
+                "or protect the fields in a step before"
+            )
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
         if self.mode == "batch" and self.records_per_call > 1:
