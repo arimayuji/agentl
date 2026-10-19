@@ -55,6 +55,7 @@ def compute(
     ids = {r["id"] for r in runs}
     failing: dict[str, dict] = {}
     cost: dict[str, float] = {}
+    throttled: dict[str, float] = {}  # run id -> seconds waited for llm rate limits
     run_pipeline = {r["id"]: r["pipeline"] for r in runs}
     rejected: dict[tuple[str, str], int] = {}
     done_steps: list[dict] = []
@@ -68,6 +69,7 @@ def compute(
             done_steps.append(e)
         elif e["type"] in END_EVENTS:
             cost[e["run_id"]] = float((e["data"] or {}).get("cost_usd") or 0)
+            throttled[e["run_id"]] = float((e["data"] or {}).get("throttled_s") or 0)
         else:
             failing.setdefault(e["run_id"], e)  # the first failure is the cause
 
@@ -85,6 +87,7 @@ def compute(
                 "outcomes": {},
                 "_secs": [],
                 "cost_usd": 0.0,
+                "throttled_s": 0.0,
                 "_reasons": {},
                 "_days": {},
             },
@@ -97,6 +100,7 @@ def compute(
         if r["finished"]:
             p["_secs"].append(r["finished"] - r["started"])
         p["cost_usd"] += cost.get(r["id"], 0.0)
+        p["throttled_s"] += throttled.get(r["id"], 0.0)
         day = _dt.datetime.fromtimestamp(r["started"]).date().isoformat()
         d = p["_days"].setdefault(day, {"date": day, "succeeded": 0, "failed": 0})
         if status in ("succeeded", "failed"):
@@ -129,6 +133,7 @@ def compute(
         p["median_s"] = round(statistics.median(secs), 3) if secs else None
         p["p95_s"] = round(_pct(secs, 95) or 0, 3) if secs else None
         p["cost_usd"] = round(p["cost_usd"], 6)
+        p["throttled_s"] = round(p["throttled_s"], 3)
         p["failures"] = sorted(p.pop("_reasons").values(), key=lambda g: (-g["count"], -g["last_seen"]))
         p["daily"] = list(p.pop("_days").values())
         pipelines.append(p)
@@ -221,6 +226,8 @@ def text(report: dict, top: int = 5) -> str:
             lines.append(f"  duration: median {p['median_s']:.1f}s, p95 {p['p95_s']:.1f}s")
         if p["cost_usd"]:
             lines.append(f"  cost: {p['cost_usd']:.4f} USD")
+        if p.get("throttled_s"):
+            lines.append(f"  throttled: {p['throttled_s']:.1f} s waiting for llm rate limits")
         lines.append(f"  last run: {p['last_run']} {p['last_status']}")
         if p.get("agents"):
             lines.append("  agent cost (USD):")

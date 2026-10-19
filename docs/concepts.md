@@ -263,6 +263,6 @@ stats` and the dashboard show the outcome.
 
 ## Events
 
-Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
+Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `llm.throttled`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
 `wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded`, `run.failed`, `run.skipped` and `run.alert` (see [run outcomes](#run-outcomes)). They feed the run store, the dashboard and
 [notifications](notifications.md).

@@ -241,14 +241,25 @@ def _money(c: tuple[float, float] | None) -> str:
     return f"${c[0]:.4f}-${c[1]:.4f}"
 
 
+CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(*parts: Any) -> int:
+    """Rough input tokens of a call (4 characters per token); dicts and lists count as JSON."""
+    chars = sum(
+        len(p) if isinstance(p, str) else len(json.dumps(p, default=str, ensure_ascii=False)) for p in parts
+    )
+    return math.ceil(chars / CHARS_PER_TOKEN)
+
+
 def _tokens(step: StepSpec, records: list[dict]) -> tuple[int, int]:
     """Rough token count (4 characters per token) of the calls an agent step would make, low and
     high: the output length is the part nobody can know before the model answers."""
     from .llm import SYSTEM, schema_model
 
     schema = json.dumps(schema_model(f"{step.id}_output", step.output or {}).model_json_schema())
-    prefix = (len(SYSTEM) + len(step.agent or "") + len(schema)) / 4
-    body = sum(len(json.dumps(r, default=str, ensure_ascii=False)) for r in records) / 4
+    prefix = (len(SYSTEM) + len(step.agent or "") + len(schema)) / CHARS_PER_TOKEN
+    body = sum(len(json.dumps(r, default=str, ensure_ascii=False)) for r in records) / CHARS_PER_TOKEN
     calls = math.ceil(len(records) / step.records_per_call) if records else 0
     tin = prefix * calls + body
     per_out = 6 + 8 * len(step.output or {})
