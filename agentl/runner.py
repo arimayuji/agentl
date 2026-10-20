@@ -1665,9 +1665,11 @@ class Runner:
         token = registry._AFTER_RUN.set(self._after_run)
         state = registry._STEP_STATE.set(self._step_state(step.id))
         seen = registry._SEEN.set(self._seen_keys())
+        store = registry._RUN_STORE.set(self.store)
         try:
             out = fn(data, **step.with_)
         finally:
+            registry._RUN_STORE.reset(store)
             registry._SEEN.reset(seen)
             registry._STEP_STATE.reset(state)
             registry._AFTER_RUN.reset(token)

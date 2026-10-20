@@ -67,6 +67,7 @@ RULES = {
     "AL010": "cast without locale reads numbers that look en-US",
     "AL011": "http source with a fallback but no retries",
     "AL012": "personal data in sample records reaches an agent step without protect or pii",
+    "AL013": "an http step turns off TLS certificate checks",
 }
 
 
@@ -516,6 +517,20 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                     line,
                     col,
                     "add `retries: {attempts: 3, on: [transport, http_5xx, http_429]}`",
+                )
+            )
+    for s in spec.steps:
+        tls = s.with_.get("tls")
+        if (s.use or "").startswith("http.") and isinstance(tls, dict) and tls.get("verify") is False:
+            line, col = pos.step(s.id, "with", "tls")
+            out.append(
+                Finding(
+                    "AL013",
+                    "warning",
+                    f"step '{s.id}' turns off TLS certificate checks (`tls.verify: false`)",
+                    line,
+                    col,
+                    "trust the server's CA instead: `tls: {ca_bundle: ./corp.pem}`",
                 )
             )
     known = set(PipelineSpec.model_fields) | {"extract", "transform", "load", "lint"}
