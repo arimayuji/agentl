@@ -215,6 +215,7 @@ def tls_site(tmp_path):
         )
     )
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(pem, keyfile)
 
     class H(http.server.BaseHTTPRequestHandler):
