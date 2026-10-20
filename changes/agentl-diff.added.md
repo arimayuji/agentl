@@ -1,0 +1,1 @@
+`agentl diff pipeline.yaml`: runs the pipeline without writing and shows, for each keyed `sqlite.write`, `postgres.write` and `sql.write`, the rows it would insert, update and delete (a dry `mode: changeset` with `emit: changes`). Other writers only show their record count. `--fixture`, `--echo`, `--json`, `--limit` and `--exit-code` for CI (#181).
