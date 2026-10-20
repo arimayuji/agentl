@@ -175,7 +175,10 @@ digest goes out with each run of the check.
 ## When a check fails
 
 - `on_fail: stop` (default): the step fails with the findings, so nothing after it runs and the
-  last good output stays in place.
+  last good output stays in place. It also gates the run's outputs: every final step (one no
+  other step depends on, usually a writer) waits for the stop checks of the pipeline, even when
+  the check is not on its input path, so a failing check stops a sibling writer too. A
+  best-effort check (`required: false`) does not gate.
 - `on_fail: warn`: the data goes on and the findings are reported.
 
 Both emit `check.failed` with `findings` (a list of `{check, detail}`), so any notification rule
