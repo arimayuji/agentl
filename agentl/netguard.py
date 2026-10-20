@@ -167,19 +167,27 @@ def _opener() -> Any:
     return urllib.request.build_opener(_HTTPHandler, _HTTPSHandler, _GuardedRedirects)
 
 
-def urlopen(req: urllib.request.Request, timeout: float, check: Any = None, proxy: str | None = None) -> Any:
+def urlopen(
+    req: urllib.request.Request,
+    timeout: float,
+    check: Any = None,
+    proxy: str | None = None,
+    context: Any = None,
+) -> Any:
     """urllib.request.urlopen with the guard applied to the URL, every redirect and the address
     actually connected to. `check(url)` runs on the URL and on every redirect target too. `proxy`
     (an operator-configured http(s) proxy URL) is used for both schemes instead of the
-    environment's; the target URL is still checked."""
+    environment's; the target URL is still checked. `context` is the TLS context for HTTPS (a
+    custom CA bundle), instead of `ssl_context()`."""
     check_url(req.full_url)
     opener = _opener()
-    if check is not None or proxy:
+    if check is not None or proxy or context is not None:
         if check is not None:
             check(req.full_url)
         extra = staticmethod(check) if check is not None else None
         redirects = type("_Redirects", (_GuardedRedirects,), {"extra": extra})
-        handlers: list[Any] = [_HTTPHandler, _HTTPSHandler, redirects]
+        https = _HTTPSHandler(context=context) if context is not None else _HTTPSHandler
+        handlers: list[Any] = [_HTTPHandler, https, redirects]
         if proxy:
             handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
         opener = urllib.request.build_opener(*handlers)

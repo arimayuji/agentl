@@ -345,6 +345,28 @@ class Store:
             beat.join()
             self.lock_release(key, owner)
 
+    # request budgets shared by steps and runs (#212): a fixed window counted in the cache table
+    def budget_take(self, key: str, limit: int, window: float) -> float:
+        """Take one request from budget `key` (`limit` per `window` seconds, windows aligned to
+        the clock). Returns 0 when taken, or the seconds until the window resets when it is spent.
+        Atomic across threads, processes and hosts that share the store."""
+        owner = uuid.uuid4().hex
+        pause = 0.005
+        while not self.lock_acquire("budget:" + key, owner, 10.0):
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
+        try:
+            now = time.time()
+            start = now - now % window
+            slot = f"budget:{key}:{int(start)}"
+            used = int(self.cache_get(slot) or 0)
+            if used >= limit:
+                return start + window - now
+            self.cache_set(slot, used + 1, ttl=window * 2)
+            return 0.0
+        finally:
+            self.lock_release("budget:" + key, owner)
+
     # column mappings of map_schema steps (#177), per pipeline and step: {"layouts": {sig: mapping}}
     MAPPING_PREFIX: ClassVar[str] = "map_schema:"
 

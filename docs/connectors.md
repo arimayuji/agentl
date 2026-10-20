@@ -164,7 +164,7 @@ before it is written to disk.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `if_changed`, `on_unchanged` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `retry_after`, `rate_limit`, `mirrors`, `tls`, `if_changed`, `on_unchanged` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -230,7 +230,39 @@ an input step or `paginate`. Without a run store (the connector called directly)
 
 Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
 returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
-responses.
+responses (see [resilience](#retries-budgets-mirrors-and-tls) for `Retry-After`).
+
+### Retries, budgets, mirrors and TLS
+
+```yaml
+- id: orders
+  use: http.get
+  with:
+    url: https://api.example.com/orders
+    retries: 4
+    retry_after: respect                       # default; `ignore` keeps plain backoff
+    rate_limit: { per_hour: 1000 }             # per_second | per_minute | per_hour | per_day
+    mirrors: [https://eu.api.example.com, https://backup.example.net/api]
+    tls: { ca_bundle: ./certs/corp.pem }       # or { verify: false }, which lint flags (AL013)
+```
+
+- `retry_after`: on a 429 or 5xx with a `Retry-After` header (seconds or an HTTP date), the next
+  attempt waits what the server asks, at most 60 seconds, instead of the exponential backoff.
+- `rate_limit`: a request budget per host (or per `key:`), counted in fixed clock windows. The
+  count lives in the run store, so every step, run and worker that shares the store shares it.
+  When the budget is spent the step pauses until the window resets; it fails only after
+  `max_wait` seconds (default one day). `shared: false`, or a call outside a run, counts in the
+  process only. Budget counters are cache entries named `budget:*` (`agentl cache clear`).
+- `mirrors`: base URLs that serve the same API. Once the URL still fails after its `retries`
+  (network errors, 429, 5xx), the same path and query go to the next mirror, with the same
+  retries. A 4xx other than 429 is never retried on a mirror.
+- `tls.ca_bundle`: a PEM file of CA certificates trusted instead of the default store, for
+  intranet servers signed by a private CA. The path is relative to the working directory.
+  `tls.verify: false` turns certificate checks off; it logs a warning each time the step runs and
+  `agentl lint` reports AL013. Prefer a CA bundle.
+
+All four options work on `http.post` too, and `rate_limit`, `mirrors` and `tls` apply to the
+`if_changed` requests as well.
 
 ## SQL
 

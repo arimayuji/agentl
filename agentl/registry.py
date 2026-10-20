@@ -266,6 +266,16 @@ def current_run_id() -> str | None:
     return _RUN_ID.get()
 
 
+# The run store of the current run, for connectors that share state across runs (the
+# `rate_limit` budget of `http.get`); None outside a run.
+_RUN_STORE: contextvars.ContextVar[Any] = contextvars.ContextVar("agentl_run_store", default=None)
+
+
+def run_store() -> Any:
+    """The current run's store (`agentl.store.Store`), or None outside a run."""
+    return _RUN_STORE.get()
+
+
 # ---------------------------------------------------------------- after the run
 # Queue consumers acknowledge messages only once the whole run succeeded (at-least-once). A
 # connector registers what to do then; the runner calls it when the run ends.
