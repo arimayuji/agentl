@@ -155,3 +155,31 @@ def test_connect_reports_unresolved_configuration(tmp_path, monkeypatch):
     )
     checks = connect(tmp_path / "p.yaml")
     assert checks[0].what == "configuration" and checks[0].status == "fail"
+
+
+def test_plan_uses_the_tokens_past_runs_really_took(tmp_path):
+    """#156: with run history, a step is planned at its real tokens per record, not a guess."""
+    p = spec(tmp_path)
+    three = parse(
+        {
+            **p.model_dump(by_alias=True),
+            "steps": [s.model_dump(by_alias=True, exclude_none=True) for s in p.steps[:3]],
+        }
+    )
+    with Store(tmp_path / "s.db") as store:
+        guess = {s.step: s for s in plan(p, store).steps}["tag"]
+        assert guess.basis == "guess"
+        Runner(three, store=store, use_cache=False).run()  # 3 calls of 100 in, 10 out tokens
+        CALLS.clear()
+        out = plan(p, store)
+        tag = {s.step: s for s in out.steps}["tag"]
+    assert CALLS == []
+    assert tag.basis == "history: 3 records in 1 runs"
+    assert tag.llm_calls == 3 and tag.tokens == (330, 330)
+    assert tag.cost_usd == pytest.approx((3 * 120 / 1e6, 3 * 120 / 1e6))
+    assert "(history: 3 records in 1 runs)" in out.text()
+
+    other = p.model_copy(deep=True)
+    other.llm["default"].model = "another"  # a different model has no history yet
+    with Store(tmp_path / "s.db") as store:
+        assert {s.step: s for s in plan(other, store).steps}["tag"].basis == "guess"

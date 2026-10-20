@@ -86,4 +86,5 @@ those records right.
   [notification](notifications.md) can tell someone the queue has work.
 - `review.reused` (step, `reused`, `dropped`) when people's answers replaced llm calls.
 - `agentl stats` shows the queue per pipeline (pending and reviewed) and, per agent step, the
-  answers queued, held and reused. The dashboard shows the pending count under each pipeline.
+  answers queued, held and reused, and the cost per approved answer: answers that passed without
+  review plus the ones a person accepted (fixed, rejected and pending ones are left out). The dashboard shows the pending count under each pipeline.

@@ -172,9 +172,13 @@ plan for triage (nothing is written, no LLM is called)
 total: 40 LLM call(s), $0.0019-$0.0676
 ```
 
-Costs are a range: the length of each answer is unknown until the model writes it (about 4
-characters per token, output between short and long answers), and with a cascade the high end
-assumes every record also goes to the last llm. An llm with no `price` shows "cost unknown".
+When the run store has runs of the step with the same model in the last 90 days, the estimate
+uses the tokens a record really took in them (input and output, per model paid for, so
+escalations and fallbacks are priced at their own model): the low and high are the cheapest and
+the dearest run's average, and the line ends with `(history: N records in M runs)`. Otherwise it
+is a guess, marked `(guess)`: the length of each answer is unknown until the model writes it
+(about 4 characters per token, output between short and long answers), and with a cascade the
+high end assumes every record also goes to the last llm. `basis` in `--json` says which. An llm with no `price` shows "cost unknown".
 `--json` for scripts.
 
 ### Autocomplete in the editor
@@ -498,13 +502,21 @@ For each agent step and model, `agent cost` divides the step's spend by its reco
 rejected), by its accepted answers (records not rejected) and by the records an LLM answered.
 `cache saved` prices the step's cache hits at that last number. In `--json` these are the
 `agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
-`cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
+`cache_hits` and `cache_saved_usd`.
+
+On a step with [human review](review.md), an `approved` line also counts what people decided: the
+accepted answers that went out without review, plus the queued answers a person accepted as
+they were. Answers a person fixed or rejected, answers still pending, answers flagged
+`_review: pending` and answers that reused a person's answer are not approved. In `--json`:
+`approved`, `cost_per_approved` and `review_accepted`, `review_fixed`, `review_rejected` and
+`review_pending` (the queued answers of these runs, by status). For the cost per right answer
+on known answers, run `agentl eval` on a [golden set](agents.md#golden-sets-test-a-prompt-or-model-change). Runs recorded by earlier versions have no model or cache hits in
 their events and show up as model `unknown`.
 
 ## Eval
 
 `agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
-golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+golden sets, reports the cost per right answer and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
 
 ## Digest
 

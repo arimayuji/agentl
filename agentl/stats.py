@@ -117,7 +117,13 @@ def compute(
             g["count"] += 1
             g["last_seen"], g["last_run"], g["last_error"] = r["started"], r["id"], r["error"]
 
-    agents = _agent_costs(done_steps, rejected, run_pipeline)
+    outcomes: dict[tuple[str, str], dict[str, int]] = {}  # (run, step) -> review status -> count
+    if hasattr(store, "review_list"):
+        for item in store.review_list(pipeline, status=None):
+            if item["run_id"] in ids:
+                o = outcomes.setdefault((item["run_id"], item["step"]), {})
+                o[item["status"]] = o.get(item["status"], 0) + 1
+    agents = _agent_costs(done_steps, rejected, run_pipeline, outcomes)
     queue: dict[str, dict[str, int]] = {}
     if hasattr(store, "review_counts"):
         for c in store.review_counts(pipeline):
@@ -146,11 +152,20 @@ def _per(cost: float, n: int) -> float | None:
 
 
 def _agent_costs(
-    done: list[dict], rejected: dict[tuple[str, str], int], run_pipeline: dict[str, str]
+    done: list[dict],
+    rejected: dict[tuple[str, str], int],
+    run_pipeline: dict[str, str],
+    outcomes: dict[tuple[str, str], dict[str, int]] | None = None,
 ) -> dict[str, list[dict]]:
     """Per pipeline, one row per agent step and model: what a record, an accepted answer and a
     cache hit cost. Records are the step's output plus the ones it rejected; accepted answers
-    are the ones not rejected. A cache hit avoided is priced at what an answered record cost."""
+    are the ones not rejected. A cache hit avoided is priced at what an answered record cost.
+
+    On a step with human review, `approved` also counts what people decided: the accepted
+    answers that went out without review (minus the ones flagged `_review: pending` and the ones
+    that reused a person's answer) plus the queued answers a person accepted as they were. Fixed,
+    rejected and still pending answers are not approved."""
+    outcomes = outcomes or {}
     rows: dict[tuple[str, str, str], dict] = {}
     for e in done:
         d = e["data"] or {}
@@ -172,6 +187,12 @@ def _agent_costs(
                 "review_queued": 0,
                 "review_held": 0,
                 "review_reused": 0,
+                "review_accepted": 0,
+                "review_fixed": 0,
+                "review_rejected": 0,
+                "review_pending": 0,
+                "approved": None,
+                "_approved": 0,
             },
         )
         bad = rejected.get((e["run_id"], e["step"]), 0)
@@ -187,12 +208,25 @@ def _agent_costs(
         row["review_queued"] += int(rv.get("queued") or 0)
         row["review_held"] += int(rv.get("held") or 0)
         row["review_reused"] += int(rv.get("reused") or 0) + int(rv.get("dropped") or 0)
+        if rv:
+            decided = outcomes.get((e["run_id"], e["step"]), {})
+            for status in ("accepted", "fixed", "rejected", "pending"):
+                row[f"review_{status}"] += decided.get(status, 0)
+            ok = accepted - int(rv.get("flagged") or 0) - int(rv.get("reused") or 0)
+            row["_approved"] += max(ok, 0) + decided.get("accepted", 0)
+            row["approved"] = 0  # the step has human review: report approved answers
+        else:
+            row["_approved"] += accepted
     out: dict[str, list[dict]] = {}
     for (pipeline, _, _), row in sorted(rows.items()):
         c = row["cost_usd"]
+        approved = row.pop("_approved")
+        if row["approved"] is not None:
+            row["approved"] = approved
         row["cost_usd"] = round(c, 6)
         row["cost_per_record"] = _per(c, row["records"])
         row["cost_per_accepted"] = _per(c, row["accepted"])
+        row["cost_per_approved"] = None if row["approved"] is None else _per(c, row["approved"])
         per_answer = _per(c, row["answered"])
         row["cost_per_answer"] = per_answer
         row["cache_saved_usd"] = round(per_answer * row["cache_hits"], 6) if per_answer else None
@@ -246,6 +280,13 @@ def text(report: dict, top: int = 5) -> str:
                 lines.append(
                     f"    [{a['step']}] review: {a['review_queued']} queued, {a['review_held']} held,"
                     f" {a['review_reused']} reused from people"
+                )
+            if a.get("approved") is not None:
+                lines.append(
+                    f"    [{a['step']}] approved: {a['approved']} of {a['records']}"
+                    f" (people accepted {a['review_accepted']}, fixed {a['review_fixed']},"
+                    f" rejected {a['review_rejected']}, {a['review_pending']} pending),"
+                    f" {_usd(a['cost_per_approved'])}/approved"
                 )
         if p["failures"]:
             lines.append("  failures by reason:")
