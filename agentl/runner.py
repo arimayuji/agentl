@@ -1904,7 +1904,7 @@ class Runner:
         memory = _hash("check-digest", self.spec.name, step.id)
         bucket = self.store.cache_get(memory) or {}
         day = _today()
-        ids = sorted({f["id"] for f in found})
+        ids = checks.digest_ids(found)
         if bucket.get("day") == day:
             ids = sorted(set(ids) | set(bucket.get("ids", [])))
             prev = bucket.get("prev", [])

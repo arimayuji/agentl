@@ -506,6 +506,13 @@ their events and show up as model `unknown`.
 `agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
 golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
 
+## Digest
+
+`agentl digest pipeline.yaml [--force] [--show]` sends the pipeline's
+[`notify.digest`](checks.md#scheduled-digest) when it is due and not yet sent this period, and
+prints one line per channel. Run it from cron any time after `at`; it exits 1 when a channel
+failed. `--force` sends now, `--show` prints the digest without sending.
+
 ## Gaps
 
 A freshness check says the latest data is late; it does not say a day in the middle is missing.

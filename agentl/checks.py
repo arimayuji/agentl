@@ -372,7 +372,7 @@ def run_rules(
     records: Records, rules: list[Any], identity: list[str] | None = None
 ) -> tuple[Records, list[dict[str, Any]], list[str]]:
     """Applies per-row rules. Returns (kept rows, findings, rule errors). A finding is
-    {id, rule, column, action, detail}; rows failing a `drop` rule are left out. A rule that
+    {id, rule, column, action, notify, detail}; rows failing a `drop` rule are left out. A rule that
     raises on a row counts as passing for that row and the error is reported, never raised."""
     kept: Records = []
     findings: list[dict[str, Any]] = []
@@ -394,6 +394,7 @@ def run_rules(
                     "rule": rule.rule,
                     "column": rule.column,
                     "action": rule.on_fail,
+                    "notify": getattr(rule, "notify", "digest"),
                     "detail": f"row {i}: {rule.column}={row.get(rule.column)!r} failed {rule.rule}",
                 }
             )
@@ -407,3 +408,8 @@ def digest(today: list[str], yesterday: list[str]) -> dict[str, list[str]]:
     """Finding ids compared with the previous day: new, resolved and ongoing (sorted)."""
     t, y = set(today), set(yesterday)
     return {"new": sorted(t - y), "resolved": sorted(y - t), "ongoing": sorted(t & y)}
+
+
+def digest_ids(findings: list[dict[str, Any]]) -> list[str]:
+    """The finding ids that go into the digest: rules with `notify: none` act silently."""
+    return sorted({f["id"] for f in findings if f.get("notify", "digest") != "none"})

@@ -151,7 +151,7 @@ hybrid rule on a check step, or `rules:` on any other kind of step, is a validat
   rules:
     - { rule: between, column: amount, min: 0, max: 100000, on_fail: drop }
     - { rule: abs_diff_max, column: amount, other: billed, max: 500, on_fail: flag }
-    - { rule: not_null, column: customer }
+    - { rule: not_null, column: customer, notify: none }  # flagged, left out of the digest
     - { rule: accepted, column: status, values: [paid, refunded] }
     - { rule: matches, column: email, pattern: "@" }
 ```
@@ -169,8 +169,46 @@ notify:
     - { on: check.digest, to: [slack] }
 ```
 
-Not yet: a scheduled digest sent once a day at a fixed time with a "sent today" guard; today the
-digest goes out with each run of the check.
+That message goes out with each run of the check. Each rule also takes `notify`: `digest`
+(default) puts its findings in the digest, `none` acts silently (the row is still dropped, flagged
+or failed as `on_fail` says, but the finding is left out of the digest).
+
+### Scheduled digest
+
+`notify.digest` sends one digest per period at a set time instead, with a "sent today" guard:
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+    ops: { type: webhook, url: "${OPS_HOOK}" }
+  digest:
+    to: [slack, ops]                    # any notify channel
+    every: 1d                           # whole days: 1d, 7d
+    at: "08:00"                         # in tz
+    tz: America/Sao_Paulo               # default UTC
+    sections: [new, resolved, ongoing]  # which lists to show (default: all three)
+    heartbeat: true                     # "all clear" on a clean day (default true)
+    idempotent: true                    # guard after the send (default) or before it
+```
+
+It reads the daily buckets of every check step with `rules:` and sends, per step, the counts and
+the finding ids of each section (up to 50 per section). A step with no run today is reported as
+"no run today (last on ...)", which is never a clean day. With `heartbeat: false` a clean day sends
+nothing.
+
+The guard is kept per channel in the run store. With `idempotent: true` it is written only after
+a successful send, so a channel that failed is tried again on the next check and a channel that
+worked is not sent to twice (at least once). With `idempotent: false` it is written before the
+send, so a crash in the middle never sends twice, and a failed send is lost (at most once).
+
+Two ways to send it:
+
+- `agentl serve` checks the digest of each pipeline it serves once a minute.
+- `agentl digest pipeline.yaml` from cron (any time after `at`; it sends only when due and exits 1
+  when a channel failed). `--force` sends now, `--show` prints the digest and sends nothing.
+
+The buckets are UTC days, so with a `tz` far from UTC, `at` should come after the day's check runs.
 
 ## When a check fails
 
