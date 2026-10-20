@@ -73,7 +73,8 @@ Each step has an `id` and one of:
 - `use: <connector>` with its parameters under `with:`
 - `agent: <instruction>` with `output: {field: type}` for an LLM step over each record
   (types: str, int, float, bool, list[str])
-- `check: <step id>` with `expect:` (rows, not_null, unique, accepted, range, fresh, vs_last_run)
+- `check: <step id>` with `expect:` (rows, not_null, unique, accepted, range, fresh,
+  vs_last_run; `unique: [[a, b]]` is one composite key)
 - `fn: module:function` for Python code
 `input: <step id>` (or a list of ids) wires steps. Put secrets in environment variables as ${VAR}.
 Pipelines with agent steps need `llm: {provider: anthropic, model: claude-opus-5-5}`.

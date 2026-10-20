@@ -19,7 +19,7 @@ Code, Cursor or another coding agent, point it at
 ## Credit
 
 Every merged pull request counts: you show up in the README's Contributors section (built from the
-repository's commit history) and the CHANGELOG entry for your change credits you by GitHub handle.
+repository's commit history) and the changelog entry for your change credits you by GitHub handle.
 
 ## Development setup
 
@@ -42,13 +42,43 @@ mypy
 pytest --cov
 ```
 
+### Locked CI dependencies
+
+CI installs its tools from hash-locked files in `requirements/` (`pip install --require-hashes`),
+then agentl itself with `pip install --no-deps --no-build-isolation -e .`. Each `.txt` is generated
+from the `.in` next to it; the command is in the `.in` header. After changing the `dev` extra in
+`pyproject.toml`, update `requirements/ci.in` to match and regenerate:
+
+```bash
+for f in fuzz ci build browser; do
+  uv pip compile --universal --python-version 3.10 --generate-hashes -o requirements/$f.txt requirements/$f.in
+done
+```
+
+`--universal` writes one lock for Python 3.10 to 3.13 on Linux, Windows and macOS. Dependabot
+proposes updates weekly.
+
+### Fuzzing
+
+`fuzz/` holds [Atheris](https://github.com/google/atheris) targets for the parsers that read
+untrusted input (pipeline YAML, CSV, JSON, XML and HTML, `${VAR}` and `{field}` templates).
+ClusterFuzzLite (`.clusterfuzzlite/`, `.github/workflows/cflite.yml`) runs them briefly on pull
+requests and longer every week. To run one locally:
+
+```bash
+pip install atheris -e .
+python fuzz/fuzz_csv.py -max_total_time=30
+```
+
 ## Guidelines
 
 - **Core stays light.** The core depends only on `pyyaml` and `pydantic`. Connectors that need
   heavy libraries go behind an extra in `pyproject.toml` and import them with `registry.require`.
 - **Tests never hit the network or a real LLM.** Use the `echo` provider, a fake provider or `monkeypatch`.
 - **Secrets only through environment variables.** Never commit keys, tokens or `.env` files.
-- **Public API changes** need docs in the README and an entry in `CHANGELOG.md` under `[Unreleased]`.
+- **User-facing changes** need docs and a changelog fragment: add `changes/<short-slug>.<section>.md`
+  (section: `added`, `changed`, `fixed`, `removed`, `security` or `docs`) holding the bullet text.
+  Do not edit `CHANGELOG.md`; see [`changes/README.md`](changes/README.md).
 - Keep pull requests focused. One feature or fix per PR.
 
 ## Commit messages
@@ -110,7 +140,8 @@ request code.
 
 ## Releases (maintainers)
 
-1. Move the `[Unreleased]` entries in `CHANGELOG.md` to a new version section.
+1. In the release PR, run `python tools/changelog.py build --version X.Y.Z` (check first with
+   `python tools/changelog.py preview`). It writes the fragments into `CHANGELOG.md` and deletes them.
 2. Bump `__version__` in `agentl/__init__.py`.
 3. Merge to `main`, then tag: `git tag v0.2.0 && git push origin v0.2.0`.
 4. The `release` workflow builds, publishes to PyPI and creates the GitHub release.

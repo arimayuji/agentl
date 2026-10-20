@@ -1,0 +1,44 @@
+name: ClusterFuzzLite
+
+# Fuzzes the parsers in fuzz/ (Atheris targets, built by .clusterfuzzlite/). Pull requests run a
+# short code-change fuzz on the changed code; a weekly batch run fuzzes longer.
+on:
+  pull_request:
+    branches: [main]
+    paths: ["agentl/**", "fuzz/**", ".clusterfuzzlite/**", "requirements/fuzz.txt", ".github/workflows/cflite.yml"]
+  schedule:
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ matrix.sanitizer }}
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: ${{ github.event_name == 'pull_request' && 120 || 1200 }}
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
+          sanitizer: ${{ matrix.sanitizer }}

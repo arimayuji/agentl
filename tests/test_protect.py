@@ -1,5 +1,6 @@
 """protect / unprotect (#225): field-level encryption, keyed hashing, masking and dropping."""
 
+import importlib.util
 import json
 
 import pytest
@@ -10,6 +11,10 @@ from agentl.connectors.protect import PREFIX, new_key, protect, unprotect
 from agentl.runner import Runner
 from agentl.store import Store
 
+needs_crypto = pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None, reason="needs agentl-etl[crypto]"
+)
+
 KEY, OTHER = new_key(), new_key()
 ROWS = [
     {"id": 1, "tax_id": "529.982.247-25", "email": "ana@example.com", "phone": "11987654321", "notes": "x"},
@@ -18,6 +23,7 @@ ROWS = [
 FIELDS = {"tax_id": "encrypt", "email": "hash", "phone": "mask", "notes": "drop"}
 
 
+@needs_crypto
 def test_protect_each_action():
     out = protect(ROWS, fields=FIELDS, key=KEY)
     a, b = out
@@ -29,6 +35,7 @@ def test_protect_each_action():
     assert protect(ROWS, fields={"phone": {"mask": 2}})[0]["phone"] == "*********21"  # no key needed
 
 
+@needs_crypto
 def test_round_trip_keeps_types_and_nonce_is_random():
     rows = [{"v": 1234.5, "l": [1, "a"], "s": "texto ção"}]
     p1 = protect(rows, fields={"v": "encrypt", "l": "encrypt", "s": "encrypt"}, key=KEY)
@@ -42,6 +49,7 @@ def test_hash_is_deterministic_per_key():
     assert h(KEY) == h(KEY) and h(KEY) != h(OTHER)
 
 
+@needs_crypto
 def test_key_rotation_and_wrong_key():
     old = protect(ROWS[:1], fields={"tax_id": "encrypt"}, key=OTHER)
     new = protect(ROWS[:1], fields={"tax_id": "encrypt"}, key=[KEY, OTHER])
@@ -50,6 +58,7 @@ def test_key_rotation_and_wrong_key():
         unprotect(old, fields="tax_id", key=KEY)
 
 
+@needs_crypto
 def test_tampered_or_moved_value_fails():
     p = protect([{"a": "secret", "b": "x"}], fields={"a": "encrypt"}, key=KEY)[0]
     with pytest.raises(ValueError, match="does not decrypt"):
@@ -81,6 +90,7 @@ def _rows(input):
     return [dict(r) for r in ROWS]
 
 
+@needs_crypto
 def test_pipeline_keeps_clear_values_out_of_the_store(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTL_DATA_KEY", KEY)
     spec = parse(

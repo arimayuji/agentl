@@ -94,6 +94,49 @@ def _cached(key: tuple, fetch: Any) -> str:
         return token
 
 
+def _google_request() -> Any:
+    """A google-auth transport on urllib, so the `google` extra does not need `requests`."""
+    transport = require("google.auth.transport", "google")
+    gexc = require("google.auth.exceptions", "google")
+
+    class _Response(transport.Response):  # type: ignore[name-defined]
+        def __init__(self, status: int, headers: Any, data: bytes) -> None:
+            self._status, self._headers, self._data = status, dict(headers or {}), data
+
+        @property
+        def status(self) -> int:
+            return self._status
+
+        @property
+        def headers(self) -> dict:
+            return self._headers
+
+        @property
+        def data(self) -> bytes:
+            return self._data
+
+    class _Request(transport.Request):  # type: ignore[name-defined]
+        def __call__(
+            self,
+            url: str,
+            method: str = "GET",
+            body: bytes | None = None,
+            headers: dict | None = None,
+            timeout: float | None = None,
+            **kwargs: Any,
+        ) -> Any:
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+            try:
+                with netguard.urlopen(req, timeout=timeout or 60) as resp:
+                    return _Response(resp.status, resp.headers, resp.read())
+            except urllib.error.HTTPError as e:
+                return _Response(e.code, e.headers, e.read())
+            except urllib.error.URLError as e:
+                raise gexc.TransportError(str(e)) from e
+
+    return _Request()
+
+
 def google_token(access_token: str | None, credentials: str | None, scopes: list[str]) -> str:
     token = access_token or os.environ.get("GOOGLE_ACCESS_TOKEN")
     if token:
@@ -106,9 +149,8 @@ def google_token(access_token: str | None, credentials: str | None, scopes: list
 
     def fetch() -> tuple[str, float]:
         sa = require("google.oauth2.service_account", "google")
-        transport = require("google.auth.transport.requests", "google")
         creds = sa.Credentials.from_service_account_file(path, scopes=scopes)
-        creds.refresh(transport.Request())
+        creds.refresh(_google_request())
         left = (creds.expiry.timestamp() - time.time()) if creds.expiry else 3000
         return creds.token, left
 

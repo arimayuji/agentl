@@ -50,6 +50,26 @@ class PriceSpec(BaseModel):
     batch: float = Field(default=1.0, gt=0, le=1)  # multiplier for batch mode, e.g. 0.5; default: no discount
 
 
+class RateLimitSpec(BaseModel):
+    """Client-side limits for one llm (#336): requests and tokens per minute, shared by every
+    step and thread of a run that uses it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rpm: int | None = Field(default=None, gt=0)
+    tpm: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _some_limit(self) -> RateLimitSpec:
+        if self.rpm is None and self.tpm is None:
+            raise ValueError("rate_limit needs rpm, tpm or both")
+        return self
+
+
+LLM_KEY_EXCLUDE = {"price", "rate_limit"}
+"""LLMSpec fields that do not change an answer, left out of cache keys."""
+
+
 class LLMSpec(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-opus-5-5"
@@ -58,6 +78,7 @@ class LLMSpec(BaseModel):
     price: PriceSpec | None = None
     # Other llms (by name) to try, in order, when a call to this one fails.
     fallback: list[str] = Field(default_factory=list)
+    rate_limit: RateLimitSpec | None = None
 
     def cost(self, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float:
         """`input_tokens` is all input; `cache_read` and `cache_write` are the parts of it that hit
@@ -80,6 +101,7 @@ class BudgetSpec(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)
     max_usd: float | None = Field(default=None, gt=0)
     max_tool_calls: int | None = Field(default=None, gt=0)  # tool calls by agent steps, whole run
+    max_calls: int | None = Field(default=None, gt=0)  # llm calls, whole run
 
 
 class MCPServerSpec(BaseModel):
@@ -245,6 +267,39 @@ class GoldenSpec(BaseModel):
         return {"file": raw} if isinstance(raw, str) else raw
 
 
+class ReviewSpec(BaseModel):
+    """Human review of an agent step's answers (#153). An answer whose `confidence` is below
+    `below`, or that matches the expression `when`, or every answer with `always`, goes to the
+    review queue in the run store. With `hold` (the default) the record does not reach the next
+    steps; with `hold: false` it goes on flagged `_review: pending`. An accepted or fixed answer is
+    reused for the same input on later runs, with no llm call; a rejected one drops the record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    below: float | None = Field(default=None, ge=0, le=1)
+    when: str | None = None
+    always: bool = False
+    hold: bool = True
+
+    @field_validator("when")
+    @classmethod
+    def _when(cls, v: str | None) -> str | None:
+        if v is not None:
+            from . import expr
+
+            try:
+                expr.compile_expr(v)
+            except expr.ExprError as e:
+                raise ValueError(f"review when: {e}") from None
+        return v
+
+    @model_validator(mode="after")
+    def _some(self) -> ReviewSpec:
+        if self.below is None and self.when is None and not self.always:
+            raise ValueError("review needs below: <confidence>, when: <expression> or always: true")
+        return self
+
+
 class RowRuleSpec(BaseModel):
     """A per-row rule of a check step (#218). `on_fail`: `drop` removes the row, `flag` keeps it
     and reports it, `fail` stops the step. An error inside the rule never stops the pipeline."""
@@ -259,6 +314,9 @@ class RowRuleSpec(BaseModel):
     values: list[Any] | None = None
     pattern: str | None = None
     on_fail: Literal["drop", "flag", "fail"] = "flag"
+    # What is said about a finding: `digest` puts it in the daily digest, `none` acts silently
+    # (the row is still dropped, flagged in the step's findings or failed as `on_fail` says).
+    notify: Literal["digest", "none"] = "digest"
 
     @model_validator(mode="after")
     def _needs(self) -> RowRuleSpec:
@@ -369,6 +427,35 @@ DROP = "drop"  # reserved route target: the record is discarded
 ROUTE_OUTPUT = {"route": "str"}  # the implicit output of a router
 
 
+class PiiSpec(BaseModel):
+    """Personal data in the records an agent step sends to its llm (#337). `before_llm`: `warn`
+    (the default: a `pii.detected` event with counts, the record goes as is), `mask` (detected
+    values become placeholders like `[EMAIL_1]` before the call and are put back in the answer),
+    `block` (a record with personal data is rejected to the quarantine, never sent) or `off`.
+    `fields` and `kinds` narrow what is looked at; see agentl/pii.py for the kinds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    before_llm: Literal["warn", "mask", "block", "off"] = "warn"
+    fields: list[str] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _short(cls, raw: Any) -> Any:
+        return {"before_llm": raw} if isinstance(raw, str) else raw  # `pii: mask`
+
+    @field_validator("kinds")
+    @classmethod
+    def _known_kinds(cls, kinds: list[str]) -> list[str]:
+        from .pii import ACTIONS
+
+        unknown = [k for k in kinds if k not in ACTIONS]
+        if unknown:
+            raise ValueError(f"unknown pii kinds {unknown}. Use {', '.join(ACTIONS)}")
+        return kinds
+
+
 class StepSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -380,7 +467,9 @@ class StepSpec(BaseModel):
     # to do when it fails. The records pass through unchanged.
     check: str | None = None
     expect: dict[str, Any] = Field(default_factory=dict)
-    review: str | None = None
+    # On a check step: the instruction of the agent review of the data. On an agent step: the
+    # human review queue (#153), see ReviewSpec.
+    review: str | ReviewSpec | None = None
     on_fail: Literal["stop", "warn"] = "stop"
     # Layout drift (#178): compare the input's columns and types with the last run's. See drift.py.
     on_drift: Literal["warn", "fail", "remap"] | None = None
@@ -415,6 +504,8 @@ class StepSpec(BaseModel):
     # Several llms answer and a vote or a judge decides (#299). See JurySpec.
     jury: JurySpec | None = None
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
+    # Personal data before the llm call (#337): warn (default), mask, block or off. See PiiSpec.
+    pii: PiiSpec | None = None
     # Router (#299): an agent step that labels each record with one of these keys and sends it
     # only to the mapped step (`drop` discards it). Each target reads the router as its input and
     # receives just its branch. `rules:` items here are {when: expr, route: label}.
@@ -433,6 +524,8 @@ class StepSpec(BaseModel):
     batch_timeout_seconds: float = Field(default=86400, gt=0)
     cache: bool | None = None  # default: True for agent steps
     cache_ttl: str | float | None = None  # cached results expire after this long; default: never
+    # Part of the cache key: change it to stop reusing results after editing a `fn` or transform.
+    cache_version: str | int | None = None
     # Tools the agent may call, per record: "http.get", "sqlite.query", "fn:module:function",
     # "mcp:server" or "mcp:server/tool"; a one-key dict adds settings, e.g. {sqlite.query: {db: x}}.
     tools: list[str | dict[str, dict[str, Any]]] = Field(default_factory=list)
@@ -478,6 +571,18 @@ class StepSpec(BaseModel):
                 f"step '{sid}': jury when: low_confidence needs a confidence output field and"
                 " escalate_below; use when: always otherwise"
             )
+
+    def _check_review(self, review: ReviewSpec) -> None:
+        sid = self.id
+        if not self.agent:
+            raise ValueError(f"step '{sid}': only agent steps take a review mapping; a check takes text")
+        if self.routes is not None or self.output_mode == "rows":
+            raise ValueError(f"step '{sid}': review does not work on routers or with output_mode rows")
+        if review.below is not None and (self.output or {}).get("confidence", "").rstrip("?") not in (
+            "float",
+            "int",
+        ):
+            raise ValueError(f"step '{sid}': review below needs a 'confidence: float' output field")
 
     @property
     def llms(self) -> list[str]:
@@ -561,6 +666,13 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': unknown expectation {unknown}. Use {', '.join(_EXPECTATIONS)}"
             )
+        if "unique" in self.expect:
+            from .checks import unique_keys
+
+            try:
+                unique_keys(self.expect["unique"])
+            except ValueError as e:
+                raise ValueError(f"step '{self.id}': {e}") from None
         if self.severity:
             from .checks import ROW_RULES
 
@@ -584,8 +696,17 @@ class StepSpec(BaseModel):
             unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
             if unknown_vr:
                 raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
-        if (self.expect or self.review or self.severity) and not self.check:
+        if (
+            self.expect or (isinstance(self.review, str) and not self.agent) or self.severity
+        ) and not self.check:
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
+        if self.pii is not None and not self.agent:
+            raise ValueError(f"step '{self.id}': pii belongs to agent steps (what is sent to the llm)")
+        if self.pii is not None and self.pii.before_llm == "mask" and self.output_mode == "rows":
+            raise ValueError(
+                f"step '{self.id}': pii mask does not support output_mode rows yet; use block, "
+                "or protect the fields in a step before"
+            )
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
         if self.mode == "batch" and self.records_per_call > 1:
@@ -636,6 +757,12 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': only agent steps take tools")
         if self.golden and not self.agent:
             raise ValueError(f"step '{self.id}': only agent steps take a golden set")
+        if isinstance(self.review, ReviewSpec):
+            self._check_review(self.review)
+        elif self.review is not None and self.agent:
+            raise ValueError(
+                f"step '{self.id}': review on an agent step is a mapping, e.g. review: {{below: 0.8}}"
+            )
         if self.tools and (self.mode == "batch" or self.records_per_call > 1):
             raise ValueError(
                 f"step '{self.id}': tools work one record per call; drop mode batch and records_per_call"
@@ -795,11 +922,81 @@ class Rule(BaseModel):
     to: list[str]
     when: str | None = None
     summary: str | None = None  # "agent" -> LLM summary of the run
+    # `on: records`: send the records `step` produced, only when it produced any
+    step: str | None = None
+    template: str | None = None  # one line per record, e.g. "{id}: {message}"; default JSON
+    max_rows: int = Field(default=20, ge=1)
+    # Run errors (#356): alert once per error fingerprint and count the repeats; `remind_every`
+    # (e.g. 6h) alerts again with the count. Off by default, so every failure still alerts.
+    dedupe: bool = False
+    remind_every: str | None = None
+
+    @model_validator(mode="after")
+    def _records_rule(self) -> Rule:
+        if self.remind_every is not None:
+            from .checks import parse_duration
+
+            if parse_duration(self.remind_every) <= 0:
+                raise ValueError(f"notify rule remind_every '{self.remind_every}': use a duration like 6h")
+            self.dedupe = True  # a reminder only makes sense for a deduplicated alert
+        kinds = [self.on] if isinstance(self.on, str) else self.on
+        if "records" in kinds and not self.step:
+            raise ValueError("notify rule 'on: records' needs 'step: <step id>'")
+        if self.step and "records" not in kinds:
+            raise ValueError("notify rule 'step:' is only used with 'on: records'")
+        return self
+
+
+DigestSection = Literal["new", "resolved", "ongoing", "errors"]
+# The default: the check findings. `errors` (#356) lists run errors and is added by name.
+DIGEST_SECTIONS: tuple[DigestSection, ...] = ("new", "resolved", "ongoing")
+
+
+class DigestSpec(BaseModel):
+    """`notify.digest` (#218): the findings of the check rules sent once per period at a set time,
+    with a "sent today" guard per channel. See agentl/digest.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: list[str] = Field(min_length=1)
+    every: str = "1d"  # whole days
+    at: str = "08:00"  # HH:MM in `tz`
+    tz: str = "UTC"
+    sections: list[DigestSection] = Field(default_factory=lambda: list(DIGEST_SECTIONS))
+    heartbeat: bool = True  # send "all clear" on a day with no findings
+    # true: the guard is written after a successful send, so a failed send is retried (at least
+    # once); false: before sending, so a crash in the middle never sends twice (at most once).
+    idempotent: bool = True
+
+    @model_validator(mode="after")
+    def _check(self) -> DigestSpec:
+        from zoneinfo import ZoneInfo
+
+        from .checks import parse_duration
+
+        seconds = parse_duration(self.every)
+        if seconds < 86400 or seconds % 86400:
+            raise ValueError(f"notify.digest.every '{self.every}': use whole days (1d, 7d)")
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.at):
+            raise ValueError(f"notify.digest.at '{self.at}': use HH:MM (e.g. 08:00)")
+        try:
+            ZoneInfo(self.tz)
+        except Exception as e:
+            raise ValueError(f"notify.digest.tz '{self.tz}': not a known time zone") from e
+        return self
 
 
 class NotifySpec(BaseModel):
     channels: dict[str, Channel] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
+    digest: DigestSpec | None = None
+
+    @model_validator(mode="after")
+    def _digest_channels(self) -> NotifySpec:
+        missing = [c for c in (self.digest.to if self.digest else []) if c not in self.channels]
+        if missing:
+            raise ValueError(f"notify.digest.to: unknown channel(s) {', '.join(missing)}")
+        return self
 
 
 class PublicationSpec(BaseModel):
@@ -997,6 +1194,15 @@ class OutcomesSpec(BaseModel):
         return self.exit_codes.get(outcome, default)  # type: ignore[call-overload]
 
 
+class ReportSpec(BaseModel):
+    """What a failed run does when its error looks like an agentl bug (#286). `prompt` prints the
+    `agentl report` hint, `open` also opens the prefilled issue form in the browser (nothing is
+    submitted), `off` prints nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+    on_bug: Literal["prompt", "open", "off"] = "prompt"
+
+
 class WindowSpec(BaseModel):
     """Fetch windows: `${window.start}` / `${window.end}` (ISO dates, end exclusive) in a step's
     `with:`. A run re-reads the last `lookback`; `agentl backfill` covers any range. Either way the
@@ -1157,6 +1363,8 @@ class PipelineSpec(BaseModel):
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
     budget: BudgetSpec | None = None
     outcomes: OutcomesSpec = Field(default_factory=OutcomesSpec)
+    # After a failed run whose error looks like an agentl bug; see agentl.report.
+    report: ReportSpec = Field(default_factory=ReportSpec)
     concurrency: ConcurrencySpec | None = None
     # OpenLineage events for data catalogs; see agentl.lineage.
     lineage: LineageSpec | None = None
@@ -1219,6 +1427,13 @@ class PipelineSpec(BaseModel):
             for name in s.llms if s.kind == "agent" else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
+            if s.on_drift == "remap" and not any(
+                t.use == "map_schema" and s.id in t.inputs for t in self.steps
+            ):
+                raise ValueError(
+                    f"step '{s.id}': on_drift remap hands the new layout to a map_schema step; "
+                    f"add one with input: {s.id}"
+                )
             if s.check and "rejected_rate" in s.expect:
                 from .checks import rejected_limits
 

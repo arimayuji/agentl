@@ -4,6 +4,7 @@ record, emits events to the store, the dashboard and notifications."""
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import datetime as _dt
 import hashlib
 import inspect
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from . import checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
-from .spec import DROP, LLMSpec, PipelineSpec, StepSpec, load
+from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, ReviewSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -48,6 +49,7 @@ class RunResult:
     llm_calls: int = 0
     tool_calls: int = 0
     cost_usd: float = 0.0
+    throttled_s: float = 0.0  # seconds llm calls waited for a client-side rate_limit
     spend: dict[str, dict[str, Any]] = field(default_factory=dict)  # per agent step
     # per upsert, changeset or scd2 step: {"inserted": n, "updated": n, "deleted": n, "unchanged": n}
     # (scd2 also: versioned, closed)
@@ -114,6 +116,8 @@ def _write_counts(out: Any) -> tuple[int, dict[str, int]]:
     and, for upserts, how many were inserted, updated or left unchanged."""
     written = 0
     counts: dict[str, int] = {}
+    if isinstance(out, registry.Changes):  # emit: changes; the summary has the counts
+        out = out.summary
     for r in out if isinstance(out, list) else []:
         if not isinstance(r, dict):
             continue
@@ -128,7 +132,7 @@ def _write_counts(out: Any) -> tuple[int, dict[str, int]]:
 def _seen(out: Any) -> int:
     """Records a step that returned `Rejects` looked at: a writer's rows written plus the ones it
     rejected; any other step's output plus its rejects."""
-    rows = list(out)
+    rows = out.summary if isinstance(out, registry.Changes) else list(out)
     is_writer = any(isinstance(r, dict) and "written" in r for r in rows)
     return (_write_counts(rows)[0] if is_writer else len(rows)) + len(out.rejected)
 
@@ -208,7 +212,7 @@ class CheckFailed(RuntimeError):
 
 
 class SchemaDrift(CheckFailed):
-    """A check step with `on_drift: fail` or `remap` found that its input changed layout."""
+    """A check step with `on_drift: fail` found that its input changed layout."""
 
 
 class WaitTimeout(RuntimeError):
@@ -244,26 +248,67 @@ def _page_chunks(step: StepSpec, records: Records) -> Iterator[tuple[int, dict, 
             yield n, {**rec, c.field: part}, {"_pages": [i + 1, i + len(group)]}
 
 
-def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict) -> str:
-    """The per-record cache key of an agent step (also used by `agentl plan` to count hits)."""
+def remap_targets(spec: PipelineSpec, check_id: str) -> list[str]:
+    """The map_schema steps that read check `check_id` (`on_drift: remap`, #178)."""
+    return [s.id for s in spec.steps if s.use == "map_schema" and check_id in s.inputs]
+
+
+def agent_cache_key(spec: PipelineSpec, step: StepSpec, rec: dict, prompts: bool = True) -> str:
+    """The per-record cache key of an agent step (also used by `agentl plan` to count hits).
+    `prompts` adds the built-in prompt version (#338); the review queue leaves it out, so a
+    person's answer survives an agentl upgrade that only rewords those prompts."""
     # Without a cascade the key stays what it was, so existing caches keep their hits.
-    llm_key: Any = spec.llm[step.llm].model_dump(exclude={"price"})
+    llm_key: Any = spec.llm[step.llm].model_dump(exclude=LLM_KEY_EXCLUDE)
     if step.attempts:
         llm_key = [
-            [spec.llm[a.llm or step.llm].model_dump(exclude={"price"}), a.validate_] for a in step.attempts
+            [spec.llm[a.llm or step.llm].model_dump(exclude=LLM_KEY_EXCLUDE), a.validate_]
+            for a in step.attempts
         ]
     elif step.escalate:
-        llm_key = [spec.llm[n].model_dump(exclude={"price"}) for n in [step.llm, *step.escalate]]
+        llm_key = [spec.llm[n].model_dump(exclude=LLM_KEY_EXCLUDE) for n in [step.llm, *step.escalate]]
     if step.jury is not None:  # the cached answer is the jury's decision
         llm_key = [llm_key, step.jury.model_dump(), step.jury_tag]
+    salt = _key_salt(step, prompts)
     # records_per_call is not part of the key: the answer per record is the same.
     if step.routes is not None:  # a router's answer depends on its labels, not on where they go
-        return _hash("route", step.agent, sorted(step.routes), llm_key, step.tools, rec)
+        return _hash("route", step.agent, sorted(step.routes), llm_key, step.tools, rec, *salt)
     if step.output_mode == "rows":  # the cached value is a list of rows, not one answer
-        return _hash("agent-rows", step.agent, step.output, llm_key, rec)
+        return _hash("agent-rows", step.agent, step.output, llm_key, rec, *salt)
     if step.tools:  # tools can change the answer, so they are part of the key
-        return _hash("agent", step.agent, step.output, llm_key, step.tools, rec)
-    return _hash("agent", step.agent, step.output, llm_key, rec)
+        return _hash("agent", step.agent, step.output, llm_key, step.tools, rec, *salt)
+    return _hash("agent", step.agent, step.output, llm_key, rec, *salt)
+
+
+def _key_salt(step: StepSpec, prompts: bool = True) -> list:
+    """What every cached llm answer of a step also depends on: the built-in prompt version and the
+    step's own `cache_version`."""
+    salt: list = [llm.PROMPT_VERSION] if prompts else []
+    if step.cache_version is not None:
+        salt.append({"cache_version": step.cache_version})
+    return salt
+
+
+def _review_reason(review: ReviewSpec, answer: dict) -> str | None:
+    """Why `answer` goes to the human review queue (#153), or None when it does not. A missing
+    confidence counts as low, and a `when` that fails to evaluate counts as matching."""
+    if review.always:
+        return "always"
+    if review.below is not None:
+        conf = answer.get("confidence")
+        if not isinstance(conf, int | float) or isinstance(conf, bool):
+            return f"no confidence (below {review.below})"
+        if conf < review.below:
+            return f"confidence {conf} below {review.below}"
+    if review.when is not None:
+        from . import expr
+
+        try:
+            hit = expr.evaluate(review.when, answer)
+        except Exception as e:
+            return f"when {review.when!r} failed: {e}"
+        if hit:
+            return f"when {review.when}"
+    return None
 
 
 def _trace(e: BaseException) -> str:
@@ -351,20 +396,7 @@ def _retry_matches(e: BaseException, on: list[str]) -> bool:
 def _retry_after(e: BaseException) -> float | None:
     """Seconds asked by a `Retry-After` header (a number or an HTTP date), if the error has one."""
     headers = _http_status(e)[1]
-    value = headers.get("Retry-After") if hasattr(headers, "get") else None
-    if value is None:
-        return None
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
-
-        when = parsedate_to_datetime(str(value))
-        return max(0.0, (when - _dt.datetime.now(when.tzinfo or _dt.timezone.utc)).total_seconds())
-    except (TypeError, ValueError):
-        return None
+    return llm.parse_retry_after(headers.get("Retry-After") if hasattr(headers, "get") else None)
 
 
 def _hash(*parts: Any) -> str:
@@ -380,8 +412,12 @@ class Runner:
         listeners: list[Listener] | None = None,
         trigger: list[dict] | None = None,
         replay: dict[str, Records] | None = None,
+        resume_from: str | None = None,
     ):
         self.spec = spec
+        # a failed run to resume (#339): its completed steps are skipped and their outputs read back
+        self.resume_from = resume_from
+        self._plan: Any = None
         # step id -> records that step runs on instead of its inputs (retry of rejected records)
         self.replay = dict(replay or {})
         self.trigger = list(trigger or [])  # what started this run; a `use: trigger` step reads it
@@ -398,17 +434,33 @@ class Runner:
         self._tickets = itertools.count(1)
         self._events = threading.Lock()
         self._provider_lock = threading.Lock()
+        self._limiters: dict[str, llm.RateLimiter] = {}  # llm name -> bucket shared by its calls
+        self._calling = threading.local()  # step id of the call this thread is about to make
+        self._result: RunResult | None = None
         self._arrow_out: set[str] = set()
         self._reject_stats: dict[str, list[int]] = {}  # step id -> [rejected, seen], for checks
+        # on_drift: remap (#178): map_schema step id -> (signature key, new layout) to record
+        # once that step has mapped the new layout
+        self._remap: dict[str, list[tuple[str, dict]]] = {}
         self._polars_fed: set[str] = set()
         # router id -> target step id -> the records routed to it this run (#299)
         self._routed: dict[str, dict[str, Records]] = {}
+        self._outputs: dict = {}
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
         self._source_records: dict[str, int] = {}  # records read by steps without inputs, this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
-        self.listeners.append(Notifier(spec.notify, spec.name, summarize=self._summarize))
+        self._failed_step: str | None = None  # the step whose error failed this run (#356)
+        self.listeners.append(
+            Notifier(
+                spec.notify,
+                spec.name,
+                summarize=self._summarize,
+                records=self._step_records,
+                store=self.store,
+            )
+        )
         from . import lineage
 
         lineage_cfg = lineage.from_env(spec.lineage)
@@ -425,6 +477,8 @@ class Runner:
             "step": step,
             "data": data,
         }
+        if type == "step.failed" and "traceback" in data and data.get("required", True):
+            self._failed_step = self._failed_step or step  # the culprit, not the steps it stopped
         if type == "step.succeeded" and step is not None and not self.spec.step(step).inputs:
             self._source_records[step] = int(data.get("records") or 0)
         with self._events:  # steps may run in parallel: one event at a time, store and listeners
@@ -432,19 +486,48 @@ class Runner:
             for listener in self.listeners:
                 listener(event)
 
+    def _step_records(self, step_id: str) -> list | None:
+        """The records a step produced in the current run (for `notify` rules `on: records`)."""
+        out = self._outputs.get(step_id)
+        return out.to_pylist() if out is not None and _is_table(out) else out
+
     # llm ----------------------------------------------------------------
     def _provider(self, name: str) -> llm.Provider:
         with self._provider_lock:
             if name not in self._providers:
                 spec = self.spec.llm[name]
-                prov = llm.provider(spec)
+                prov = self._throttled(name, llm.provider(spec))
                 if spec.fallback:
                     chain = [(name, spec, prov)]
-                    chain += [(f, self.spec.llm[f], llm.provider(self.spec.llm[f])) for f in spec.fallback]
+                    chain += [
+                        (f, self.spec.llm[f], self._throttled(f, llm.provider(self.spec.llm[f])))
+                        for f in spec.fallback
+                    ]
                     prov = llm.FallbackProvider(chain)
                     prov.on_fallback = self._on_fallback
                 self._providers[name] = prov
             return self._providers[name]
+
+    def _throttled(self, name: str, prov: llm.Provider) -> llm.Provider:
+        """`prov` behind the llm's rate limiter, if it has one. Called under `_provider_lock`."""
+        limit = self.spec.llm[name].rate_limit
+        if limit is None:
+            return prov
+        if name not in self._limiters:
+            self._limiters[name] = llm.rate_limiter(limit)
+        return llm.ThrottledProvider(prov, self._limiters[name], lambda wait: self._on_throttled(name, wait))
+
+    def _on_throttled(self, name: str, wait: float) -> None:
+        step = getattr(self._calling, "step", None) or None
+        result = self._result
+        if result is not None:
+            with self._spend:
+                result.throttled_s += wait
+                mine = result.spend.get(step) if step else None
+                if mine is not None:
+                    mine["throttled_s"] = mine.get("throttled_s", 0.0) + wait
+        if self._run_id:
+            self._emit(self._run_id, "llm.throttled", step, llm=name, wait=round(wait, 3))
 
     def _on_fallback(self, failed: str, to: str, error: Exception) -> None:
         if self._run_id:
@@ -469,6 +552,8 @@ class Runner:
             if spend is None:
                 return {}
             spend["cost_usd"] = round(spend["cost_usd"], 6)
+            if "throttled_s" in spend:
+                spend["throttled_s"] = round(spend["throttled_s"], 3)
             out = dict(spend)
             if "models" in spend:
                 out["models"] = {
@@ -519,6 +604,7 @@ class Runner:
     def _check_budget(self, result: RunResult, step_id: str = "", reserve: bool = True) -> int:
         """Raise BudgetExceeded when the budget is spent, counting calls in flight. Returns a
         ticket for the call about to be made (0 when nothing is reserved); pass it to `_charge`."""
+        self._calling.step = step_id
         with self._spend:
             reason = self._over_budget(result, len(self._inflight))
             ticket = 0
@@ -550,6 +636,8 @@ class Runner:
             return f"max_usd {b.max_usd} reached ({result.cost_usd:.4f} spent)"
         if b.max_tool_calls is not None and result.tool_calls >= b.max_tool_calls:
             return f"max_tool_calls {b.max_tool_calls} reached"
+        if b.max_calls is not None and result.llm_calls + inflight >= b.max_calls:
+            return f"max_calls {b.max_calls} reached ({result.llm_calls} made)"
         return None
 
     # tools --------------------------------------------------------------
@@ -764,18 +852,23 @@ class Runner:
         records they cannot handle are sent to the llm; the output keeps the input order and each
         record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
         (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        records = self._pii_gate(run_id, step, records, result)
         if step.routes is not None:
             return self._run_route(run_id, step, records, result)
         if step.output_mode == "rows":
             return self._run_rows(run_id, step, records, result)
         if not step.rules:
-            answered = self._agent_slots(run_id, step, records, result)
+            answered = self._pii_masked(run_id, step, list(records), result, self._agent_reviewed)
             return self._agent_finish(run_id, step, answered, len(records), result)
         records = list(records)
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
         rest = [i for i, out in enumerate(by_rules) if out is None]
-        asked = self._agent_slots(run_id, step, [records[i] for i in rest], result) if rest else []
+        asked = (
+            self._pii_masked(run_id, step, [records[i] for i in rest], result, self._agent_reviewed)
+            if rest
+            else []
+        )
         slots: list[tuple[dict | None, dict | None]] = []
         answers = iter(asked)
         for rec, out in zip(records, by_rules, strict=True):
@@ -814,13 +907,14 @@ class Runner:
         schema = create_model(f"{step.id}_route", route=(Literal[tuple(labels)], ...))  # type: ignore[arg-type]
         bad: Records = []
         slots = (
-            self._agent_slots(
+            self._pii_masked(
                 run_id,
                 step,
                 [records[i] for i in rest],
                 result,
-                schema,
-                _route_instruction(step.agent or "", labels),
+                lambda r, s, recs, res: self._agent_slots(
+                    r, s, recs, res, schema, _route_instruction(step.agent or "", labels)
+                ),
             )
             if rest
             else []
@@ -867,6 +961,140 @@ class Runner:
         self._rejects(run_id, step.id, bad, len(records), result)
         return out
 
+    def _pii_found(self, run_id: str, step: StepSpec, maskers: list, action: str) -> int:
+        """Emits `pii.detected` with counts per field and kind (never a value); the number of
+        records with personal data."""
+        fields: dict[str, int] = {}
+        kinds: dict[str, int] = {}
+        hit = 0
+        for m in maskers:
+            hit += bool(m.found)
+            for (f, k), n in m.found.items():
+                fields[f] = fields.get(f, 0) + n
+                kinds[k] = kinds.get(k, 0) + n
+        if hit:
+            self._emit(
+                run_id,
+                "pii.detected",
+                step.id,
+                action=action,
+                records=hit,
+                total=len(maskers),
+                fields=fields,
+                kinds=kinds,
+            )
+        return hit
+
+    def _pii_gate(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """`pii.before_llm` warn and block (#337), before any path of an agent step. Warn only
+        reports; block rejects each record with personal data to the quarantine, so it never
+        reaches the llm (nor the rules of a hybrid step). Mask happens next to the call."""
+        from .pii import Masker
+
+        cfg = step.pii or PiiSpec()
+        if cfg.before_llm not in ("warn", "block") or not records:
+            return records
+        records = list(records)
+        maskers = [Masker(cfg.fields, cfg.kinds) for _ in records]
+        for m, r in zip(maskers, records, strict=True):
+            m.mask(r)
+        if not self._pii_found(run_id, step, maskers, cfg.before_llm) or cfg.before_llm == "warn":
+            return records
+        keep: Records = []
+        bad: Records = []
+        for m, r in zip(maskers, records, strict=True):
+            if not m.found:
+                keep.append(r)
+                continue
+            where = sorted({f"{f} ({k})" for f, k in m.found})
+            bad.append({**r, "_error": f"personal data in {', '.join(where)}; pii.before_llm is block"})
+        self._rejects(run_id, step.id, bad, len(bad), result)
+        return keep
+
+    def _pii_masked(
+        self,
+        run_id: str,
+        step: StepSpec,
+        records: Records,
+        result: RunResult,
+        ask: Callable[[str, StepSpec, Records, RunResult], list[tuple[dict | None, dict | None]]],
+    ) -> list[tuple[dict | None, dict | None]]:
+        """`ask` (slots aligned with `records`), with `pii.before_llm: mask` (#337): each record
+        goes out with placeholders, so the prompt, the cache key, the cached answer, the review
+        queue and the critic only ever see those; the answer and the passed-through fields get
+        the original values back afterwards."""
+        cfg = step.pii
+        if cfg is None or cfg.before_llm != "mask" or not records:
+            return ask(run_id, step, records, result)
+        from .pii import Masker
+
+        maskers = [Masker(cfg.fields, cfg.kinds) for _ in records]
+        masked = [m.mask(r) for m, r in zip(maskers, records, strict=True)]
+        self._pii_found(run_id, step, maskers, "mask")
+        slots = ask(run_id, step, masked, result)
+        return [
+            (m.restore(good) if good is not None else None, m.restore(bad) if bad is not None else None)
+            for m, (good, bad) in zip(maskers, slots, strict=True)
+        ]
+
+    def _agent_reviewed(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> list[tuple[dict | None, dict | None]]:
+        """`_agent_slots`, with the human review queue (#153) when the step has `review:`. A record
+        a person already reviewed takes their answer with no llm call (a rejected one is dropped);
+        a new answer the review rule flags is queued, and held back or marked `_review: pending`."""
+        review = step.review
+        if not isinstance(review, ReviewSpec):
+            return self._agent_slots(run_id, step, records, result)
+        # The queue is keyed without the built-in prompt version, so reviews survive an upgrade
+        # that rewords those prompts; the slots look answers up by the agent cache key.
+        keys = [agent_cache_key(self.spec, step, r, prompts=False) for r in records]
+        decided = self.store.review_decisions(self.spec.name, step.id, keys)
+        by_cache_key = {
+            agent_cache_key(self.spec, step, r): decided[k]
+            for r, k in zip(records, keys, strict=True)
+            if k in decided
+        }
+        slots = self._agent_slots(run_id, step, records, result, decided=by_cache_key)
+        counts = {"queued": 0, "held": 0, "flagged": 0, "reused": 0, "dropped": 0}
+        fields = list(step.output or {})
+        from . import secrets
+
+        hidden = secrets.sensitive()  # the queue keeps records like the quarantine: secrets masked
+        for i, (good, _) in enumerate(slots):
+            if keys[i] in decided:
+                counts["reused" if decided[keys[i]]["value"] is not None else "dropped"] += 1
+                continue
+            if good is None:
+                continue
+            why = _review_reason(review, good)
+            if why is None:
+                continue
+            answer = {k: good.get(k) for k in fields}
+            shown = _mask_values(records[i], hidden) if hidden else records[i]
+            if self.store.review_add(run_id, self.spec.name, step.id, keys[i], why, shown, answer):
+                counts["queued"] += 1
+            if review.hold:
+                slots[i] = (None, None)
+                counts["held"] += 1
+            else:
+                slots[i] = ({**good, "_review": "pending"}, None)
+                counts["flagged"] += 1
+        with self._spend:
+            result.spend[step.id]["review"] = counts
+        if counts["held"] or counts["flagged"]:
+            self._emit(
+                run_id,
+                "review.pending",
+                step.id,
+                queued=counts["queued"],
+                held=counts["held"],
+                flagged=counts["flagged"],
+            )
+        if counts["reused"] or counts["dropped"]:
+            self._emit(run_id, "review.reused", step.id, reused=counts["reused"], dropped=counts["dropped"])
+        return slots
+
     def _agent_finish(
         self,
         run_id: str,
@@ -893,9 +1121,12 @@ class Runner:
         result: RunResult,
         schema: type[BaseModel] | None = None,
         instruction: str | None = None,
+        decided: dict[str, dict] | None = None,
     ) -> list[tuple[dict | None, dict | None]]:
         """Asks the llm about each record: (answered record, None) or (None, rejected record).
-        `schema` and `instruction` replace the ones from `output:` and `agent:` (routers)."""
+        `schema` and `instruction` replace the ones from `output:` and `agent:` (routers).
+        `decided` maps cache keys to answers people reviewed (#153): those records take the
+        person's answer, or (None, None) when they rejected it, and never reach the llm."""
         if schema is None:
             schema = llm.schema_model(f"{step.id}_output", step.output or {})
         base = (step.agent or "") if instruction is None else instruction
@@ -1070,7 +1301,10 @@ class Runner:
         hits = 0
         for i, rec in enumerate(records):
             k = key(rec)
-            if k in first:
+            if decided and k in decided:
+                human = decided[k]["value"]
+                slots[i] = ({**rec, **human}, None) if human is not None else (None, None)
+            elif k in first:
                 copies.append((i, first[k]))
             elif cacheable and (hit := self.store.cache_get(k)) is not None:
                 slots[i] = ({**rec, **hit}, None)
@@ -1153,12 +1387,12 @@ class Runner:
         cacheable = self.use_cache and step.cached
         name = critic.llm or step.llm
         critic_spec = self.spec.llm[name]
-        critic_key = critic_spec.model_dump(exclude={"price"})
+        critic_key = critic_spec.model_dump(exclude=LLM_KEY_EXCLUDE)
         verdict_schema = llm.schema_model(f"{step.id}_critic", {"approved": "bool", "feedback": "str"})
         out = {k: good.get(k) for k in schema.model_fields}
         exchange: list[dict] = []
         for n in range(1, critic.max_rounds + 1):
-            vkey = _hash("critic", critic.criteria, critic_key, rec, out)
+            vkey = _hash("critic", critic.criteria, critic_key, rec, out, *_key_salt(step))
             verdict = self.store.cache_get(vkey) if cacheable else None
             cached = verdict is not None
             if verdict is None:
@@ -1246,7 +1480,8 @@ class Runner:
 
         def ask(name: str, kind: str, text: str, payload: dict) -> dict | None:
             spec = self.spec.llm[name]
-            ckey = _hash(kind, spec.model_dump(exclude={"price"}), text, step.output, step.tools, payload)
+            dumped = spec.model_dump(exclude=LLM_KEY_EXCLUDE)
+            ckey = _hash(kind, dumped, text, step.output, step.tools, payload, *_key_salt(step))
             hit = self.store.cache_get(ckey) if cacheable else None
             if hit is not None:
                 return hit
@@ -1408,7 +1643,14 @@ class Runner:
                 tables = data if isinstance(data, dict) else {(refs or ["input"])[0]: data}
             else:
                 tables = {r: raw(r) for r in refs}
-            return duck.run(step.id, tables, base_dir=self.spec.base_dir, **step.with_)
+            known = {}  # an empty input keeps the columns its step declares (#288)
+            for name, rows in tables.items():
+                src = next((s for s in self.spec.steps if s.id == name), None)
+                if rows is not None and not _is_table(rows) and not rows and src is not None:
+                    cols = getattr(rows, "columns", None) or list(src.schema_ or src.output or {})
+                    if cols:
+                        known[name] = cols
+            return duck.run(step.id, tables, base_dir=self.spec.base_dir, columns=known, **step.with_)
         if step.use == "map_schema":
             return self._run_map_schema(run_id, step, data, result)
 
@@ -1431,7 +1673,8 @@ class Runner:
             registry._AFTER_RUN.reset(token)
         if isinstance(out, registry.Rejects) and out.rejected:
             self._rejects(run_id, step.id, out.rejected, _seen(out), result)
-        out = list(out) if out is not None else []
+        if not isinstance(out, (registry.EmptyRows, registry.Changes)):  # columns (#288), changes summary
+            out = list(out) if out is not None else []
         if self.use_cache and step.cached:
             self.store.cache_set(key, out, self._ttl(step))
         return out
@@ -1460,14 +1703,22 @@ class Runner:
             return res.value
 
         name = self.spec.name
+        params = dict(step.with_)
+        pending = self._remap.pop(step.id, [])
+        if pending:
+            # a check upstream found a new layout and hands it here: infer a mapping for it (or
+            # reuse one stored for that layout, or the pinned `mapping:`) instead of failing
+            params["on_drift"] = "infer"
         out, new = mapping.run(
             list(data or []),
             load=lambda: self.store.mapping_get(name, step.id),
             save=lambda value: self.store.mapping_set(name, step.id, value),
             ask=ask,
             where=f"{name} {step.id}",
-            **step.with_,
+            **params,
         )
+        for memory, layout in pending:  # mapped: the new layout becomes the one on record
+            self.store.cache_set(memory, layout)
         if new is not None:
             self._emit(
                 run_id,
@@ -1545,7 +1796,13 @@ class Runner:
         with self._spend:
             stats = {k: (v[0], v[1]) for k, v in self._reject_stats.items()}
         findings = checks.run_expectations(
-            records, step.expect, previous, rejected=stats, step=step.check or "", history=history
+            records,
+            step.expect,
+            previous,
+            rejected=stats,
+            step=step.check or "",
+            history=history,
+            protected=self._protected_fields(),
         )
         rules = {k: "passed" for k in step.expect}
         for f in findings:
@@ -1556,7 +1813,9 @@ class Runner:
             bad: dict[int, str] = {}
             for key in step.expect:
                 if key in rejecting:
-                    for i, why in checks.failing_rows(records, key, step.expect[key]).items():
+                    for i, why in checks.failing_rows(
+                        records, key, step.expect[key], self._protected_fields()
+                    ).items():
                         bad.setdefault(i, why)
             dropped = [{**records[i], "_error": bad[i]} for i in sorted(bad)]
             total = len(records)
@@ -1578,7 +1837,9 @@ class Runner:
             }
             held = self._check_budget(result, step.id)
             try:
-                res = self._provider(step.llm).structured(_review_instruction(step.review), payload, schema)
+                res = self._provider(step.llm).structured(
+                    _review_instruction(str(step.review)), payload, schema
+                )
             except (ValidationError, ValueError, RuntimeError) as e:
                 self._charge(result, step, llm_spec, e, ticket=held)
                 raise RuntimeError(f"check review did not answer in the expected shape: {e}") from e
@@ -1622,11 +1883,21 @@ class Runner:
                 self.store.cache_set(history_key, [kept, *history][: checks.HISTORY])
         return records
 
+    def _protected_fields(self) -> set[str]:
+        """Fields a `protect` step in this pipeline marks: check messages never show their values."""
+        out: set[str] = set()
+        for s in self.spec.steps:
+            if s.use == "protect" and isinstance(s.with_.get("fields"), dict):
+                out.update(str(f) for f in s.with_["fields"])
+        return out
+
     def _check_drift(self, run_id: str, step: StepSpec, data: Any) -> None:
         """Compares the input's layout with the one recorded for this pipeline and step (#178).
         The first run records it. On drift emits `schema.drift`; `warn` accepts the new layout,
-        `fail` stops, `remap` stops and hands the new layout over for a reviewed mapping. An empty
-        input says nothing about the layout and is skipped."""
+        `fail` stops, `remap` passes the data on and hands the new layout to the map_schema steps
+        that read this check: they infer (or reuse) a mapping for it, and the new layout is put on
+        record only once they have mapped it. An empty input says nothing about the layout and is
+        skipped."""
         if not _is_table(data) and not data:
             return
         memory = _hash("schema-signature", self.spec.name, step.id)
@@ -1638,18 +1909,19 @@ class Runner:
         d = drift.diff(before, now)
         if d is None:
             return
-        layout = {"previous": before, "current": now} if step.on_drift == "remap" else {}
+        layout: dict[str, Any] = {}
+        if step.on_drift == "remap":
+            targets = remap_targets(self.spec, step.id)
+            layout = {"previous": before, "current": now, "remap": targets}
+            for t in targets:
+                self._remap.setdefault(t, []).append((memory, now))
         self._emit(run_id, "schema.drift", step.id, source=step.check, on_drift=step.on_drift, **d, **layout)
         if step.on_drift == "warn":
             self.store.cache_set(memory, now)
             return
-        what = drift.summary(d)
         if step.on_drift == "remap":
-            raise SchemaDrift(
-                f"'{step.check}' changed layout ({what}); it needs a new reviewed mapping "
-                "(the schema.drift event carries the previous and current layout)"
-            )
-        raise SchemaDrift(f"'{step.check}' changed layout: {what}")
+            return  # the map_schema steps reading this check map the new layout
+        raise SchemaDrift(f"'{step.check}' changed layout: {drift.summary(d)}")
 
     def _run_rules(
         self, run_id: str, step: StepSpec, records: Records, result: RunResult
@@ -1667,7 +1939,7 @@ class Runner:
         memory = _hash("check-digest", self.spec.name, step.id)
         bucket = self.store.cache_get(memory) or {}
         day = _today()
-        ids = sorted({f["id"] for f in found})
+        ids = checks.digest_ids(found)
         if bucket.get("day") == day:
             ids = sorted(set(ids) | set(bucket.get("ids", [])))
             prev = bucket.get("prev", [])
@@ -1818,6 +2090,7 @@ class Runner:
                 ) | {"cost_usd": 0.0}
         self._emit(run_id, "step.started", step_id, kind=step.kind)
         t0 = time.time()
+        hooks_before = hooks_after = len(self._after_run)
         try:
             if step.cursor:
                 step = self._with_cursor(step)
@@ -1827,6 +2100,7 @@ class Runner:
                 self._release_step(step_id)
             if step.schema_ is not None:
                 out = self._contract(run_id, step, out, result)
+            hooks_after = len(self._after_run)
             self._write_rejected(step, result)
             if step.cursor:
                 self._track_cursor(step, out)
@@ -1886,8 +2160,29 @@ class Runner:
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
         )
+        self._checkpoint(run_id, step, out, hooks_after > hooks_before)
         if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
+
+    def _checkpoint(self, run_id: str, step: StepSpec, out: Any, acked: bool = False) -> None:
+        """Record that `step` completed, keeping its output when that is cheap and safe (#339)."""
+        from . import resume
+
+        reason = None
+        if not resume.enabled():
+            reason = "checkpoints are off (AGENTL_CHECKPOINTS=0)"
+        elif step.use == "unprotect":
+            reason = "decrypted values are never stored"
+        elif step.cursor:
+            reason = "incremental cursor step: it reads again from the stored cursor"
+        elif step.routes is not None:
+            reason = "router step: its branches are not stored"
+        elif acked:
+            reason = "source acknowledged after the run: it reads again"
+        try:
+            resume.record(self.store, run_id, step.id, out, reason)
+        except Exception as e:  # a checkpoint never fails a run
+            log.warning("checkpoint of step %s failed: %s", step.id, e)
 
     def _run_retried(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
         """Runs a step body, retrying it on the errors its `retries.on` lists (#296). A budget stop
@@ -2007,13 +2302,14 @@ class Runner:
             for ref in s.inputs:
                 consumers[ref].append(s)
         chains = {}
+        gates = self._gates()
         for head in self.spec.steps:
             if not head.use or head.depends or head.cursor or registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None:
+                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None or nxt.id in gates:
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -2098,7 +2394,7 @@ class Runner:
                     raise
                 if isinstance(wrote, registry.Rejects) and wrote.rejected:
                     self._rejects(run_id, last.id, wrote.rejected, _seen(wrote), result)
-                out = list(wrote or [])
+                out = wrote if isinstance(wrote, registry.Changes) else list(wrote or [])
                 counts[last.id] = len(out)
                 if last.schema_ is not None:
                     out = self._contract(run_id, last, out, result)
@@ -2147,8 +2443,24 @@ class Runner:
                 chunked=True,
                 **self._step_spend(step, result),
             )
+            if step is last:
+                self._checkpoint(run_id, step, out)
+            else:
+                from . import resume
+
+                resume.record(self.store, run_id, step.id, [], "inside a chunked chain")
         if counts[head.id] == 0:
             self._emit(run_id, "source.empty", head.id)
+
+    def _gates(self) -> dict[str, set[str]]:
+        """A required check with `on_fail: stop` gates the run's outputs (#278): every sink step (one
+        no other step depends on, usually a writer) that is not a check waits for those checks, so
+        a failing check stops a sibling writer instead of racing it."""
+        stops = {s.id for s in self.spec.steps if s.check and s.on_fail == "stop" and s.required}
+        if not stops:
+            return {}
+        used = {d for s in self.spec.steps for d in s.depends}
+        return {s.id: stops for s in self.spec.steps if s.id not in used and not s.check}
 
     def _run_graph(self, run_id: str, result: RunResult) -> None:
         """Starts each step as soon as its inputs are done, up to `max_parallel_steps` at once,
@@ -2159,8 +2471,17 @@ class Runner:
         inside = {s.id for chain in chains.values() for s in chain[1:]}
         pending = [i for i in graph.order(self.spec) if i not in inside]
         deps = {s.id: set(s.depends) for s in self.spec.steps}
+        for sink, checks_ in self._gates().items():  # writers wait for `on_fail: stop` checks (#278)
+            deps[sink] |= checks_
         limit = self.spec.max_parallel_steps
         done: set[str] = set()
+        if self._plan is not None:
+            for step_id, out in self._plan.restored.items():
+                result.outputs[step_id] = out
+            for step_id in self._plan.done:
+                result.outputs[step_id] = []
+            done = set(self._plan.restored) | self._plan.done
+            pending = [i for i in pending if i not in done]
         running: dict[Future, str] = {}
         failure: BaseException | None = None
         with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="agentl-step") as pool:
@@ -2169,9 +2490,21 @@ class Runner:
                     for step_id in [i for i in pending if deps[i] <= done][: limit - len(running)]:
                         pending.remove(step_id)
                         if step_id in chains:
-                            future = pool.submit(self._run_chain, run_id, chains[step_id], result)
+                            future = pool.submit(
+                                contextvars.copy_context().run,
+                                self._run_chain,
+                                run_id,
+                                chains[step_id],
+                                result,
+                            )
                         else:
-                            future = pool.submit(self._run_one, run_id, self.spec.step(step_id), result)
+                            future = pool.submit(
+                                contextvars.copy_context().run,
+                                self._run_one,
+                                run_id,
+                                self.spec.step(step_id),
+                                result,
+                            )
                         running[future] = step_id
                 if not running:
                     break
@@ -2223,9 +2556,37 @@ class Runner:
     def _run(self, run_id: str) -> RunResult:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
+        self._result = result
+        self._failed_step = None
+        self._outputs = result.outputs
         self._source_records = {}
+        registry._RUN_ID.set(run_id)
+        from . import resume
+
+        self._plan = None
+        if self.resume_from:  # refused before anything is recorded
+            self._plan = resume.plan(self.spec, self.store, self.resume_from, self._chains())
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
-        self._emit(run_id, "run.started", steps=len(self.spec.steps))
+        resumed: dict[str, Any] = {}
+        if self._plan is not None:
+            resumed = {"resumed_from": self._plan.resumed_from, "resumed_chain": self._plan.ancestors}
+        self._emit(
+            run_id,
+            "run.started",
+            steps=len(self.spec.steps),
+            spec_hash=resume.spec_hash(self.spec),
+            **resumed,
+        )
+        if self._plan is not None:
+            for step_id, data in self._plan.checkpoints.items():  # so this run can be resumed too
+                self.store.event(run_id, "checkpoint", step_id, data)
+            self._emit(
+                run_id,
+                "run.resumed",
+                resumed_from=self._plan.resumed_from,
+                skipped=sorted(self._plan.restored) + sorted(self._plan.done),
+                rerun=self._plan.rerun,
+            )
         started = time.time()
         failure: BaseException | None = None
         try:
@@ -2249,15 +2610,21 @@ class Runner:
             result.reason = f"source unreachable: {result.error}"
         self._finish_after_run(run_id, result)
         self._save_cursors(run_id, result)
+        if result.status in ("succeeded", "no_change"):  # nothing left to resume
+            resume.remove(self.store, [run_id, *(self._plan.ancestors if self._plan else [])])
         partial: dict[str, Any] = {}
         if result.partial:
             partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
         self._classify(result)
         self.store.finish_run(run_id, result.status, result.error, result.outcome)
         # before the final event, so run.<status> stays the last event of a run
+        fault = self._track_error(run_id, result)
         if result.outcome in self.spec.outcomes.alert_on:
             extra = {"error": result.error} if result.error else {}
-            self._emit(run_id, "run.alert", outcome=result.outcome, **extra)
+            self._emit(run_id, "run.alert", outcome=result.outcome, **extra, **fault)
+        throttled: dict[str, Any] = (
+            {"throttled_s": round(result.throttled_s, 3)} if result.throttled_s else {}
+        )
         self._emit(
             run_id,
             f"run.{result.status}",
@@ -2266,12 +2633,44 @@ class Runner:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cost_usd=round(result.cost_usd, 6),
+            **throttled,
             rejected=sum(len(v) for v in result.rejected.values()),
             **partial,
             **({"reason": result.reason} if result.reason else {}),
             **({"error": result.error} if result.error else {}),
+            **fault,
         )
         return result
+
+    def _track_error(self, run_id: str, result: RunResult) -> dict[str, Any]:
+        """Record a failed run's error under its fingerprint (#356) and return what the failure
+        events carry; on the first successful run after open errors, emit `run.resolved`."""
+        from . import errors
+
+        at = errors.now()
+        if result.status == "failed" and result.error:
+            step = self._failed_step
+            cls, _ = errors.split(result.error)
+            fp = errors.fingerprint(result.error, step)
+            row = self.store.error_seen(self.spec.name, fp, step, cls, result.error, at)
+            return {
+                "fingerprint": fp,
+                "error_count": row["count"],
+                "first_seen": errors.iso(row["first_seen"]),
+            }
+        if result.status in ("succeeded", "no_change"):
+            fixed = self.store.errors_resolve(self.spec.name, at)
+            if fixed:
+                self._emit(
+                    run_id,
+                    "run.resolved",
+                    fingerprints=[r["fingerprint"] for r in fixed],
+                    errors=len(fixed),
+                    error_count=sum(int(r["count"]) for r in fixed),
+                    first_seen=errors.iso(min(float(r["first_seen"]) for r in fixed)),
+                    last_error=fixed[-1]["error"],
+                )
+        return {}
 
     def _classify(self, result: RunResult) -> None:
         """Set `result.outcome` from the status and the `outcomes` policy. Too many skipped runs in
@@ -2637,3 +3036,28 @@ def run(
     if raise_on_failure and result.status == "failed":
         raise PipelineFailed(result)
     return result
+
+
+def resume(
+    pipeline: PipelineSpec | str | os.PathLike,
+    run_id: str,
+    *,
+    vars: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    db: str | os.PathLike | None = None,
+    raise_on_failure: bool = False,
+    **kwargs: Any,
+) -> RunResult:
+    """Resume the failed run `run_id` (#339): completed steps are skipped, sinks included, and
+    their outputs are read back from the checkpoints; the new run starts from the first failed or
+    pending step. Raises `agentl.resume.ResumeRefused` when that is not safe (the spec changed, the
+    run did not fail, or a completed writer would have to write again)."""
+    return run(
+        pipeline,
+        vars=vars,
+        params=params,
+        db=db,
+        raise_on_failure=raise_on_failure,
+        resume_from=run_id,
+        **kwargs,
+    )

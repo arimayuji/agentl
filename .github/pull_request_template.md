@@ -11,5 +11,5 @@
 - [ ] Tests added or updated, and `pytest` passes
 - [ ] `ruff check .`, `ruff format --check .` and `mypy` pass
 - [ ] Docs updated (README) if behaviour or the public API changed
-- [ ] `CHANGELOG.md` entry under `[Unreleased]`
+- [ ] Changelog fragment in `changes/` (`<slug>.<section>.md`, see `changes/README.md`)
 - [ ] No secrets, tokens or real customer data in code, tests or examples

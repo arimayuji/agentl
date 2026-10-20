@@ -195,3 +195,99 @@ def backfill_commands(pipeline: str, gaps: Gaps, fmt: str = "%Y-%m-%d") -> list[
         extra = "".join(f" --param {k}={v}" for k, v in keys.items())
         out.append(f"agentl backfill {pipeline} --from {first} --to {last}{extra}")
     return out
+
+
+@dataclass
+class Fill:
+    """What `agentl gaps --fill` did: one backfill report per key combination."""
+
+    missing: int
+    reports: list[Any] = field(default_factory=list)  # backfill.Report
+    deferred: list[dict[str, Any]] = field(default_factory=list)  # over --max, left for the next call
+
+    @property
+    def ok(self) -> bool:
+        return all(r.ok for r in self.reports)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "missing": self.missing,
+            "deferred": [{k: v for k, v in p.items() if k != "_at"} for p in self.deferred],
+            "backfills": [r.to_dict() for r in self.reports],
+        }
+
+
+def fill(
+    pipeline: str,
+    gaps: Gaps,
+    fmt: str = "%Y-%m-%d",
+    *,
+    max_runs: int | None = None,
+    param: str | None = None,
+    params: dict[str, Any] | None = None,
+    db: str | None = None,
+    concurrency: int = 1,
+    on_done: Any = None,
+) -> Fill:
+    """Run `pipeline` once per missing partition through `backfill.backfill` (#182): the period
+    goes to the date (or, for hourly and custom formats, str) param, composite keys go as params
+    of the same name. At most `max_runs` partitions, oldest first per key combination; the rest
+    are reported as deferred. Finished partitions are recorded, so a repeated call skips them."""
+    from . import backfill as bfill
+
+    if max_runs is not None and max_runs < 0:
+        raise ValueError("--max must be zero or more")
+    kind = "date" if fmt == "%Y-%m-%d" and gaps.every not in ("1h", "hour") else "str"
+    todo = gaps.missing if max_runs is None else gaps.missing[:max_runs]
+    out = Fill(missing=len(gaps.missing), deferred=gaps.missing[len(todo) :])
+    if not todo:
+        return out
+    groups: dict[tuple[tuple[str, str], ...], list[str]] = {}
+    for p in todo:
+        keys = tuple((k, v) for k, v in p.items() if k not in ("period", "_at"))
+        groups.setdefault(keys, []).append(p["period"])
+    if param is None:  # the only param of `kind` that is not a composite key
+        declared = bfill._declared(Path(pipeline))
+        key_names = {k for keys in groups for k, _ in keys}
+        param = bfill._pick_param({k: v for k, v in declared.items() if k not in key_names}, kind)
+    for keys, items in groups.items():
+        out.reports.append(
+            bfill.backfill(
+                pipeline,
+                items,
+                param=param,
+                params={**(params or {}), **dict(keys)},
+                db=db,
+                concurrency=concurrency,
+                kind=kind,
+                on_done=on_done,
+            )
+        )
+    return out
+
+
+def summary(name: str, gaps: Gaps) -> str:
+    """One line per contiguous run of missing partitions, for the console and notifications."""
+    lines = [f"{name}: {len(gaps.missing)} of {gaps.expected} partitions missing"]
+    for keys, first, last in gaps.ranges():
+        label = " ".join(f"{k}={v}" for k, v in keys.items())
+        span = first if first == last else f"{first} .. {last}"
+        lines.append(f"  {label + '  ' if label else ''}{span}")
+    return "\n".join(lines)
+
+
+_PLACEHOLDER = {"date": "1970-01-01", "int": "0", "float": "0", "bool": "false", "str": "-"}
+
+
+def load_spec(pipeline: str, params: dict[str, Any] | None = None) -> Any:
+    """The pipeline spec for reading `expect:`. Required params that `--param` does not give
+    (the period and the composite keys `--fill` passes per run) get a typed placeholder, so a
+    pipeline built for backfills loads; `expect:` itself should not use them."""
+    from .backfill import _declared
+    from .spec import load
+
+    given = dict(params or {})
+    for name, p in _declared(Path(pipeline)).items():
+        if name not in given and p.default is None and p.is_required:
+            given[name] = _PLACEHOLDER[p.type]
+    return load(pipeline, params=given)

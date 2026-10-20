@@ -51,10 +51,14 @@ jobs:
         id: attest
         with:
           subject-path: "dist/*"
-      - name: Keep the signed provenance bundle with the release files
+      - name: Keep the signed provenance with the release files
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$BUNDLE" "sbom/agentl-etl-${TAG}.sigstore.json"
+        # The bundle wraps the signed SLSA provenance (in-toto statement): attach it under both names,
+        # .sigstore.json for `gh attestation verify --bundle` and .intoto.jsonl for SLSA tooling.
+        run: |
+          cp "$BUNDLE" "sbom/agentl-etl-${TAG}.sigstore.json"
+          jq -c . "$BUNDLE" > "sbom/agentl-etl-${TAG}.intoto.jsonl"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: dist

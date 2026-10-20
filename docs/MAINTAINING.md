@@ -58,6 +58,16 @@ mcp-publisher publish             # from the repo root, reads server.json
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.arimayuji/agentl"
 ```
 
+## Releases
+
+1. Open a release PR. Run `python tools/changelog.py preview`, then
+   `python tools/changelog.py build --version X.Y.Z [--date YYYY-MM-DD]`: it writes the
+   `## [X.Y.Z] - date` section from the fragments in `changes/`, adds the compare link and deletes
+   the fragments. Add the release summary paragraph under the heading by hand if you want one.
+2. Bump `__version__` in `agentl/__init__.py` and `server.json`, and `extra.version_label` in
+   `mkdocs.yml` on a minor release (a test checks it against `CHANGELOG.md`).
+3. Merge, then tag `vX.Y.Z` and push the tag; the `release` workflow publishes.
+
 ## Labels
 
 `bug`, `enhancement`, `connector`, `docs`, `triage`, `good first issue`, `help wanted`, `breaking`, `dependencies`.

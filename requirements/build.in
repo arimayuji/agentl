@@ -1,0 +1,4 @@
+# Tools of the CI build job (ci.yml), locked with hashes in build.txt. Regenerate with:
+#   uv pip compile --universal --python-version 3.10 --generate-hashes -o requirements/build.txt requirements/build.in
+build
+twine

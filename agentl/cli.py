@@ -156,6 +156,59 @@ def _rejected(a: argparse.Namespace) -> int:
     return _exit_code(spec, result)
 
 
+def _review(a: argparse.Namespace) -> int:
+    from . import review
+
+    with open_store(a.db) as store:
+        if a.action == "list":
+            status = None if a.status == "all" else a.status
+            rows = store.review_list(a.pipeline, a.step, status=status)[-a.n :]
+            for row in rows:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["ts"]))
+                answer = json.dumps(row["value"] or row["answer"], ensure_ascii=False, default=str)
+                print(
+                    f"{row['id']}  {row['pipeline']}  {row['step']}  {when}  {row['status']}"
+                    f"  {row['reason']}  {answer}"
+                )
+            if not rows:
+                print("no answers waiting for review" if status == "pending" else "no reviewed answers")
+            return 0
+        if a.action == "export":
+            if not a.golden:
+                print("agentl review export needs --golden FILE", file=sys.stderr)
+                return 2
+            added = review.export_golden(store, a.golden, a.pipeline, a.step)
+            print(f"added {added} golden record(s) to {a.golden}")
+            return 0
+        ids = a.args if a.action != "fix" else a.args[:1]
+        if not ids or not all(i.isdigit() for i in ids):
+            print(f"agentl review {a.action} needs a review id (see agentl review list)", file=sys.stderr)
+            return 2
+        try:
+            if a.action == "show":
+                found = store.review_get(int(ids[0]))
+                if found is None:
+                    raise KeyError(ids[0])
+                print(json.dumps(found, ensure_ascii=False, indent=2, default=str))
+            elif a.action == "fix":
+                value = review.fix(store, int(ids[0]), review.parse_assignments(a.args[1:], a.value))
+                print(f"fixed {ids[0]}: {json.dumps(value, ensure_ascii=False, default=str)}")
+            else:
+                for i in ids:
+                    if a.action == "accept":
+                        review.accept(store, int(i))
+                    else:
+                        review.reject(store, int(i))
+                print(f"{a.action}ed {len(ids)} answer(s); the next run reuses the decision")
+        except KeyError as e:
+            print(f"no review item {e.args[0]}", file=sys.stderr)
+            return 1
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        return 0
+
+
 def _exit_code(spec: Any, result: Any) -> int:
     """Per outcome, from `outcomes.exit_codes` (default: 1 for failed, 0 otherwise)."""
     if result.outcome is None:
@@ -172,10 +225,29 @@ def _bug_hint(store: Any, spec: Any, result: Any) -> None:
     found = assist.diagnose(store, result.run_id)
     step = next((s for s in spec.steps if s.id == found["failed_step"]), None)
     error = (found.get("failure") or {}).get("error") or found.get("error")
-    if report.likely_bug(error, "fn" if step is not None and step.fn else None):
-        line = report.hint(result.run_id)
-        if line:
-            print(line, file=sys.stderr)
+    mode = spec.report.on_bug
+    if mode == "off" or not report.likely_bug(error, "fn" if step is not None and step.fn else None):
+        return
+    line = report.hint(result.run_id)
+    if line is None:
+        return
+    print(line, file=sys.stderr)
+    if mode == "open":
+        import webbrowser
+
+        url = (
+            report.build(store, result.run_id)["url"]
+            or f"{report.REPO}/issues/new?template={report.TEMPLATE}"
+        )
+        print(f"Opening the prefilled issue form (nothing is submitted): {url}", file=sys.stderr)
+        webbrowser.open(url)
+
+
+def _confirm(question: str) -> bool:
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
 
 
 def _report(a: argparse.Namespace) -> int:
@@ -203,27 +275,55 @@ def _report(a: argparse.Namespace) -> int:
         print(json.dumps(built, indent=2, default=str))
     else:
         print(report.text(built, a.output))
+    if a.submit:
+        result = report.submit(built, _confirm)
+        print(report.submit_text(result))
+        return 1 if result["status"] == "failed" else 0
     return 0
 
 
 def _gaps(a: argparse.Namespace) -> int:
     from . import gaps
 
-    spec = load(a.pipeline)
+    spec = gaps.load_spec(a.pipeline, _params(a.param))
     if spec.expect is None:
         print(f"{a.pipeline}: no expect: block (expect.partitions and expect.present_in)", file=sys.stderr)
         return 2
     found = gaps.find(spec.expect, a.since, a.until, spec.base_dir)
-    cmds = gaps.backfill_commands(a.pipeline, found, spec.expect.partitions.fmt)
+    fmt = spec.expect.partitions.fmt
+    cmds = gaps.backfill_commands(a.pipeline, found, fmt)
+    if a.notify and found.missing:
+        _gaps_notify(spec, found, a.notify)
+    if a.fill:
+
+        def progress(item: str, status: str, err: str | None) -> None:
+            print(f"{status} {item}" + (f": {err}" if err else ""), file=sys.stderr)
+
+        filled = gaps.fill(
+            a.pipeline,
+            found,
+            fmt,
+            max_runs=a.max,
+            param=a.param_name,
+            params=_params(a.param),
+            db=a.db,
+            concurrency=a.concurrency,
+            on_done=progress,
+        )
+        if a.json:
+            print(json.dumps({**found.to_dict(), "fill": filled.to_dict()}, indent=2, ensure_ascii=False))
+        else:
+            print(gaps.summary(spec.name, found))
+            for r in filled.reports:
+                print(r.text())
+            if filled.deferred:
+                print(f"{len(filled.deferred)} partition(s) over --max {a.max}: run again to continue")
+        return 0 if filled.ok and not (a.fail and filled.deferred) else 1
     if a.json:
         print(json.dumps({**found.to_dict(), "commands": cmds}, indent=2, ensure_ascii=False))
     else:
+        print(gaps.summary(spec.name, found))
         n = len(found.missing)
-        print(f"{spec.name}: {n} of {found.expected} partitions missing")
-        for keys, first, last in found.ranges():
-            label = " ".join(f"{k}={v}" for k, v in keys.items())
-            span = first if first == last else f"{first} .. {last}"
-            print(f"  {label + '  ' if label else ''}{span}")
         if a.commands:
             if cmds:
                 print("\nbackfill:")
@@ -232,6 +332,41 @@ def _gaps(a: argparse.Namespace) -> int:
             elif n:
                 print("\n(no backfill lines: only daily partitions in %Y-%m-%d map to --from/--to)")
     return 1 if a.fail and found.missing else 0
+
+
+def _digest(a: argparse.Namespace) -> int:
+    from . import digest
+
+    spec = load(a.pipeline, params=_params(a.param))
+    if not (spec.notify and spec.notify.digest):
+        print(f"{a.pipeline}: no notify.digest block", file=sys.stderr)
+        return 2
+    with open_store(a.db) as store:
+        if a.show:
+            print(digest.show(spec, store, only_errors=a.errors))
+            return 0
+        outcomes = digest.send_due(spec, store, force=a.force, only_errors=a.errors)
+    for channel, outcome in outcomes.items():
+        print(f"{channel}: {outcome}")
+    return 1 if any(o.startswith("failed") for o in outcomes.values()) else 0
+
+
+def _gaps_notify(spec: Any, found: Any, names: list[str]) -> None:
+    """Send the gaps summary to channels declared under the pipeline's `notify.channels`."""
+    from . import gaps, notify
+
+    channels = spec.notify.channels if spec.notify else {}
+    event = {"type": "gaps.found", "pipeline": spec.name, "data": found.to_dict()}
+    text = gaps.summary(spec.name, found)
+    for name in names:
+        if name not in channels:
+            raise ValueError(
+                f"--notify {name}: no such channel under notify.channels ({', '.join(channels)})"
+            )
+        try:
+            notify.send(name, channels[name], text, event)
+        except Exception as e:  # a broken channel must not hide the gaps or stop --fill
+            print(f"notify {name} failed: {e}", file=sys.stderr)
 
 
 def _snapshot(a: argparse.Namespace) -> int:
@@ -443,6 +578,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
 
+    rs = cmd("resume", "resume a failed run: skip the steps that completed, sinks included")
+    rs.add_argument("run_id")
+    rs.add_argument("pipeline", help="the pipeline file of that run (its spec must be unchanged)")
+    rs.add_argument("--no-cache", action="store_true")
+    _param_arg(rs)
+    rs.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    rs.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    rs.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
+
     v = cmd("validate", "check a pipeline without running it: every error, with line and fix")
     v.add_argument("pipeline")
     v.add_argument("--format", choices=["text", "json", "github"], default="text")
@@ -566,12 +712,17 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--write", metavar="PATCHED.yaml", help="write the patched YAML to this new file")
     rp.add_argument("--json", action="store_true", help="print the result as JSON")
 
-    rb = cmd("report", "a ready-to-paste bug report and prefilled issue URL (prints only, sends nothing)")
+    rb = cmd("report", "a ready-to-paste bug report and prefilled issue URL (sends nothing unless --submit)")
     rb.add_argument("run_id", nargs="?", help="default: the latest failed run")
     rb.add_argument("--pipeline", help="the pipeline file the run used (secrets are masked)")
     rb.add_argument("--crash", action="store_true", help="report the last CLI crash instead of a run")
     rb.add_argument("-o", "--output", help="also write the markdown to this file")
     rb.add_argument("--json", action="store_true", help="print the report as JSON")
+    rb.add_argument(
+        "--submit",
+        action="store_true",
+        help="after printing, ask and then file it with your logged-in gh CLI (checks for duplicates first)",
+    )
 
     st = cmd("stats", "success rate, durations, cost and failures by reason, per pipeline")
     st.add_argument("pipeline", nargs="?", help="pipeline name (default: all)")
@@ -611,6 +762,21 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("step", help="the resolve step id")
     rs.add_argument("file", nargs="?", help="JSON file (export: default stdout; import: required)")
 
+    rv = cmd("review", "answers waiting for a person: list, show, accept, fix, reject, export")
+    rv.add_argument("action", choices=["list", "show", "accept", "fix", "reject", "export"])
+    rv.add_argument("args", nargs="*", help="ids; fix: one id, then field=value pairs")
+    rv.add_argument("--pipeline", help="list / export: only this pipeline (by name)")
+    rv.add_argument("--step", help="list / export: only this step")
+    rv.add_argument(
+        "--status",
+        choices=["pending", "accepted", "fixed", "rejected", "all"],
+        default="pending",
+        help="list: which answers (default pending)",
+    )
+    rv.add_argument("--value", help="fix: the corrected fields as a JSON object")
+    rv.add_argument("--golden", help="export: the golden JSONL file to append to")
+    rv.add_argument("-n", type=int, default=50, help="list: at most this many (default 50)")
+
     rj = cmd("rejected", "records steps rejected: list them, show one, or retry them")
     rj.add_argument("action", choices=["list", "show", "retry"])
     rj.add_argument("target", nargs="?", help="show: the rejected record id; retry: the pipeline file")
@@ -635,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("pipeline")
     sc.add_argument("--n", type=int, default=10, help="how many firings (default 10)")
 
-    mc = cmd("mcp", "serve agentl as an MCP server over stdio, or install it in an MCP client")
+    mc = cmd("mcp", "serve agentl as an MCP server (stdio or HTTP), or install it in an MCP client")
     mc.add_argument(
         "action",
         nargs="?",
@@ -656,6 +822,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="let run_pipeline run pipelines with fn: steps, Python tools or local MCP servers",
     )
+    mc.add_argument(
+        "--http",
+        metavar="[HOST]:PORT",
+        help="serve streamable HTTP at /mcp instead of stdio, e.g. :7072 (default host 127.0.0.1)",
+    )
+    mc.add_argument(
+        "--token-env",
+        default="AGENTL_MCP_TOKEN",
+        help="--http: env var holding the bearer token clients must send (default AGENTL_MCP_TOKEN)",
+    )
 
     sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
     sn.add_argument("pipeline")
@@ -669,6 +845,15 @@ def main(argv: list[str] | None = None) -> int:
     sn.add_argument("--no-cache", action="store_true")
     _param_arg(sn)
 
+    dg = cmd("digest", "send the notify.digest of check findings when due (cron), once per period")
+    dg.add_argument("pipeline")
+    dg.add_argument("--force", action="store_true", help="send now, even if not due or already sent")
+    dg.add_argument("--show", action="store_true", help="print the digest, send nothing")
+    dg.add_argument(
+        "--errors", action="store_true", help="only the run errors section, with its own sent-today guard"
+    )
+    _param_arg(dg)
+
     gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
     gp.add_argument("pipeline")
     gp.add_argument("--since", help="first period to check (default: expect.partitions.from)")
@@ -676,6 +861,16 @@ def main(argv: list[str] | None = None) -> int:
     gp.add_argument("--json", action="store_true", help="print the report as JSON")
     gp.add_argument("--commands", action="store_true", help="print `agentl backfill` lines for the gaps")
     gp.add_argument("--fail", action="store_true", help="exit 1 when something is missing (cron, CI)")
+    gp.add_argument("--fill", action="store_true", help="backfill only the missing partitions")
+    gp.add_argument("--max", type=int, help="with --fill: at most this many runs (oldest first)")
+    gp.add_argument(
+        "--param-name", help="with --fill: the param that gets each period (default: the only one)"
+    )
+    gp.add_argument("--concurrency", type=int, default=1, help="with --fill: runs at a time")
+    gp.add_argument(
+        "--notify", action="append", metavar="CHANNEL", help="send the gaps to a notify: channel (repeatable)"
+    )
+    _param_arg(gp)
 
     bf = cmd(
         "backfill",
@@ -734,6 +929,24 @@ def main(argv: list[str] | None = None) -> int:
             if a.show:
                 print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
             return _exit_code(spec, result)
+        if a.cmd == "resume":
+            from .resume import ResumeRefused
+
+            spec = load(a.pipeline, params=_params(a.param))
+            with open_store(a.db) as store:
+                runner = Runner(
+                    spec,
+                    store=store,
+                    use_cache=not a.no_cache,
+                    listeners=_listeners(a),
+                    resume_from=a.run_id,
+                )
+                try:
+                    result = runner.run()
+                except ResumeRefused as e:
+                    print(f"cannot resume: {e}", file=sys.stderr)
+                    return 2
+            return _exit_code(spec, result)
         if a.cmd == "snapshot":
             return _snapshot(a)
         if a.cmd in ("validate", "lint"):
@@ -770,6 +983,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if a.cmd == "gaps":
             return _gaps(a)
+        if a.cmd == "digest":
+            return _digest(a)
         if a.cmd == "test":
             from . import testing
 
@@ -1013,6 +1228,8 @@ def main(argv: list[str] | None = None) -> int:
             return _mappings(a)
         if a.cmd == "rejected":
             return _rejected(a)
+        if a.cmd == "review":
+            return _review(a)
         if a.cmd == "schedule":
             return _schedule_next(load(a.pipeline), a.n)
 
@@ -1073,7 +1290,7 @@ def main(argv: list[str] | None = None) -> int:
             if a.action == "serve":
                 from .mcp_server import serve as serve_mcp
 
-                serve_mcp(a.db, a.root, a.allow_code)
+                serve_mcp(a.db, a.root, a.allow_code, http=a.http, token_env=a.token_env)
                 return 0
             return _mcp_install(a)
         if a.cmd == "dashboard" and a.action == "export":

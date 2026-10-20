@@ -40,6 +40,18 @@ class Rejects(list):
         self.rejected = list(rejected)
 
 
+class Changes(Rejects):
+    """A writer's output with `emit: changes` (#289): the records it inserted, updated or deleted,
+    each with `_change` (and `_before` for updates), so a downstream step consumes the diff. The
+    usual summary record (written and the counts) rides along in `summary` for the run's counts."""
+
+    def __init__(
+        self, changes: Iterable[dict] = (), summary: Iterable[dict] = (), rejected: Iterable[dict] = ()
+    ):
+        super().__init__(changes, rejected)
+        self.summary = list(summary)
+
+
 def connector(name: str) -> Callable[[Connector], Connector]:
     def deco(fn: Connector) -> Connector:
         _CONNECTORS[name] = fn
@@ -246,6 +258,14 @@ def require(module: str, extra: str) -> Any:
         raise ImportError(f"this connector needs '{module}': pip install 'agentl-etl[{extra}]'") from e
 
 
+# The id of the run a connector is called from (`{run_id}` in writer paths); None outside a run.
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("agentl_run_id", default=None)
+
+
+def current_run_id() -> str | None:
+    return _RUN_ID.get()
+
+
 # ---------------------------------------------------------------- after the run
 # Queue consumers acknowledge messages only once the whole run succeeded (at-least-once). A
 # connector registers what to do then; the runner calls it when the run ends.
@@ -310,3 +330,12 @@ class NoChange(Exception):
     """Raised by a source step that found its source unchanged since the last run (for example
     `http.get` with `if_changed`). The runner ends the run as `no_change` instead of `failed`:
     the steps after it do not run and the run is not an error."""
+
+
+class EmptyRows(list):
+    """No records, but the known columns of the source (a database read), so a `sql` step can
+    still join against it (#288)."""
+
+    def __init__(self, columns: list[str]) -> None:
+        super().__init__()
+        self.columns = list(columns)
