@@ -5,14 +5,6 @@ on:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-    # A pull request that only changes these skips CI; main still runs everything after the merge.
-    paths-ignore:
-      - "docs/**"
-      - "media/**"
-      - "mkdocs.yml"
-      - "CHANGELOG.md"
-      - "CODE_OF_CONDUCT.md"
-      - "SECURITY.md"
 
 permissions:
   contents: read
@@ -22,23 +14,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  # A pull request that only changes docs or media skips the heavy steps. The jobs still run and
+  # pass, so required checks report instead of waiting forever (paths-ignore would skip the whole
+  # workflow and leave them pending). main always runs everything.
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          other=$(git diff --name-only "$BASE"...HEAD | grep -Ev '^(docs/|media/|changes/|mkdocs\.yml$|CHANGELOG\.md$|CODE_OF_CONDUCT\.md$|SECURITY\.md$)' || true)
+          if [ -n "$other" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+      # Reminder only, never fails: a change under agentl/ usually needs a changes/ fragment.
+      - name: Changelog fragment reminder
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then exit 0; fi
+          files=$(git diff --name-only --diff-filter=d "$BASE"...HEAD)
+          if echo "$files" | grep -q '^agentl/' && ! echo "$files" | grep -Eq '^changes/[^/]+\.(added|changed|fixed|removed|security|docs)\.md$'; then
+            echo "::warning::This PR changes agentl/ without a changelog fragment. If it is user-facing, add changes/<slug>.<section>.md (see changes/README.md)."
+          fi
+
+  lint:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy
+          cache-dependency-path: requirements/ci.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
+      - if: needs.changes.outputs.code == 'true'
+        run: ruff check .
+      - if: needs.changes.outputs.code == 'true'
+        run: ruff format --check .
+      - if: needs.changes.outputs.code == 'true'
+        run: mypy
 
   test:
+    needs: changes
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
     strategy:
@@ -50,33 +82,95 @@ jobs:
           && '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"}]'
           || '[{"os":"ubuntu-latest","python":"3.10"},{"os":"ubuntu-latest","python":"3.11"},{"os":"ubuntu-latest","python":"3.12"},{"os":"ubuntu-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"},{"os":"macos-latest","python":"3.13"}]') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
-      - run: pytest --cov --cov-report=term-missing
-      - run: agentl validate examples/quickstart.yaml
-      - run: agentl run examples/quickstart.yaml
+          cache-dependency-path: requirements/ci.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
+      - if: needs.changes.outputs.code == 'true'
+        run: pytest --cov --cov-report=term-missing
+      - if: needs.changes.outputs.code == 'true'
+        run: agentl validate examples/quickstart.yaml
+      - if: needs.changes.outputs.code == 'true'
+        run: agentl run examples/quickstart.yaml
 
-  build:
+  core:
+    # Only the core dependencies (pyyaml, pydantic) plus the test tools: catches an optional
+    # import that is no longer lazy, or a test that needs an extra without skipping.
+    needs: changes
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check --strict dist/*
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install . pytest hypothesis jsonschema
+      - if: needs.changes.outputs.code == 'true'
+        run: python -c "import agentl; import yaml, pydantic"
+      - if: needs.changes.outputs.code == 'true'
+        run: pytest -o addopts="" -q
+
+  lowest:
+    # The core at the lowest versions pyproject.toml allows (pyyaml, pydantic) on the oldest Python:
+    # catches a floor that is too low. uv and the test tools come hash-locked from lowest.txt.
+    needs: changes
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements/lowest.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install --require-hashes -r requirements/lowest.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: uv pip install --system --resolution lowest-direct .
+      - if: needs.changes.outputs.code == 'true'
+        run: pip list
+      - if: needs.changes.outputs.code == 'true'
+        run: pytest -o addopts="" -q
+
+  build:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements/build.txt
+      - if: needs.changes.outputs.code == 'true'
+        run: pip install --require-hashes -r requirements/build.txt  # build and twine, pinned by hash
+      - if: needs.changes.outputs.code == 'true'
+        run: python -m build
+      - if: needs.changes.outputs.code == 'true'
+        run: twine check --strict dist/*
 
   postgres:
     # Slow, rarely touched: after the merge on main, or on a pull request labeled full-ci.
@@ -95,15 +189,15 @@ jobs:
     env:
       AGENTL_TEST_PG_DSN: postgresql://agentl:agentl@localhost:5432/agentl
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev]'
+          cache-dependency-path: requirements/ci.txt
+      - run: pip install --require-hashes -r requirements/ci.txt && pip install --no-deps --no-build-isolation -e .
       - run: pytest tests/test_postgres.py tests/test_store.py tests/test_sql.py -v
 
   browser:
@@ -111,14 +205,14 @@ jobs:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: pip install -e '.[dev,browser]'
+          cache-dependency-path: requirements/browser.txt
+      - run: pip install --require-hashes -r requirements/browser.txt && pip install --no-deps --no-build-isolation -e .
       - run: playwright install --with-deps chromium
       - run: pytest tests/test_browser.py -v

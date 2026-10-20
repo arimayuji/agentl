@@ -7,6 +7,7 @@ import logging
 import operator
 import re
 from collections.abc import Callable
+from typing import Any
 
 from .spec import Channel, NotifySpec, Rule
 
@@ -20,11 +21,14 @@ _OPS = {
     "==": operator.eq,
     "!=": operator.ne,
 }
+_FAILURE_KINDS = {"run.failed", "run.alert"}
 _WHEN = re.compile(r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?[\d.]+)\s*$")
 
 
 def matches(rule: Rule, event: dict) -> bool:
     kinds = [rule.on] if isinstance(rule.on, str) else rule.on
+    if "records" in kinds and event["type"] == "step.succeeded" and event.get("step") == rule.step:
+        return True  # the runner hands the step's records over; empty steps are skipped there
     if event["type"] not in kinds and "*" not in kinds:
         return False
     if not rule.when:
@@ -40,7 +44,7 @@ def matches(rule: Rule, event: dict) -> bool:
 def format_text(event: dict, pipeline: str) -> str:
     data = event.get("data", {})
     step = f" step {event['step']}" if event.get("step") else ""
-    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in ("error", "summary"))
+    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in ("error", "summary", "sections"))
     lines = [f"[agentl] {pipeline}: {event['type']}{step}"]
     if details:
         lines.append(details)
@@ -49,6 +53,24 @@ def format_text(event: dict, pipeline: str) -> str:
     if data.get("summary"):
         lines.append(data["summary"])
     return "\n".join(lines)
+
+
+def format_records(rows: list, template: str | None = None, max_rows: int | None = None) -> list[str]:
+    """One line per record: `template.format(**record)`, or compact JSON without a template. With
+    `max_rows`, the lines stop there and a last line says how many were left out."""
+    shown = rows if max_rows is None else rows[:max_rows]
+    lines = []
+    for r in shown:
+        if template is None or not isinstance(r, dict):
+            lines.append(json.dumps(r, ensure_ascii=False, default=str))
+            continue
+        try:
+            lines.append(template.format(**r))
+        except (KeyError, IndexError, ValueError) as e:
+            raise ValueError(f"template {template!r}: {e!r} not in record") from e
+    if len(rows) > len(shown):
+        lines.append(f"... {len(rows) - len(shown)} more")
+    return lines
 
 
 def _post(url: str, payload: dict, headers: dict | None = None) -> None:
@@ -229,18 +251,63 @@ def send(channel_name: str, channel: Channel, text: str, event: dict) -> None:
 
 class Notifier:
     def __init__(
-        self, spec: NotifySpec | None, pipeline: str, summarize: Callable[[dict], str] | None = None
+        self,
+        spec: NotifySpec | None,
+        pipeline: str,
+        summarize: Callable[[dict], str] | None = None,
+        records: Callable[[str], list | None] | None = None,
+        store: Any = None,
     ):
         self.spec = spec or NotifySpec()
         self.pipeline = pipeline
         self.summarize = summarize
+        self.records = records  # step id -> the records it produced in the current run
+        self.store = store  # error state for `dedupe` rules (#356)
         self._sent: set[tuple[str, str, str]] = set()
+        # (run id, fingerprint, rule index) -> alert or not: run.alert and run.failed of one run
+        # get the same answer, so the second is not taken for a repeat
+        self._dedupe: dict[tuple[str, str, int], bool] = {}
+
+    def _matches(self, rule: Rule, event: dict) -> bool:
+        if matches(rule, event):
+            return True
+        # a deduplicated failure rule also hears when the failure is fixed
+        kinds = [rule.on] if isinstance(rule.on, str) else rule.on
+        return rule.dedupe and event["type"] == "run.resolved" and bool(set(kinds) & _FAILURE_KINDS)
+
+    def _repeat(self, index: int, rule: Rule, event: dict) -> bool:
+        """True when a `dedupe` rule stays quiet on this failure: its fingerprint was already
+        alerted and no reminder is due. A due alert is recorded in the store."""
+        from . import errors
+        from .checks import parse_duration
+
+        fp = event.get("data", {}).get("fingerprint")
+        if not (rule.dedupe and fp and self.store is not None):
+            return False
+        key = (event.get("run_id") or "", fp, index)
+        if key not in self._dedupe:
+            rows = self.store.errors_of(self.pipeline, fp)
+            at = errors.now()
+            remind = parse_duration(rule.remind_every) if rule.remind_every else None
+            alert = not rows or errors.should_alert(rows[0], remind, at)
+            if alert:
+                self.store.error_alerted(self.pipeline, fp, at)
+            self._dedupe[key] = alert
+        return not self._dedupe[key]
 
     def __call__(self, event: dict) -> None:
-        for rule in self.spec.rules:
+        for index, rule in enumerate(self.spec.rules):
             try:
-                if not matches(rule, event):
+                if not self._matches(rule, event):
                     continue
+                if self._repeat(index, rule, event):
+                    log.info("notify: %s repeats %s, not sent", event["type"], event["data"]["fingerprint"])
+                    continue
+                rows = None
+                if rule.step and event["type"] == "step.succeeded":
+                    rows = self.records(rule.step) if self.records else None
+                    if not rows:  # `on: records` sends only when the step produced records
+                        continue
                 key = (event["type"], event.get("step") or "", json.dumps(rule.to))
                 if key in self._sent:  # one message per rule/step per run
                     continue
@@ -248,6 +315,8 @@ class Notifier:
                 if rule.summary == "agent" and self.summarize:
                     event = {**event, "data": {**event.get("data", {}), "summary": self.summarize(event)}}
                 text = format_text(event, self.pipeline)
+                if rows:
+                    text += "\n" + "\n".join(format_records(rows, rule.template, rule.max_rows))
                 for name in rule.to:
                     if name not in self.spec.channels:
                         log.warning("notify: unknown channel %s", name)

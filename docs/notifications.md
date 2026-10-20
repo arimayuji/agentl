@@ -89,8 +89,91 @@ A channel's type defaults to its name. Set `type:` to give channels custom names
 
 ## Rules
 
-- `on`: an event type, a list of them, or `"*"`.
+- `on`: an event type, a list of them, or `"*"`. Use `run.alert` to be told only about the
+  [outcomes](concepts.md#run-outcomes) in `outcomes.alert_on` (`failed` and `partial` by default).
 - `when`: a simple comparison on the event data, such as `rate > 0.05` or `count >= 10`.
 - `summary: agent`: the default LLM writes a three-line explanation of the run.
 
 Each rule sends at most one message per step per run. A failing channel never fails the pipeline.
+
+### Send the records of a step
+
+`on: records` with `step:` sends the records that step produced, and only when it produced any:
+a run with nothing to report stays silent.
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+  rules:
+    - on: records
+      step: alerts
+      template: "{sku}: stock {stock} below {minimum}"
+      max_rows: 20
+      to: [slack]
+```
+
+- `template`: one line per record, with `{field}` placeholders. Without it, each record is one
+  line of JSON.
+- `max_rows` (20): lines after that are left out, and a last line says how many.
+
+The message starts with the usual `step.succeeded` header. The records are the step's output as
+the runner holds it: for a writer, that is its summary record, so point the rule at the step that
+produces the rows.
+
+To print or log records as a step instead, use [`console.send` and `log.write`](connectors.md#console-and-log).
+
+### Daily digest of check findings
+
+`notify.digest` sends the findings of the [check rules](checks.md#scheduled-digest) once a day
+(or every N days) at a set time to any of these channels, with a "sent today" guard and an
+"all clear" heartbeat on clean days.
+
+### Repeated failures: alert once, remind, resolve
+
+A pipeline that fails every hour would send the same alert 24 times a day. Each failed run's
+error gets a **fingerprint**: the error class, the step that failed and the message with
+numbers, ids, paths and timestamps stripped (the error class is read as in
+[`agentl report`](cli.md#report-a-bug)). The store keeps one row per pipeline and fingerprint: first
+seen, last seen, count, `open` or `resolved`, and when the last alert went out. `run.alert` and
+`run.failed` carry `fingerprint`, `error_count` and `first_seen`.
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+  rules:
+    - on: run.failed
+      to: [slack]
+      dedupe: true          # one alert per fingerprint; repeats are counted, not sent
+      remind_every: 6h      # optional: alert again with the count (implies dedupe)
+```
+
+- With `dedupe: true` the first failure alerts; the same failure again stays quiet until
+  `remind_every` has passed since the last alert, when the alert repeats with `error_count`.
+  A different fingerprint alerts on its own.
+- The first run that succeeds after an open error emits **`run.resolved`** (`fingerprints`,
+  `errors`, `error_count`, `first_seen`, `last_error`) and marks the errors resolved. A
+  `dedupe` rule on `run.failed` or `run.alert` sends it too; any rule can ask for it with
+  `on: run.resolved`. If the error comes back later, it opens again with a fresh count and alerts.
+- `dedupe` is **off by default**: an existing rule still sends every failure, so an upgrade never
+  silences an alert someone relies on. Errors are still counted, so the digest's `errors`
+  section works without it.
+- The last alert time is kept per fingerprint, so two `dedupe` rules on the same failure share it.
+
+### Errors in the digest
+
+Add `errors` to `notify.digest.sections` to list each open error, and those resolved within the
+period, with its count, first and last seen, pipeline and step. It uses the same "sent today"
+guard and heartbeat (`all clear: no run errors`).
+
+```yaml
+notify:
+  digest:
+    to: [slack]
+    at: "08:00"
+    sections: [new, resolved, ongoing, errors]   # or just [errors]
+```
+
+`agentl digest pipeline.yaml --errors` sends (or, with `--show`, prints) only the errors, with a
+guard of its own, so a cron line for errors does not stop the check digest.

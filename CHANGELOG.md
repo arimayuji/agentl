@@ -9,8 +9,136 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
+Unreleased changes live as fragments in [`changes/`](https://github.com/arimayuji/agentl/tree/main/changes) until the next release.
+
+## [0.12.0] - 2026-10-18
+
+Agents that check each other and a project that is easy to join: critic, router and jury
+steps, retries and fallbacks, a proposal-only repair agent, compute cost per pipeline, run labels
+with a grouped and exportable dashboard, layout drift detection, `agentl report` for bug reports,
+a hardened CI and a new look. First release with an outside contribution (thanks @dannyward630).
+
 ### Added
 
+- Layout drift detection (#178): a check with `on_drift: warn | fail | remap` (or `check: {schema_matches:
+  step, on_drift: ...}`) records its input's columns and types per pipeline and step and emits
+  `schema.drift` with the columns added, removed and probably renamed, and the type changes, on
+  records and Arrow inputs. `fail` and `remap` stop the run; `remap` also carries both layouts.
+- `agentl report [RUN_ID] --pipeline p.yaml`: a ready-to-paste bug report (version, Python and
+  OS, failing step, error and traceback, doctor findings, the pipeline YAML with secrets and
+  `${VAR:-default}` defaults masked, a minimal repro suggestion) as markdown matching the Bug report
+  form plus a prefilled GitHub issue URL; `--crash` for the last CLI crash, `-o FILE`, `--json`.
+  It never sends anything. Also a read-only `report` tool in `agentl mcp`.
+- A one-line "Looks like an agentl bug" hint after an unexpected CLI crash or a run failing with an
+  internal error type outside `fn:` code; silence it with `AGENTL_NO_REPORT_HINT=1`. `step.failed`
+  events now carry the end of the traceback (`traceback`, at most 3000 characters).
+- `.github/CONTRIBUTING_AI.md`: a guide for AI coding agents from error to issue to fix pull request,
+  linked from `CONTRIBUTING.md`, the bug-report form and the docs.
+
+- `agentl cost` attributes compute cost per pipeline, step and model (#309), for a Lambda function
+  or a shared EC2, ECS or k8s host that runs many pipelines: `--usd-per-hour X` prices each run's
+  wall time, `--lambda-memory-mb MB` uses the Lambda formula (GB-seconds plus the request fee,
+  `--usd-per-gb-second` and `--usd-per-request` override the prices) and `--bill-usd X` splits a
+  known bill over the period's runs by wall time. Groups gain `compute_usd` and `total_usd`; without
+  a compute flag the report is unchanged. Python: `ledger.cost(..., compute=ledger.compute_price(...))`.
+- Run labels and a grouped, exportable dashboard (#295): a free-form `labels:` map of strings in
+  the pipeline spec, plus inferred `source` and `sink` labels from the connector steps, stored with
+  each run. The dashboard groups pipelines by any label key with per-group pipelines, failing count,
+  runs, records written and spend over 7 and 30 days, and filters by label values. `agentl runs
+  --label k=v`, `agentl stats --label k=v` and the MCP `pipeline_stats` tool (`labels`) take the
+  same filter. `agentl dashboard export OUT_DIR [--since 30d] [--label k=v]` writes a static,
+  self-contained page plus JSON snapshots for S3, GCS, Cloudflare R2/Pages or Azure Blob, with run
+  metadata, stats and redacted events only. Authentication is left to the host.
+- `agentl repair RUN_ID --pipeline p.yaml` (#299): asks the pipeline's llm (or `--llm NAME`) for a
+  fix to a failed run as a diagnosis plus a unified diff, applies it in memory, parses and lints the
+  result, retries once with the errors and otherwise shows the diagnosis only. Never changes the
+  pipeline file; `--write NEW.yaml` writes the patched YAML elsewhere, `--json` prints the result.
+  Samples sent to the llm have personal data and secrets masked; spend is counted and recorded as a
+  `repair.proposed` event. Also a read-only `repair` tool in `agentl mcp`.
+- `jury:` on agent steps (#299): several llms answer each record independently and `decide:
+  majority` (agreement on `fields`, strings normalized; ties are quarantined) or `decide: judge`
+  (a judge llm writes the final answer) picks the result. `when: low_confidence` (default) only
+  sends records below `escalate_below`; `jury_tag: true` adds `_agreement`. Calls count for
+  budget and spend, juror and judge answers are cached, the spend counts `jury` outcomes and a
+  `jury.decided` event is logged per step.
+- Router steps (#299): `routes: {label: step_id | drop}` on an agent step labels each record
+  (answer constrained to the labels) and sends it only to that step; `drop` discards and an
+  invalid label goes to the quarantine. `rules: [{when, route}]` decide first, without an llm
+  call. Answers are cached per record and budgeted; a `route.decided` event counts each label,
+  `route_tag: true` adds `_route`, and diagrams, lint and the dashboard show routed edges.
+- `critic:` on agent steps (#299): a reviewer llm approves each answer against `criteria` or
+  sends it back with feedback for the step's llm to regenerate, up to `max_rounds` (1 to 5,
+  default 2); records never approved go to the quarantine. Calls count for budget and spend,
+  verdicts and regenerations are cached, and each round logs a `critic.round` event.
+- Step retries and fallbacks (#296): `retries: {attempts, backoff, max_backoff, on}` on any
+  `use`, `fn` or agent step (exponential backoff with jitter, `Retry-After` honored, `on:
+  [transport, http_5xx, http_429, any]`) and `fallback: [{use, with}, ...]` on `use` and `fn`
+  steps, with `fallback_tag`, `fallback_outcome` and `fallback_writer`. New events `step.retry`
+  and `step.fallback`; a run that used a fallback ends `partial` by default. Lint rule AL011.
+
+- Golden sets for agent steps (#154): `golden: file.jsonl` (or `{file, min_accuracy, tolerance}`)
+  and `agentl eval pipeline.yaml [STEP]` run the step on records with a known answer and report
+  accuracy per field (numbers within a tolerance), cost and the records that differ.
+  `--compare model=NAME` runs the same check with another model side by side, and a run below
+  `min_accuracy` exits 1 for CI.
+- `mode: changeset` on `sqlite.write` (#205): compares with the table and writes only what
+  changed. `deletes: missing` or `partition_replaced` (with `partition_by`) removes rows the source
+  no longer has, `dry_run: true` reports the changeset without writing, and the result has
+  `inserted`, `updated`, `deleted`, `unchanged` and `outcome: no_change`. `deleted` is now a step
+  write count in events and the run summary. Null keys are rejected, as in upsert (#281).
+- Check steps take per-row `rules:` with `on_fail: drop | flag | fail` (a broken rule never stops the run) and emit a `check.digest` event with new, resolved and ongoing findings by `identity` against the previous day, including an all-clear heartbeat (#218). `rules:` is validated by step kind: per-row check rules on `check` steps, hybrid rules (#124) on `agent` steps.
+- Schedules by publication cycle (#201): a `schedule:` trigger with a required `tz`, expected
+  `days` and `at`, built-in `us_federal` and `br_national` holiday calendars plus an exceptions
+  file, `if_holiday` (skip, next or previous business day, run), staged `poll.cadence`,
+  `stop_when: success_in_cycle`, `active.between`, `extra_dates` and `skip_dates`. `agentl serve`
+  logs a lateness warning when a cycle's window closes with no successful run, and
+  `agentl schedule next PIPELINE --n 10` prints the next firings. `agentl lint` refuses a `cron`
+  trigger without `timezone` (AL009).
+- Fetch windows (#190): a `window:` section (`lookback`, `max_span`, `align: none | calendar_month
+  | week`, `order`) fills `${window.start}` / `${window.end}` in steps. `agentl run` re-reads the
+  lookback tail; `agentl backfill --from X --to Y` runs the same chunked path over any range, keeps
+  a status per chunk, skips finished chunks on resume and lists the pending ones. It is the same `agentl backfill` command as the params-based one
+  (#250): a pipeline with `window:` is backfilled by chunk, any other by file or date; `--to` is
+  inclusive in both modes and `--no-resume` is an alias of `--redo`.
+- `agentl snapshot` (#211, first part): runs a pipeline and compares step outputs with saved
+  snapshots by key, not by order, with a per-field diff; `--update-snapshots` shows the diff and
+  asks before accepting (`--yes` for CI). `agentl.snapshots` also has `redact_headers` and
+  `redact_url` to hide credentials in anything recorded.
+- `agentl gaps`: a top-level `expect:` block declares the partitions the destination should hold (daily or hourly, with `skip: weekends` or dates, and composite keys such as source x day); the command reads what is present with any reader (`sqlite.read`, `postgres.read`, `sql.read`) or a file glob, lists the missing periods as ranges, prints `agentl backfill` lines with `--commands`, and exits 1 with `--fail` for scheduled checks.
+- Best-effort steps and step order (#206): `required: false` (or `criticality: best_effort`) on a
+  step records its failure (`step.failed` with `required: false`, `RunResult.best_effort_failed`,
+  `partial` on the result, its summary and `run.succeeded`) without failing the run. `after:`
+  orders steps without passing data, e.g. the legacy write after the new one.
+- Run outcomes (#188): every run gets an `outcome` (`success`, `no_change`, `skipped`, `partial`,
+  `failed`) next to its unchanged `status`, set by an `outcomes:` policy (`on_transport_error:
+  skipped_upstream`, `on_empty`, `on_rejected`, `alert_on`, `max_skipped`, `exit_codes`). Skipped
+  runs end with `run.skipped` (status `skipped`), outcomes in `alert_on` emit `run.alert`, too many
+  skipped runs in a row fail, and `agentl runs`, `agentl stats` and the dashboard show the outcome.
+
+- Concurrency control and single-flight cache (#204): `concurrency: {key, on_overlap: skip | queue
+  | fail}` allows one run per key across workers sharing the run store (`skip` ends as `skipped`,
+  not an error); the `cache` step keeps the result of its `do` steps for a `ttl` and computes it
+  once for concurrent callers; `cache_ttl` on cached steps; `agentl cache clear <key>`. Locks are
+  leases renewed while held, so they lapse if the process dies. SQLite on one host, Postgres across
+  hosts (table `agentl_locks`).
+- `mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` (#236): slowly changing
+  dimensions type 2 with `valid_from`, `valid_to` and `is_current`. A record whose `track` columns
+  (default: all but `key`) changed closes the current version and inserts a new one; unchanged
+  rows are left alone; `on_missing: close` closes keys absent from the input. `as_of` (default
+  now) needs a time zone and is stored in UTC. Reports `inserted`, `versioned`, `unchanged` and
+  `closed`. Records with a null key are rejected, as in upsert (#281).
+- `skip_seen` step (#184): drops files or records an earlier successful run already handled, keyed
+  by `sha256` of the file at `path`, by `path` or by any field. Keys live in the run store per
+  `scope` (default: the pipeline name) and are marked only when the run succeeds. `agentl seen
+  list|forget [--scope S]` shows and clears them.
+- Checks (#185): `vs_runs: { last: 5, rows: 30% }` compares with the median of the last N passing
+  runs, and `severity:` sets `fail`, `warn` or `reject` (drop the failing rows) per rule. Check
+  events carry the result of each rule in `rules`.
+
+- OpenLineage events (#238): `lineage:` in the YAML (or `OPENLINEAGE_URL` / `OPENLINEAGE_FILE`)
+  sends START / COMPLETE / FAIL RunEvents for the run and each step to an HTTP endpoint such as
+  Marquez, or to a JSON lines file, with input and output datasets taken from connector
+  parameters. Stdlib only; a catalog that is down never fails the run. See Observability.
 - `agentl test` (#181): runs a pipeline on fixture files (`--fixture [STEP=]PATH`) with the `echo`
   LLM, no writes, no notifications and a throwaway store, and compares what each writer would write
   with a golden JSON file (`--expect`, `--update` to write it, `--key` to match rows by a field).
@@ -120,8 +248,24 @@ They are always listed under **Changed** or **Removed**.
   at parse time with a suggestion. Rejected records of row-wise connectors such as `cast` in
   chunked chains are now kept too.
 
+### Changed
+
+- New logo: a blue 3D cube with the white `a` and the yellow dot on its front face. `media/brand/cube.py`
+  renders it (transparent, and avatars on white and on blue). Favicons keep the flat `a.`.
+- The launch video on the home page is re-rendered in the brand palette.
+- The dashboard header is a blue band with the brand shade, a white wordmark and the yellow dot. The
+  feature clips on the docs site are re-rendered in the brand palette.
+- Avatar, app icon, favicon and primary buttons carry the brand shade: a deep blue circle from
+  the top right corner of the blue surface, as on the X banner.
+- Brand palette is now blue, yellow and white. The docs site drops the orange and green accents,
+  the dashboard keeps green and red only for run status, and the social preview and X banner are
+  blue with a white wordmark and the yellow dot.
+
 ### Fixed
 
+- `html.select` keeps upstream `url` and `source_url` on each extracted record without overwriting
+  selected fields with the same names, including when `items` selects multiple elements (#287,
+  thanks @dannyward630).
 - Upserts no longer merge records with a null key: `sqlite.write`, `postgres.write` and `sql.write`
   send a record whose key field is null or missing to the step's rejected records with the reason
   (#275). Tables `sqlite.write` creates get declared column types and, for upsert, a unique index
@@ -130,6 +274,25 @@ They are always listed under **Changed** or **Removed**.
 - `budget:` with parallel agent workers (`concurrency`): calls already running count against
   `max_usd` / `max_tokens` at the average cost of a call (a ticket per call, released when it is charged, on any thread), so workers no longer slip past the
   limit together and the run stops after the same number of calls every time.
+
+### Security
+
+- Hardened CI against malicious pull requests: every action pinned to a full commit SHA at the
+  latest release (`# vX.Y.Z`), least-privilege `permissions` per job, docs deploy and release
+  only from `main` or a `v*` tag, release version input validated, a dependency review check on
+  pull requests, `CODEOWNERS` for CI, dependency and release files, and a "Security of
+  contributions" section in `CONTRIBUTING.md`.
+- Repository bots: a welcome comment on a first issue or pull request, path labels on pull
+  requests (`.github/labeler.yml`), a Release Drafter draft (never published) updated on every
+  merge to `main`, and a `Quality` workflow with the `typos` spell checker (`_typos.toml`) and
+  the `zizmor` workflow security linter. Dependabot waits 7 days before proposing a new release,
+  and the benchmark jobs no longer restore a pip cache (zizmor cache-poisoning).
+
+### Docs
+
+- Contributors showcase on the community page (who they are and what they shipped), links to
+  @useagentl on X and Instagram in the README and the site footer.
+- README: a Contributors section; CONTRIBUTING says how contributors are credited.
 
 ## [0.11.0] - 2026-10-17
 
@@ -653,7 +816,8 @@ Kinesis and Event Hubs sources with time windows.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/arimayuji/agentl/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/arimayuji/agentl/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/arimayuji/agentl/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/arimayuji/agentl/compare/v0.8.1...v0.9.0

@@ -31,7 +31,25 @@ The full guide, including commit conventions and the release process, is in
 
 ## Contributors
 
-[![Contributors](https://contrib.rocks/image?repo=arimayuji/agentl)](https://github.com/arimayuji/agentl/graphs/contributors)
+Everyone who has shipped a change to agentl. Every merged pull request gets its author listed
+here with what they did, credited by handle in the [changelog](changelog.md), and a shout-out from
+[@useagentl on X](https://x.com/useagentl) and [Instagram](https://www.instagram.com/useagentl/).
+
+<div class="agt-people" markdown="0">
+  <a class="agt-person" href="https://github.com/dannyward630">
+    <img src="https://github.com/dannyward630.png?size=128" alt="" loading="lazy" width="64" height="64">
+    <span class="agt-person-name">@dannyward630</span>
+    <span class="agt-person-what">First outside contributor: <code>html.select</code> keeps the page URL on each record (#292)</span>
+  </a>
+</div>
+
+[![All contributors](https://contrib.rocks/image?repo=arimayuji/agentl)](https://github.com/arimayuji/agentl/graphs/contributors)
+
+### Ways to help that are not code
+
+Docs fixes, a recipe for your use case, a bug report made with `agentl report`, answers in
+[Discussions](https://github.com/arimayuji/agentl/discussions) and a post about how you use agentl
+all count. Tell us in the pull request or tag @useagentl, and we will add you here.
 
 ## Code of conduct
 

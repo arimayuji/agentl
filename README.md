@@ -11,7 +11,9 @@
   <a href="https://agentl.com.br/connectors/">Connectors</a> ·
   <a href="https://pypi.org/project/agentl-etl/">PyPI</a> ·
   <a href="https://agentl.com.br/roadmap/">Roadmap</a> ·
-  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a>
+  <a href="https://github.com/arimayuji/agentl/discussions">Discussions</a> ·
+  <a href="https://x.com/useagentl">X</a> ·
+  <a href="https://www.instagram.com/useagentl/">Instagram</a>
 </p>
 
 [![CI](https://github.com/arimayuji/agentl/actions/workflows/ci.yml/badge.svg)](https://github.com/arimayuji/agentl/actions/workflows/ci.yml)
@@ -149,6 +151,17 @@ See the full [public roadmap](https://agentl.com.br/roadmap/) and vote on the is
 Bug reports, connector requests and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
 for the setup and the checks every PR must pass, and [SECURITY.md](SECURITY.md) to report vulnerabilities privately.
 Release history is in [CHANGELOG.md](CHANGELOG.md).
+
+## Contributors
+
+Thanks to everyone who has helped build agentl:
+
+<a href="https://github.com/arimayuji/agentl/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=arimayuji/agentl" alt="agentl contributors" />
+</a>
+
+Want to join them? Issues labeled
+[good first issue](https://github.com/arimayuji/agentl/labels/good%20first%20issue) are a good place to start.
 
 ## Sponsors
 

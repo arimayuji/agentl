@@ -1,19 +1,25 @@
-"""`agentl mcp`: an MCP server over stdio, so Claude Code, Claude Desktop, Cursor and other MCP
-clients can validate, run and debug pipelines.
+"""`agentl mcp`: an MCP server, so Claude Code, Claude Desktop, Cursor and other MCP clients can
+validate, run and debug pipelines. Tools, resources (templates, docs, pipeline files under
+--root, runs) and prompts; over stdio, or over streamable HTTP with `agentl mcp --http :7072`.
 
     {"mcpServers": {"agentl": {"command": "agentl", "args": ["mcp"]}}}
 
-Only the standard library: JSON-RPC 2.0, one message per line. Tool output is text (JSON where it
-is data). Anything a pipeline prints goes to stderr so stdout stays a clean protocol channel."""
+Only the standard library: JSON-RPC 2.0, one message per line on stdio, one per POST on HTTP.
+Tool output is text (JSON where it is data). Anything a pipeline prints goes to stderr so stdout
+stays a clean protocol channel."""
 
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
+import os
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
+from urllib.parse import quote, unquote, urlsplit
 
 import yaml
 
@@ -182,11 +188,43 @@ class Server:
             {
                 "pipeline": {"type": "string", "description": "pipeline name; all when omitted"},
                 "since": {"type": "string", "description": "how far back, e.g. 7d, 12h (default 30d)"},
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": 'only runs with all these labels, e.g. {"team": "sales-data"}',
+                },
             },
             self.pipeline_stats,
             required=[],
         )
         add("doctor", "Explain why a run failed.", {"run_id": {"type": "string"}}, self.doctor)
+        add(
+            "repair",
+            "Paid option: ask the pipeline's llm for a fix to a failed run, as a unified diff against "
+            "the pipeline file, checked by applying it in memory and linting. Never changes any file; "
+            "personal data and secrets in samples are masked before the llm sees them.",
+            {
+                "run_id": {"type": "string"},
+                "pipeline": {"type": "string", "description": "path to the pipeline YAML file"},
+                "llm": {"type": "string", "description": "llm name from the pipeline (default: default)"},
+            },
+            self.repair,
+            required=["run_id", "pipeline"],
+        )
+        add(
+            "report",
+            "Draft a bug report for a failed run that looks like an agentl problem: environment, "
+            "failing step, error and traceback, doctor findings, the pipeline YAML with secrets "
+            "masked, a minimal repro suggestion, the issue-form markdown and a prefilled GitHub "
+            "issue URL. Calls no LLM and sends nothing: show it to the user, who decides to file it. "
+            "To fix it too, follow .github/CONTRIBUTING_AI.md in the agentl repository.",
+            {
+                "run_id": {"type": "string", "description": "default: the latest failed run"},
+                "pipeline": {"type": "string", "description": "path to the pipeline YAML file"},
+            },
+            self.report,
+            required=[],
+        )
         add(
             "list_connectors",
             "Installed connectors, one line each. For one connector's with: parameters, types and "
@@ -357,11 +395,33 @@ class Server:
 
         since = time.time() - parse_duration(args.get("since") or "30d")
         with open_store(self.db) as store:
-            return stats.compute(store, since, args.get("pipeline"))
+            filters = {str(k): str(v) for k, v in (args.get("labels") or {}).items()}
+            return stats.compute(store, since, args.get("pipeline"), labels=filters)
 
     def doctor(self, args: dict) -> str:
         with open_store(self.db) as store:
             return assist.explain(assist.diagnose(store, args["run_id"]))
+
+    def report(self, args: dict) -> dict:
+        from . import report
+
+        path = str(self._path(args, "report")) if args.get("pipeline") else None
+        with open_store(self.db) as store:
+            run_id = args.get("run_id") or next((r["id"] for r in assist.failures(store, 1)), None)
+            if run_id is None:
+                raise ValueError("no failed runs in this store")
+            return report.build(store, run_id, path)
+
+    def repair(self, args: dict) -> dict:
+        from . import repair
+
+        path = self._path(args, "repair")
+        with open_store(self.db) as store:
+            result = repair.propose(
+                store, args["run_id"], path.read_text(encoding="utf-8"), str(path), args.get("llm")
+            )
+        result.pop("patched", None)
+        return result
 
     def connectors(self, args: dict) -> str:
         return assist.catalog()
@@ -418,6 +478,129 @@ class Server:
             "records": sample["records"][:limit],
         }
 
+    # ------------------------------------------------------------ resources
+    def _pipeline_files(self, limit: int = 200) -> list[Path]:
+        """YAML files under --root that look like pipelines (a top-level `steps:`), skipping
+        hidden folders and virtual environments."""
+        found: list[Path] = []
+        for path in sorted(self.root.rglob("*.y*ml")):
+            rel = path.relative_to(self.root).parts
+            if any(p.startswith(".") or p in ("node_modules", "site", "venv") for p in rel[:-1]):
+                continue
+            if path.suffix not in (".yaml", ".yml") or not path.is_file():
+                continue
+            try:
+                head = path.read_text(encoding="utf-8", errors="replace")[:20000]
+            except OSError:
+                continue
+            if any(line.startswith("steps:") for line in head.splitlines()):
+                found.append(path)
+                if len(found) >= limit:
+                    break
+        return found
+
+    def list_resources(self) -> list[dict]:
+        from . import templates
+
+        out = [
+            _res(
+                "agentl://docs/skill",
+                "How to build, check and run pipelines (the agent guide).",
+                "text/markdown",
+            ),
+            _res("agentl://docs/connectors", "Installed connectors, one line each.", "text/plain"),
+            _res("agentl://docs/schema", "JSON Schema of a pipeline file.", "application/json"),
+            _res("agentl://runs", "The 20 latest runs.", "application/json"),
+        ]
+        out += [
+            _res(f"agentl://templates/{n}", templates.summary(n), "application/yaml", name=n)
+            for n in templates.names()
+        ]
+        out += [
+            _res(
+                "agentl://pipelines/" + quote(p.relative_to(self.root).as_posix()),
+                "Pipeline file under the server's root.",
+                "application/yaml",
+                name=p.relative_to(self.root).as_posix(),
+            )
+            for p in self._pipeline_files()
+        ]
+        return out
+
+    def resource_templates(self) -> list[dict]:
+        return [
+            {
+                "uriTemplate": "agentl://runs/{run_id}",
+                "name": "run",
+                "description": "A run's summary: status, failing step, error, rejected records.",
+                "mimeType": "application/json",
+            },
+            {
+                "uriTemplate": "agentl://connectors/{name}",
+                "name": "connector",
+                "description": "One connector's with: parameters and notes, e.g. csv.read.",
+                "mimeType": "text/plain",
+            },
+            {
+                "uriTemplate": "agentl://pipelines/{path}",
+                "name": "pipeline",
+                "description": "A pipeline YAML file under the server's root.",
+                "mimeType": "application/yaml",
+            },
+        ]
+
+    def read_resource(self, uri: str) -> dict:
+        """One resource as {uri, mimeType, text}. KeyError for an unknown URI; ValueError for a
+        pipeline path outside --root."""
+        from . import lint, templates
+
+        if not uri.startswith("agentl://"):
+            raise KeyError(f"unknown resource '{uri}'")
+        kind, _, rest = uri[len("agentl://") :].partition("/")
+        rest = unquote(rest)
+        if kind == "docs" and rest == "skill":
+            text = (Path(__file__).parent / "skill" / "SKILL.md").read_text(encoding="utf-8")
+            return _content(uri, "text/markdown", text)
+        if kind == "docs" and rest == "connectors":
+            return _content(uri, "text/plain", assist.catalog())
+        if kind == "docs" and rest == "schema":
+            return _content(uri, "application/json", json.dumps(lint.schema(), indent=1))
+        if kind == "templates" and rest:
+            try:
+                return _content(uri, "application/yaml", templates.text(rest))
+            except ValueError as e:
+                raise KeyError(str(e)) from None
+        if kind == "connectors" and rest:
+            return _content(uri, "text/plain", self.describe_connector({"name": rest}))
+        if kind == "runs":
+            with open_store(self.db) as store:
+                data: Any = assist.diagnose(store, rest) if rest else store.runs(20)
+            return _content(
+                uri, "application/json", json.dumps(data, ensure_ascii=False, default=str, indent=1)
+            )
+        if kind == "pipelines" and rest:
+            path = (self.root / rest).resolve()
+            if not path.is_relative_to(self.root):
+                raise ValueError(f"pipeline resources are only files under {self.root}")
+            if path.suffix not in (".yaml", ".yml") or not path.is_file():
+                raise KeyError(f"no pipeline file '{rest}' under {self.root}")
+            return _content(uri, "application/yaml", _neutral(path.read_text(encoding="utf-8")))
+        raise KeyError(f"unknown resource '{uri}'")
+
+    # ------------------------------------------------------------ prompts
+    def get_prompt(self, name: Any, args: dict) -> dict:
+        if name not in PROMPTS:
+            raise _RpcError(-32602, f"unknown prompt '{name}'")
+        meta, render = PROMPTS[name]
+        missing = [a["name"] for a in meta["arguments"] if a.get("required") and not args.get(a["name"])]
+        if missing:
+            raise _RpcError(-32602, f"prompt '{name}' needs: {', '.join(missing)}")
+        text = render({k: str(v) for k, v in args.items()})
+        return {
+            "description": meta["description"],
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+        }
+
     # ------------------------------------------------------------ protocol
     def handle(self, msg: dict) -> dict | None:
         method, rid = msg.get("method"), msg.get("id")
@@ -435,13 +618,29 @@ class Server:
         if method == "initialize":
             return {
                 "protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 "serverInfo": {"name": "agentl", "version": __version__},
             }
         if method == "ping":
             return {}
         if method == "tools/list":
             return {"tools": [meta for meta, _ in self.tools.values()]}
+        if method == "resources/list":
+            return {"resources": self.list_resources()}
+        if method == "resources/templates/list":
+            return {"resourceTemplates": self.resource_templates()}
+        if method == "resources/read":
+            uri = str(params.get("uri") or "")
+            try:
+                return {"contents": [self.read_resource(uri)]}
+            except KeyError as e:
+                raise _RpcError(-32002, str(e.args[0]) if e.args else uri) from None
+            except (ValueError, SpecError) as e:
+                raise _RpcError(-32602, str(e)) from None
+        if method == "prompts/list":
+            return {"prompts": [meta for meta, _ in PROMPTS.values()]}
+        if method == "prompts/get":
+            return self.get_prompt(params.get("name"), params.get("arguments") or {})
         if method == "tools/call":
             name = params.get("name")
             if name not in self.tools:
@@ -485,6 +684,222 @@ class _RpcError(Exception):
         self.code = code
 
 
-def serve(db: str | None = None, root: str | None = None, allow_code: bool = False) -> None:
+def _res(uri: str, description: str, mime: str, name: str | None = None) -> dict:
+    return {"uri": uri, "name": name or uri.rsplit("/", 1)[-1], "description": description, "mimeType": mime}
+
+
+def _content(uri: str, mime: str, text: str) -> dict:
+    return {"uri": uri, "mimeType": mime, "text": text}
+
+
+def _arg(name: str, description: str, required: bool = False) -> dict:
+    return {"name": name, "description": description, "required": required}
+
+
+def _build_prompt(a: dict) -> str:
+    return (
+        f"Build an agentl pipeline that reads from: {a['sources']}\n"
+        f"and delivers to: {a['destination']}\n"
+        + (f"Also: {a['notes']}\n" if a.get("notes") else "")
+        + "\nSteps: call list_templates and pick the closest template (read it with the "
+        "agentl://templates/<name> resource); write it with new_from_template; adapt paths and "
+        "settings, using describe_connector for each connector's with: parameters; run lint until "
+        "it has no errors; then plan to show records, LLM calls and cost before anything runs. "
+        "Ask me before run_pipeline. Prefer templates over new_pipeline, which calls a paid LLM."
+    )
+
+
+def _explain_prompt(a: dict) -> str:
+    which = f"run {a['run_id']}" if a.get("run_id") else "the latest failed run (list_failures, limit 1)"
+    return (
+        f"Explain why {which} failed. Use doctor and get_run (or the agentl://runs/<run_id> "
+        "resource), and show_output for the steps before the failure. Answer in a few lines: the "
+        "likely cause, then the concrete fix (a YAML change, an environment variable, a "
+        "permission). Say when the record is not enough to tell. Do not rerun the pipeline."
+    )
+
+
+def _cost_prompt(a: dict) -> str:
+    return (
+        f"Estimate what running the pipeline {a['pipeline']} would cost, without running it. Call "
+        "plan on it and report, per step: records in and out, cache hits, LLM calls, the token and "
+        "cost range, and what would be written. Then the total, and the settings that would lower "
+        "it most (a cheaper model, a budget, a filter before the LLM step)."
+    )
+
+
+PROMPTS: dict[str, tuple[dict, Callable[[dict], str]]] = {
+    "build_pipeline": (
+        {
+            "name": "build_pipeline",
+            "title": "Build a pipeline",
+            "description": "Build a pipeline from the tested templates, for given sources and destination.",
+            "arguments": [
+                _arg("sources", "where the data comes from, e.g. a CSV folder, an API", True),
+                _arg("destination", "where it goes, e.g. a Postgres table, a sheet", True),
+                _arg("notes", "anything else: transforms, schedule, checks"),
+            ],
+        },
+        _build_prompt,
+    ),
+    "explain_failed_run": (
+        {
+            "name": "explain_failed_run",
+            "title": "Explain the last failed run",
+            "description": "Find the cause of a failed run and the fix.",
+            "arguments": [_arg("run_id", "default: the latest failed run")],
+        },
+        _explain_prompt,
+    ),
+    "estimate_cost": (
+        {
+            "name": "estimate_cost",
+            "title": "Estimate the cost before running",
+            "description": "What a run would read, call and cost, from plan, without running it.",
+            "arguments": [_arg("pipeline", "path to the pipeline YAML file", True)],
+        },
+        _cost_prompt,
+    ),
+}
+
+
+# ---------------------------------------------------------------- streamable HTTP
+TOKEN_ENV = "AGENTL_MCP_TOKEN"
+_LOCAL = {"127.0.0.1", "localhost", "::1"}
+_MAX_BODY = 10 * 1024 * 1024
+
+
+def parse_bind(value: str) -> tuple[str, int]:
+    """`:7072`, `7072`, `0.0.0.0:7072` or `[::1]:7072` -> (host, port); host defaults to 127.0.0.1."""
+    host, sep, port = value.rpartition(":")
+    if not sep:
+        host, port = "", value
+    host = host.strip("[]") or "127.0.0.1"
+    if not port.isdigit():
+        raise ValueError(f"--http takes [HOST]:PORT, e.g. :7072, not '{value}'")
+    return host, int(port)
+
+
+def http_server(server: Server, host: str = "127.0.0.1", port: int = 7072, token: str | None = None) -> Any:
+    """A streamable HTTP endpoint at /mcp (MCP 2025-06-18): POST one JSON-RPC message, get one JSON
+    answer (202 for notifications). No server-initiated stream, so GET and DELETE answer 405. With
+    `token`, every request needs `Authorization: Bearer <token>`. Browser requests from other
+    origins are refused (DNS rebinding). Returns the bound ThreadingHTTPServer; call serve_forever."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    lock = threading.Lock()  # tools share one store and redirect stdout: one call at a time
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "agentl-mcp"
+
+        def log_message(self, format: str, *args: Any) -> None:
+            sys.stderr.write("agentl mcp: " + (format % args) + "\n")
+
+        def _send(self, status: int, body: dict | None = None, headers: dict | None = None) -> None:
+            data = json.dumps(body, default=str).encode() if body is not None else b""
+            self.send_response(status)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _error(self, status: int, code: int, message: str, headers: dict | None = None) -> None:
+            self._send(
+                status, {"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}}, headers
+            )
+
+        def _allowed(self) -> bool:
+            if urlsplit(self.path).path != "/mcp":
+                self._error(404, -32601, "not found: the MCP endpoint is /mcp")
+                return False
+            origin = self.headers.get("Origin")
+            if origin and urlsplit(origin).hostname not in _LOCAL:
+                self._error(403, -32600, f"origin {origin} not allowed")
+                return False
+            if token is not None:
+                got = self.headers.get("Authorization", "")
+                if not hmac.compare_digest(got.encode(), f"Bearer {token}".encode()):
+                    self._error(401, -32001, "missing or wrong bearer token", {"WWW-Authenticate": "Bearer"})
+                    return False
+            version = self.headers.get("MCP-Protocol-Version")
+            if version and version not in _VERSIONS:
+                self._error(400, -32600, f"unsupported MCP-Protocol-Version {version}")
+                return False
+            return True
+
+        def do_POST(self) -> None:
+            if not self._allowed():
+                return
+            try:
+                size = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                size = -1
+            if size < 0 or size > _MAX_BODY:
+                self._error(413 if size > 0 else 400, -32600, "bad or too large Content-Length")
+                return
+            try:
+                msg = json.loads(self.rfile.read(size) or b"null")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, -32700, "parse error")
+                return
+            if not isinstance(msg, dict):
+                self._error(400, -32600, "one JSON-RPC message per request")
+                return
+            if "method" not in msg:  # a response or notification from the client
+                self._send(202)
+                return
+            with lock:
+                reply = server.handle(msg)
+            if reply is None:
+                self._send(202)
+            else:
+                self._send(200, reply)
+
+        def _not_allowed(self) -> None:
+            if self._allowed():
+                self._send(405, None, {"Allow": "POST"})
+
+        do_GET = do_DELETE = _not_allowed
+
+    return ThreadingHTTPServer((host, port), Handler)
+
+
+_VERSIONS = {PROTOCOL_VERSION, "2025-03-26"}
+
+
+def serve(
+    db: str | None = None,
+    root: str | None = None,
+    allow_code: bool = False,
+    http: str | None = None,
+    token_env: str = TOKEN_ENV,
+) -> None:
     registry.names()  # load connectors before the first request
-    Server(db, root, allow_code).serve()
+    server = Server(db, root, allow_code)
+    if http is None:
+        server.serve()
+        return
+    host, port = parse_bind(http)
+    token = os.environ.get(token_env) or None
+    if token is None and host not in _LOCAL:
+        raise SystemExit(
+            f"agentl mcp: refusing to listen on {host} without a token; set {token_env} "
+            "(clients send it as Authorization: Bearer ...)"
+        )
+    httpd = http_server(server, host, port, token)
+    auth = f"bearer token from {token_env}" if token else f"no token ({token_env} not set)"
+    print(f"agentl mcp: streamable HTTP on http://{http_host(host)}:{port}/mcp, {auth}", file=sys.stderr)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+
+
+def http_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host

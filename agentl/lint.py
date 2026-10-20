@@ -18,6 +18,7 @@ import yaml
 
 from . import registry
 from .spec import _ENV, PipelineSpec, SpecError, _flatten_sections, _Loader, interpolate
+from .spec import is_sink as spec_is_sink
 
 # Writes that leave the machine or change shared state: a check before them is worth having.
 _DELIVERING = {
@@ -62,7 +63,10 @@ RULES = {
     "AL006": "cursor never used",
     "AL007": "unknown top-level field (ignored when the pipeline runs)",
     "AL008": "agent step sees fields before they are protected",
+    "AL009": "cron trigger without a time zone",
     "AL010": "cast without locale reads numbers that look en-US",
+    "AL011": "http source with a fallback but no retries",
+    "AL012": "personal data in sample records reaches an agent step without protect or pii",
 }
 
 
@@ -224,6 +228,23 @@ def _structure_errors(raw: dict, pos: _Positions) -> list[Finding]:
                     f"use: {best}" if best else "run `agentl connectors` to list them",
                 )
             )
+        fallbacks = s.get("fallback")
+        for i, fb in enumerate(fallbacks if isinstance(fallbacks, list) else []):
+            fb_use = fb.get("use") if isinstance(fb, dict) else None
+            if isinstance(fb_use, str) and fb_use not in names:
+                line, col = pos.step(sid, "fallback", i, "use")
+                best = suggest(fb_use, names)
+                out.append(
+                    Finding(
+                        "AE003",
+                        "error",
+                        f"step '{sid}': unknown connector '{fb_use}' in fallback[{i}]."
+                        + _did_you_mean(fb_use, names),
+                        line,
+                        col,
+                        f"use: {best}" if best else "run `agentl connectors` to list them",
+                    )
+                )
         refs = s.get("input")
         refs = [refs] if isinstance(refs, str) else refs if isinstance(refs, list) else []
         for key, ref in (
@@ -250,6 +271,22 @@ def _structure_errors(raw: dict, pos: _Positions) -> list[Finding]:
                         line,
                         col,
                         f"{key}: {best}" if best else None,
+                    )
+                )
+        routes = s.get("routes")
+        for label, target in routes.items() if isinstance(routes, dict) else []:
+            if isinstance(target, str) and target != "drop" and target not in ids:
+                line, col = pos.step(sid, "routes", label)
+                best = suggest(target, ids)
+                out.append(
+                    Finding(
+                        "AE004",
+                        "error",
+                        f"step '{sid}': route '{label}' targets '{target}', which does not exist."
+                        f"{_did_you_mean(target, ids)} Use a step id or drop",
+                        line,
+                        col,
+                        f"{label}: {best}" if best else None,
                     )
                 )
         if s.get("agent") is not None:
@@ -413,11 +450,8 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                 )
     consumed = _consumers(spec)
     last = spec.steps[-1].id if spec.steps else None
-    sink_verbs = ("write", "upload", "post", "produce", "publish", "send", "mark")
     for s in spec.steps:
-        is_sink = s.kind in ("fn", "check", "wait") or (
-            bool(s.use) and (s.use or "").rsplit(".", 1)[-1] in sink_verbs
-        )
+        is_sink = s.kind in ("fn", "check", "wait") or spec_is_sink(s.use)
         if not consumed.get(s.id) and s.id != last and not is_sink:
             line, col = pos.step(s.id)
             out.append(
@@ -470,6 +504,20 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                 )
             )
     out += _locale_hints(spec, pos)
+    out += _pii_hints(spec, pos)
+    for s in spec.steps:
+        if s.fallback and s.retries is None and (s.use or "").startswith("http.") and not s.inputs:
+            line, col = pos.step(s.id, "fallback")
+            out.append(
+                Finding(
+                    "AL011",
+                    "warning",
+                    f"step '{s.id}' falls back on the first error of an http source, even a brief one",
+                    line,
+                    col,
+                    "add `retries: {attempts: 3, on: [transport, http_5xx, http_429]}`",
+                )
+            )
     known = set(PipelineSpec.model_fields) | {"extract", "transform", "load", "lint"}
     for key in raw_text_tree if isinstance(raw_text_tree, dict) else {}:
         if key not in known:
@@ -485,6 +533,20 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
                     line,
                     col,
                     f"{best}:" if best else "remove it",
+                )
+            )
+    for i, t in enumerate(spec.trigger):
+        if t.cron and not t.timezone:
+            line, col = pos.of(("trigger", i, "cron"))
+            out.append(
+                Finding(
+                    "AL009",
+                    "error",
+                    f"cron trigger '{t.cron}' has no time zone; it follows the server clock and shifts "
+                    "with daylight saving",
+                    line,
+                    col,
+                    "add `timezone: America/New_York` (any IANA name) next to `cron:`",
                 )
             )
     return out
@@ -557,6 +619,55 @@ def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
                     line,
                     col,
                     "set `locale: en-US` in its `with` (or `locale: pt-BR` to keep the default)",
+                )
+            )
+    return out
+
+
+def _pii_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """AL012 (#337): an agent step with no `pii:` setting whose input comes from a local CSV
+    where `pii.scan` flags a field that no `protect` step before it covers. Only local CSV
+    sources are sampled (no network, no secrets); the message never carries a value."""
+    from .pii import scan
+
+    out: list[Finding] = []
+    by_id = {s.id: s for s in spec.steps}
+    base = Path(spec.base_dir or ".")
+    samples: dict[str, list[dict]] = {}
+    for s in spec.steps:
+        if s.kind != "agent" or s.pii is not None:
+            continue
+        ancestors = _ancestors(spec, s.id)
+        covered: set[str] = set()
+        for a in ancestors:
+            fields = by_id[a].with_.get("fields") if by_id[a].use == "protect" else None
+            if isinstance(fields, dict | list):
+                covered |= {str(f) for f in fields}
+        hits: dict[str, str] = {}
+        for a in sorted(ancestors):
+            src = by_id[a]
+            path = src.with_.get("path")
+            if src.use != "csv.read" or not isinstance(path, str) or "$" in path or "*" in path:
+                continue
+            if a not in samples:
+                p = Path(path) if Path(path).is_absolute() else base / path
+                samples[a] = _sample_csv(p) if p.is_file() else []
+            for f in scan(samples[a]):
+                if f["field"] not in covered:
+                    hits.setdefault(f["field"], f["kind"])
+        if hits:
+            pairs = [f"{f} ({k})" for f, k in hits.items()]
+            line, col = pos.step(s.id)
+            out.append(
+                Finding(
+                    "AL012",
+                    "warning",
+                    f"agent step '{s.id}' sends {', '.join(pairs)} to the llm provider; sample "
+                    "records look like personal data",
+                    line,
+                    col,
+                    "set `pii: {before_llm: mask}` (or block) on the step, or `protect` or drop "
+                    "those fields before it",
                 )
             )
     return out

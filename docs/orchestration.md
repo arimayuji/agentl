@@ -57,10 +57,46 @@ agentl serve pipelines/invoices.yaml pipelines/sales.yaml --host 0.0.0.0 --port 
 | Trigger | The `trigger` step gets |
 | --- | --- |
 | `cron` | `[{scheduled_at}]`. Five fields, names (`mon`, `jan`), ranges, steps, `@daily`/`@hourly`/`@weekly`/`@monthly`; a time missed while the service was down is not run later |
+| `schedule` | `[{scheduled_at, cycle, expected_at}]`, see below |
 | `webhook` | the JSON body as records (an object is one record). `secret` accepts `Authorization: Bearer <secret>` or an HMAC-SHA256 of the body in `X-Signature-256` / `X-Hub-Signature-256` (`sha256=<hex>`). Answers 202 once queued |
 | `every` (on its own) | `[{started_at}]`. Runs again `every` after the last one started, never two at once; for queue consumers |
 | `files` | one record per new or changed file: `path`, `name`, `size`, `modified`. The cursor is kept in the run store, so a restart does not reprocess old files, and files are marked as seen only after a successful run |
 | `after: <pipeline>` | `[{pipeline, run_id, status, error}]` of the finished run. `status: succeeded` (default), `failed` or `any` |
+
+### Schedules by publication cycle
+
+Data that comes out on expected days, with a variable delay and holidays, does not fit a cron.
+A `schedule:` trigger describes the publication instead, always in an explicit time zone:
+
+```yaml
+trigger:
+  - schedule:
+      tz: America/New_York                    # required
+      expect:
+        days: [mon, tue]
+        at: "16:00"
+        calendar: us_federal                  # or br_national
+        exceptions: holidays.txt              # one extra closed date (YYYY-MM-DD) per line
+        if_holiday: next_business_day         # skip (default), previous_business_day, run
+      poll:
+        cadence: [{ for: 15m, every: 1m }, { for: 45m, every: 5m }]
+        stop_when: success_in_cycle           # no more polls once a run of the cycle succeeded
+      active: { between: ["2026-09-01", "2026-11-30"] }
+      extra_dates: [2026-02-19]               # cycles on top of `expect`
+      skip_dates: [2026-10-06]                # expected days with no cycle
+```
+
+Each cycle fires at `at`, then on the cadence until its window (the sum of the `for`s) ends. The
+`trigger` step gets `[{scheduled_at, cycle, expected_at}]`. When a window closes with no
+successful run, `agentl serve` logs a lateness warning (`late: cycle ... had no successful run`).
+Successful cycles are kept in the run store, so a restart does not poll them again.
+
+```bash
+agentl schedule next pipelines/releases.yaml --n 10   # the next firings, cron triggers too
+```
+
+`agentl lint` refuses a `cron:` trigger without `timezone:` (AL009): it would follow the server
+clock and move with daylight saving. `validate` and `run` still accept it.
 
 Runs of one pipeline never overlap: they queue. Different pipelines run side by side. `GET
 /health` lists the pipelines served. A `use: trigger` step outside `agentl serve` returns no
@@ -144,6 +180,73 @@ check would pass `timeout`. With `on_timeout: fail` the run fails before the dat
 step; with `continue` it goes on with the last data it got. The run process stays alive while it
 waits, so give your scheduler's job timeout room for it.
 
+## Fetch windows: revisions and backfills
+
+Time-series APIs revise recent values and cap the range per call. A `window:` section handles both:
+
+```yaml
+window:
+  lookback: 10d            # every run re-reads the last 10 days (revisions)
+  max_span: 31d            # at most 31 days per chunk
+  align: calendar_month    # none | calendar_month | week
+  order: oldest_first      # or newest_first
+steps:
+  - id: series
+    use: http.get
+    with: { url: https://api.example.org/series, params: { from: "${window.start}", to: "${window.end}" } }
+```
+
+`${window.start}` and `${window.end}` are ISO dates; the end is exclusive. `agentl run` covers
+`[today - lookback, tomorrow)`. `agentl backfill p.yaml --from 2025-01-01 --to 2025-12-31` takes
+the same path with more chunks (`--to` is inclusive, as in the params-based backfill below). The pipeline runs once per chunk and each chunk's status is kept in
+the run store: running the same backfill again skips the chunks that succeeded (`--redo`, or
+its alias `--no-resume`, re-runs them), a failed chunk does not stop the others, and the report lists the pending ones.
+Durations are whole days or weeks (`10d`, `2w`). Writers should be idempotent (upsert) because the
+tail is re-read on every run.
+
+## Overlapping runs and shared caches
+
+A job scheduled every minute must not overlap the previous run, and an expensive lookup should not
+run once per worker. Both work through the run store, so they hold across hosts when the workers
+share a Postgres store (on one host, the SQLite file is enough).
+
+```yaml
+name: prices
+concurrency: { key: "{pipeline}:${PRODUCT}", on_overlap: skip }   # skip | queue | fail
+steps:
+  - id: catalog
+    use: cache
+    with:
+      key: "catalog:${AREA}"
+      ttl: 1d
+      single_flight: true       # one computes, the others wait for its result
+      do: [ { use: http.get, with: { url: "https://api.example.org/catalog" } } ]
+  - id: prices
+    input: catalog
+    use: http.get
+    with: { url: "https://api.example.org/prices" }
+```
+
+`concurrency` allows one run at a time per `key` (default `{pipeline}`, the pipeline name). When
+another run holds the key:
+
+| `on_overlap` | The new run |
+| --- | --- |
+| `skip` (default) | ends at once with status `skipped`. Not a failure: `agentl run` exits 0 and `raise_on_failure` does not raise |
+| `queue` | waits for the other run to finish, up to `wait` (default `1h`), then fails |
+| `fail` | ends with status `failed` |
+
+The lock is a lease (`lease`, default `5m`) that the running process renews while it works. If the
+process dies, the lease lapses and the next run takes over; no stale lock to clear by hand.
+
+A `cache` step runs its `do` steps (each fed the output of the one before; the first gets the
+step's input) and keeps the result under `key` for `ttl` (`30m`, `6h`, `1d`; default: no expiry).
+With `single_flight` (the default), concurrent callers compute it once: threads in one run, runs
+in parallel and workers on other hosts. One holds a lease on the key, the others wait up to `wait`
+for its result; a holder that dies is replaced after `lease` (default `1m`). `cache_ttl: 6h` on any
+cached step (agent steps cache per record by default) makes those entries expire too. To force a
+fresh computation, `agentl cache clear catalog:north`.
+
 ## GitHub Actions
 
 ```yaml
@@ -203,7 +306,8 @@ are not declared (AE010).
 ## Backfill
 
 `agentl backfill` reprocesses history: one run per file or per period, each passed as a run
-parameter.
+parameter. When the pipeline has a `window:` section the same command backfills by
+[fetch windows](#fetch-windows-revisions-and-backfills) instead: only `--from`/`--to` apply.
 
 ```bash
 # one run per file; s3://, gs://... globs need agentl-etl[remote]
@@ -224,6 +328,58 @@ agentl backfill daily_sales.yaml --from 2026-01-01 --to 2026-03-31 --param-name 
 
 From Python: `agentl.backfill.backfill(path, items, param="day", concurrency=4)` with
 `agentl.backfill.periods("2026-01-01", "2026-03-31")` or `agentl.backfill.files("reports/*.xlsx")`.
+
+## Resume a failed run
+
+Running a failed pipeline again reruns every step, and a sink that already wrote writes again.
+`agentl resume` picks up where the run stopped instead:
+
+```bash
+agentl run orders.yaml            # fails at step "notify", after "save" wrote
+agentl resume 20261019-101500-a1b2c3 orders.yaml
+```
+
+- While a run executes, each completed step records a checkpoint in the run store: its id and a
+  fingerprint of its output. The output itself is spilled to `.agentl/checkpoints/<run_id>/`
+  (next to the SQLite store, or `$AGENTL_CHECKPOINT_DIR`) when it is plain JSON and under
+  `AGENTL_CHECKPOINT_MAX_BYTES` (8 MB per step by default). The files are deleted when the run
+  succeeds; `AGENTL_CHECKPOINTS=0` turns them off.
+- Resume works only on a **failed** run of the same pipeline whose spec hash is unchanged: the
+  YAML, its `${VAR}` values and `--param` values must be the same. Otherwise it stops with
+  `cannot resume` (exit code 2) and records nothing; run the pipeline again instead.
+- Completed steps, sinks included, are skipped and their outputs read back (checked against the
+  fingerprint). The new run starts from the first failed or pending step; its `run.started`
+  event carries `resumed_from`, and a `run.resumed` event lists the skipped and re-run steps.
+- When a step that is needed downstream has no stored output, that step runs again and
+  `run.resumed` says why. Agent steps hit the per-record cache, so they cost nothing twice. A
+  writer (`*.write`, `*.send`, `*.post`...) is never run again: if its output is missing,
+  resume refuses.
+- Outputs that are never stored, so the step runs again on resume: Arrow tables and values JSON
+  cannot hold (dates, bytes), outputs over the size limit or holding a secret value, `unprotect`
+  steps, `cursor:` sources (the cursor did not move, so they read the same rows), routers, and
+  queue consumers that acknowledge after the run.
+- A chunked chain (`chunk_size`) is one unit: it is skipped or run again as a whole.
+- With a Postgres store the checkpoints are events, but the files stay on the host that ran the
+  step: resume there, or point `AGENTL_CHECKPOINT_DIR` at shared storage.
+
+From Python: `agentl.runner.resume("orders.yaml", run_id)`, or `Runner(spec, resume_from=run_id)`.
+
+### Which writers are safe to run again
+
+Resume never writes a completed sink twice, but a step that failed half way (a sink that wrote
+some rows, then crashed) runs again from the start, and a plain re-run repeats every write. Make
+sinks idempotent so either is harmless:
+
+| Writer | Run again |
+|---|---|
+| `mode: upsert` (SQL writers) | Safe: one row per `key`, updated in place |
+| `mode: changeset`, `mode: scd2` | Safe: compares with what is there; unchanged rows are left alone |
+| `mode: replace`, file writers to a fixed path | Safe: the target is rewritten as a whole |
+| `mode: append`, file writers with `{run_id}` in the path | Duplicates rows or files |
+| `*.send`, `*.post`, `*.publish` (messages, webhooks, queues) | Delivers again; receivers must drop repeats (`Idempotency-Key`) |
+
+Recommendation: load with `upsert` or `changeset` on a stable key. `fn:` steps with side effects
+are not recognized as writers by name; keep them idempotent too.
 
 ## Celery
 

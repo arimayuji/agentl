@@ -4,13 +4,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:   # let a new release age a week before proposing it
+      default-days: 7
     groups:
       python:
         patterns: ["*"]
   - package-ecosystem: pip
-    directory: /requirements   # hash-locked tools of the release workflow
+    directory: /requirements   # hash-locked tools of the CI, fuzz and release workflows
     schedule:
       interval: weekly
+    cooldown:   # let a new release age a week before proposing it
+      default-days: 7
     groups:
       release-tools:
         patterns: ["*"]
@@ -18,6 +22,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:   # let a new release age a week before proposing it
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite   # the ClusterFuzzLite build image, pinned by digest
+    schedule:
+      interval: weekly
+    cooldown:   # let a new release age a week before proposing it
+      default-days: 7

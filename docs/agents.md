@@ -105,10 +105,135 @@ llms cannot have fallbacks of their own; list the whole chain on the first one. 
 the first llm. With tools, a call that fails mid-way starts over on the next llm, so its tools may
 run again.
 
+### Rate limits
+
+`rate_limit` keeps an llm under your provider's quota on the client side, instead of relying on
+retries after a 429:
+
+```yaml
+llm:
+  default:
+    provider: openai
+    model: gpt-4.1-mini
+    rate_limit: { rpm: 500, tpm: 200000 }   # requests and tokens per minute; one or both
+```
+
+- Each limit is a token bucket that starts full and refills over a minute. One bucket per llm is
+  shared by every step and every thread of the run that uses it, fallbacks each with their own.
+- For `tpm`, each call is estimated before it is sent (4 characters per token of the instruction
+  and the record, the same estimate as `agentl plan`) and corrected with the usage the provider
+  reports afterwards, so output tokens count against the next calls.
+- Every wait is an `llm.throttled` event (`llm`, `wait` in seconds). The total is in
+  `RunResult.throttled_s`, the step's spend (`throttled_s`), `run.succeeded` / `run.failed` and
+  `agentl stats`.
+- The OpenAI-compatible providers (`openai`, `ollama`, `openrouter`, `azure-openai`,
+  `openai-compatible`) also wait what a 429 or 5xx asks in `Retry-After` (seconds or an HTTP date,
+  at most 60 seconds per retry) before falling back to exponential backoff.
+
+## Golden sets: test a prompt or model change
+
+Give an agent step a JSONL file of records with the expected answer, and `agentl eval` scores
+the step on it before you ship a new prompt or model:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: { category: str, amount: float }
+  golden: golden/classify.jsonl   # or { file: ..., min_accuracy: 0.9, tolerance: 0.01 }
+```
+
+```json
+{"text": "Flight to Lisbon", "price": 300, "category": "travel", "amount": 300}
+```
+
+Each line holds the fields the step reads plus the expected value of some or all of its
+`output` fields. The step runs on the line without those fields, with the cache off and in a
+throwaway run store (nothing is written to your run history). Text must match exactly; numbers
+must be within `tolerance` (default 0). The path is relative to the pipeline file.
+
+```bash
+agentl eval pipeline.yaml                         # every step with a golden set
+agentl eval pipeline.yaml classify --compare model=claude-haiku-5-5   # side by side
+agentl eval pipeline.yaml --json
+```
+
+The report gives, per run: the share of records with every field right, the accuracy per field,
+the cost and tokens, the cost per right answer (the spend over the records with every field
+right, `cost_per_right` in `--json`), and the lines that differ (expected and got). The cost per
+right answer is the number to compare models with: a cheaper model that gets fewer answers right
+can cost more per right answer. A record without a valid
+answer counts as wrong in every field. When `min_accuracy` is set and any run (the
+`--compare` ones included) is below it, the command exits 1, so CI can block a bad prompt.
+`--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step.
+
+Answers a person corrected in the [review queue](review.md) can be appended to the golden file
+with `agentl review export --golden golden/classify.jsonl`.
+
+## Human review
+
+`review: { below: 0.8 }` holds answers with a low `confidence` (or matching `when:`) in a review
+queue until a person accepts, fixes or rejects them, and reuses the decision on later runs. See
+[Human review queue](review.md).
+
 ## Data privacy
 
-Agent steps send record contents to the configured provider. Use a local provider for data that must
-not leave your machine, and select only the fields the agent needs with a `select` step first.
+### What is sent to the provider
+
+For each record, an agent step sends the step's instruction (`agent:`), the output schema and the
+**whole input record** as JSON: every field, nested values included, whether or not the
+instruction mentions it. With `records_per_call`, several records go in one request; with
+`tools`, tool results go back to the model too; a `critic` or `jury` sends the record and the
+answer to those llms. Nothing is sent for records answered by `rules:`, by the cache or by the
+review queue.
+
+To send less:
+
+1. Keep only the fields the agent needs with a `select` step before it.
+2. Hash, mask, encrypt or drop identifiers with a [`protect`](connectors.md) step before it.
+3. Use a local provider for data that must not leave your machine.
+4. Set `pii:` on the step (below).
+
+### Personal data before the call
+
+Each agent step looks for personal data in the records it is about to send (the detectors of
+`agentl.pii`: e-mail, CPF, CNPJ, SSN, phone, payment card, IBAN, IP address and names in name-like
+fields; e-mails, tax ids, cards and phones are also found inside free text).
+
+```yaml
+- id: triage
+  agent: Classify the support ticket.
+  input: tickets
+  output: {category: str, reply: str}
+  pii:
+    before_llm: mask        # warn (default) | mask | block | off
+    fields: [body, email]   # optional: only these fields (default: all)
+    kinds: [email, cpf, phone]  # optional: only these kinds (default: all)
+```
+
+- `warn` (the default): the record is sent as is and a `pii.detected` event reports the number
+  of records, and counts per field and per kind. Values are never logged.
+- `mask`: each detected value becomes a placeholder such as `[EMAIL_1]` or `[CPF_2]`, the same
+  one for the same value within a record, before the record is sent. When the answer comes back,
+  placeholders in its string fields (and in the passed-through input fields) get the original
+  values back, so `reply: "We wrote to [EMAIL_1]"` reaches the next step with the real address.
+  The model never sees the raw values, so it cannot reason about them (a domain, a phone's area
+  code); a tool the agent calls receives the placeholder too.
+- `block`: a record with personal data is rejected to the quarantine (with the fields and kinds
+  in `_error`, not the values) and never reaches the llm, nor the `rules:` of a hybrid step.
+- `off`: no detection.
+
+`pii: mask` is short for `pii: {before_llm: mask}`. `mask` does not support `output_mode: rows`
+yet. Detection is pattern based: it misses personal data written in ways the detectors do not
+know (a name in free text, an address), so `select` and `protect` stay the stronger guarantee.
+
+**Cache.** With `mask`, the cache key is made from the masked record and the cache stores the
+answer **with placeholders**; the original values are put back after the lookup, from the record
+being processed. So no raw personal data reaches the cache or the provider, and two records that
+differ only in their personal data share one cached answer. The review queue and the critic also
+see the masked record.
+
+`agentl lint` warns (AL012) when the sample of a local CSV source has a field that looks like
+personal data and that reaches an agent step with no `pii:` setting and no `protect` step for it.
 
 ## Budget
 
@@ -123,6 +248,7 @@ Stop a run before it costs more than you expect:
 budget:
   max_tokens: 2000000   # input + output, all agent steps
   max_usd: 5.00
+  max_calls: 2000       # llm calls, all agent steps
 
 llm:
   default:
@@ -135,6 +261,8 @@ llm:
   `budget.exceeded` (with tokens and cost so far), fails the step and ends the run as failed.
 - `max_usd` needs a `price` on every LLM used by an agent step (except `echo` and `ollama`).
   agentl ships no price table, because prices change; copy them from your provider.
+- `max_calls` counts every model call, cached records excluded; calls in flight are reserved, so
+  parallel workers do not go past it.
 - Calls already in flight finish, so with `concurrency > 1` a run can go slightly over the limit.
 - Cached records cost nothing and do not count. Answers rejected for not matching the schema
   still count, since the provider charged for them.
@@ -315,10 +443,88 @@ calls, failures and tokens per attempt next to `answered_by`:
 `"attempts": {"1": {"llm": "small", "calls": 40, "failed": 6, "input_tokens": ..., "output_tokens": ...}}`.
 One record per call: not with `mode: batch`, `records_per_call` or `llm: [a, b]`.
 
+### A critic reviews each answer
+
+`critic:` sends each valid answer to a reviewer llm with the record and your criteria. The
+reviewer answers `{approved, feedback}`. A rejected answer goes back to the step's llm with the
+previous answer and the feedback added to the instruction, until the critic approves or has
+rejected `max_rounds` times:
+
+```yaml
+- id: extract
+  agent: Extract invoice fields.
+  output: { total: float, due: date }
+  critic:
+    llm: reviewer          # optional, default: the step's llm; must name an entry in `llm:`
+    criteria: Totals must match the line items; dates are in the document.
+    max_rounds: 2          # 1 to 5, default 2
+```
+
+- Approved: the record goes on. Still rejected after `max_rounds`: the record goes to the
+  quarantine (`agentl rejected`) with `_error` holding the last feedback and `_critic` the
+  exchange (answer and feedback per round).
+- Each round logs a `critic.round` event (round, llm, approved, cached, clipped feedback; no
+  record data), and the step's spend counts `"critic": {"approved", "rejected", "quarantined"}`.
+- Critic and regeneration calls go through the budget and the step's spend (per model). Verdicts
+  are cached on the record, the answer, the criteria and the critic llm, and regenerations on the
+  answer and the feedback, so a re-run pays nothing for them.
+- Works with `records_per_call`, `mode: batch`, `rules:` (only agent answers are reviewed) and
+  tools (regenerations may call tools). Not with `output_mode: rows`.
+
+!!! note "Cost"
+    The critic adds one call per record when it approves at once. Each rejected round adds up to
+    two more (a regeneration and another review), so a record can cost up to `2 * max_rounds`
+    extra calls. Use a cheap reviewer for broad checks, keep `max_rounds` low and try it with
+    `agentl eval` on a golden set before turning it on for a large input.
+
+### A jury of llms decides
+
+`jury:` asks several llms the same question for a record, each on its own (same instruction and
+`output:`), and a decision picks the answer:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: { category: str, confidence: float }
+  escalate_below: 0.7
+  jury:
+    llms: [a, b, c]        # at least 2 different entries in `llm:` (3 or more for a real majority)
+    decide: majority       # majority (default) | judge
+    # judge: strong        # required with decide: judge, an entry in `llm:`
+    when: low_confidence   # low_confidence (default) | always
+    fields: [category]     # optional: the fields that must agree (default: every output field)
+  jury_tag: true           # optional: add `_agreement` (share of jurors behind the answer)
+```
+
+- `majority`: answers are grouped by `fields` (strings compared after strip and casefold). The
+  biggest group wins when it has at least two jurors and no other group is as big; its first
+  answer is kept. A tie, or fewer than two agreeing jurors, sends the record to the quarantine
+  with `_error` and `_jury` (each juror's answer).
+- `judge`: when the jurors are not unanimous, the judge llm reads the record and every juror's
+  answer and writes the final answer in the step's schema. Unanimous answers skip the judge.
+- `when: low_confidence`: the step's llm answers first; only records whose `confidence` is below
+  `escalate_below` go to the jury. It needs a `confidence` output field and `escalate_below`
+  (there is no confidence to look at otherwise, so the spec is rejected: use `when: always`).
+  `when: always`: the jurors answer every record and the step's llm is not asked.
+- A juror whose answer is invalid has no vote. The step's spend counts
+  `"jury": {"unanimous", "majority", "judged", "tied"}` and per-model calls; each run logs one
+  `jury.decided` event per step with the same counts (no record data).
+- Juror and judge calls go through the budget. Each juror answer is cached on the record, the
+  juror llm, the instruction and the schema, and the judge on the answers it saw; the decision is
+  cached too, so a re-run pays nothing and changing `decide:` reuses the jurors' answers.
+- With `critic:`, the jury decides first and the critic reviews the decided answer. Works with
+  `rules:` and tools. Not with `output_mode: rows`, `mode: batch` or `records_per_call`.
+
+!!! note "Cost"
+    N jurors cost N calls per record they see, plus one for the judge when they disagree. `when:
+    low_confidence` keeps it cheap: one call for confident records, the jury only for the rest.
+    Use `when: always` on small, high-stakes inputs and check the gain with `agentl eval`.
+
 ### Rules first, the agent for the rest
 
 Most rows of a messy field are clean. `rules:` on an agent step tries deterministic rules on each
-record first; only the records they cannot handle are sent to the llm:
+record first; only the records they cannot handle are sent to the llm. (On a `check` step,
+`rules:` holds per-row check rules instead; see [Data checks](checks.md#row-rules-and-the-daily-digest).)
 
 ```yaml
 - id: parse_address
@@ -343,6 +549,49 @@ record first; only the records they cannot handle are sent to the llm:
   summary count them: `{"rules": 9512, "agent": 488}`.
 - Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
   `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
+
+### Route each record to one branch
+
+A router is an agent step with `routes:`. It labels each record with one of the route keys and
+sends the record only to the step that key names; `drop` (reserved) discards it. The answer is
+constrained to the labels, so there is no `output:` on a router.
+
+```yaml
+- id: route
+  input: docs
+  agent: Which kind of document is this?
+  routes: { invoice: extract_invoice, contract: extract_contract, other: drop }
+  rules:                            # optional, decided before the llm
+    - { when: "type == 'nfe'", route: invoice }
+  route_tag: true                   # optional: add `_route` (the label) to each record
+- id: extract_invoice               # no input: a route target reads the router
+  agent: Extract the invoice fields.
+  output: { total: float }
+- id: extract_contract
+  input: route                      # same thing, written out; it still gets only its branch
+  agent: Extract the parties.
+  output: { parties: list[str] }
+```
+
+- A step named in `routes` reads the router (`input:` left out or naming the router) and receives
+  only the records routed to it; several labels may point at the same step. Any other step that
+  reads the router gets every routed record (dropped and rejected ones left out).
+- `rules:` on a router are `{when: <expression>, route: <label>}`, in the
+  [expression language](connectors.md#expressions-compute) of `compute`. The first rule that is true decides; a record
+  no rule matches (or whose expression errors) goes to the llm.
+- An answer that is not one of the labels is retried like any invalid answer, then goes to the
+  quarantine (`agentl rejected`) with `_error`.
+- Answers are cached per record, keyed on the instruction, the labels and the llm: renaming a
+  target step keeps the cache, adding a label does not. Calls count for budget and spend; cascades
+  (`llm: [cheap, strong]`), `attempts:`, `records_per_call` and batch mode work as on other agent
+  steps. A critic and `output_mode: rows` do not apply.
+- Each run logs one `route.decided` event with `counts` per label, `rules`, `llm`, `cached`,
+  `dropped`, `rejected` and `total` (no record data), and `spend[step]["routes"]` holds the counts.
+- Validation: `routes` is not empty, labels are identifiers, targets exist (or are `drop`), are
+  `use`, `fn` or agent steps that read the router, and no cycle goes through a router. The
+  diagram (`agentl graph`) draws each routed edge with its labels, for example
+  `route -->|invoice| extract_invoice`. `agentl plan` counts every record for each target (an upper
+  bound).
 
 ### Identical records are asked once
 

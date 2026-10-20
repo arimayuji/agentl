@@ -4,8 +4,9 @@ cost, before running it.
 `--connect` resolves the configuration and touches every external system once (an HTTP request,
 `select 1`, a file lookup) without reading or writing data. `plan` reads the sources, runs the
 steps that cannot change anything (readers and transforms), counts cache hits for agent steps and
-estimates their calls, tokens and cost. Nothing is written, no LLM is called, no message is taken
-from a queue and no `fn:` step runs."""
+estimates their calls, tokens and cost: from the tokens per record that past runs of the step and
+model really used when the run store has them, from a 4-characters-per-token guess otherwise.
+Nothing is written, no LLM is called, no message is taken from a queue and no `fn:` step runs."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -188,6 +190,7 @@ class StepPlan:
     llm_calls: int | None = None
     tokens: tuple[int, int] | None = None  # low, high (input + output)
     cost_usd: tuple[float, float] | None = None  # low, high; None when no price is known
+    basis: str | None = None  # agent steps: "history" (past runs) or "guess" (characters / 4)
 
 
 @dataclass
@@ -226,6 +229,8 @@ class Plan:
                 if s.tokens:
                     line += f", ~{s.tokens[0]:,}-{s.tokens[1]:,} tokens"
                 line += ", " + _money(s.cost_usd)
+                if s.basis:
+                    line += f" ({s.basis})"
             if s.detail:
                 line += f"   {s.detail}"
             lines.append(line)
@@ -241,14 +246,25 @@ def _money(c: tuple[float, float] | None) -> str:
     return f"${c[0]:.4f}-${c[1]:.4f}"
 
 
+CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(*parts: Any) -> int:
+    """Rough input tokens of a call (4 characters per token); dicts and lists count as JSON."""
+    chars = sum(
+        len(p) if isinstance(p, str) else len(json.dumps(p, default=str, ensure_ascii=False)) for p in parts
+    )
+    return math.ceil(chars / CHARS_PER_TOKEN)
+
+
 def _tokens(step: StepSpec, records: list[dict]) -> tuple[int, int]:
     """Rough token count (4 characters per token) of the calls an agent step would make, low and
     high: the output length is the part nobody can know before the model answers."""
     from .llm import SYSTEM, schema_model
 
     schema = json.dumps(schema_model(f"{step.id}_output", step.output or {}).model_json_schema())
-    prefix = (len(SYSTEM) + len(step.agent or "") + len(schema)) / 4
-    body = sum(len(json.dumps(r, default=str, ensure_ascii=False)) for r in records) / 4
+    prefix = (len(SYSTEM) + len(step.agent or "") + len(schema)) / CHARS_PER_TOKEN
+    body = sum(len(json.dumps(r, default=str, ensure_ascii=False)) for r in records) / CHARS_PER_TOKEN
     calls = math.ceil(len(records) / step.records_per_call) if records else 0
     tin = prefix * calls + body
     per_out = 6 + 8 * len(step.output or {})
@@ -274,12 +290,82 @@ def _cost(
     return (low, high)
 
 
+HISTORY_DAYS = 90  # how far back `plan` looks for the tokens a step really used
+
+
+def token_history(store: Any, pipeline: str, since: float | None = None) -> dict[tuple[str, str], dict]:
+    """Per (agent step, model): the tokens a record really took in past runs of the pipeline
+    (the last `HISTORY_DAYS` by default). A record is one the LLM answered (cache hits cost
+    nothing); the tokens of failed calls and retries count, so the average is on the safe side.
+    `per_record` is the low and high of the per-run averages, input plus output; `models` splits
+    the average by the model paid for, so fallbacks and escalations are priced at their own model."""
+    if not hasattr(store, "events_of"):
+        return {}
+    since = time.time() - HISTORY_DAYS * 86400 if since is None else since
+    ids = {r["id"] for r in store.history(since, pipeline)}
+    rows: dict[tuple[str, str], dict] = {}
+    for e in store.events_of(since, ("step.succeeded",)):
+        d = e["data"] or {}
+        if e["run_id"] not in ids or "llm_calls" not in d:
+            continue
+        answered = sum((d.get("answered_by") or {}).values())
+        tin, tout = int(d.get("input_tokens") or 0), int(d.get("output_tokens") or 0)
+        if not answered or not tin + tout:
+            continue
+        model = str(d.get("model") or "")
+        row = rows.setdefault(
+            (e["step"], model),
+            {"runs": 0, "records": 0, "input_tokens": 0, "output_tokens": 0, "models": {}, "_per": []},
+        )
+        row["runs"] += 1
+        row["records"] += answered
+        row["input_tokens"] += tin
+        row["output_tokens"] += tout
+        row["_per"].append((tin + tout) / answered)
+        for name, m in (d.get("models") or {model: {"input_tokens": tin, "output_tokens": tout}}).items():
+            t = row["models"].setdefault(name, {"input_tokens": 0, "output_tokens": 0})
+            t["input_tokens"] += int(m.get("input_tokens") or 0)
+            t["output_tokens"] += int(m.get("output_tokens") or 0)
+    for row in rows.values():
+        per = row.pop("_per")
+        n = row["records"]
+        row["input_per_record"] = row["input_tokens"] / n
+        row["output_per_record"] = row["output_tokens"] / n
+        row["per_record"] = (min(per), max(per))
+        for t in row["models"].values():
+            t["input_per_record"] = t["input_tokens"] / n
+            t["output_per_record"] = t["output_tokens"] / n
+    return rows
+
+
+def _from_history(
+    spec: PipelineSpec, step: StepSpec, n: int, h: dict
+) -> tuple[tuple[int, int], tuple[float, float] | None]:
+    """Tokens and cost of `n` records at what a record took in past runs: the low and high are
+    the cheapest and the dearest run's average."""
+    avg = h["input_per_record"] + h["output_per_record"]
+    low, high = (x / avg for x in h["per_record"])
+    tokens = (round(n * avg * low), round(n * avg * high))
+    llms = [spec.llm[name] for name in step.llms]
+    cost = 0.0
+    for model, t in h["models"].items():
+        p = next((x for x in llms if x.model == model), llms[0])
+        if p.price is None:
+            if p.provider in ("echo", "ollama"):
+                continue
+            return tokens, None
+        usd = p.cost(round(n * t["input_per_record"]), round(n * t["output_per_record"]))
+        cost += usd * (p.price.batch if step.mode == "batch" else 1)
+    return tokens, (cost * low, cost * high)
+
+
 def plan(spec: PipelineSpec, store: Any, records: dict | None = None) -> Plan:
     """`records`, when given, receives the records of every step that ran (None when unknown)."""
     from .runner import Runner, RunResult, agent_cache_key
 
     spec = spec.model_copy(update={"arrow": False, "chunk_size": None, "notify": None})
     out = Plan(spec.name)
+    history = token_history(store, spec.name)
     with tempfile.TemporaryDirectory() as tmp:
         from .store import Store
 
@@ -309,21 +395,33 @@ def plan(spec: PipelineSpec, store: Any, records: dict | None = None) -> Plan:
                     else recs
                 )
                 calls = math.ceil(len(todo) / s.records_per_call) if todo else 0
-                tokens = _tokens(s, todo)
+                past = history.get((s.id, spec.llm[s.llm].model))
+                if past:
+                    tokens, cost = _from_history(spec, s, len(todo), past)
+                    basis = f"history: {past['records']:,} records in {past['runs']} runs"
+                else:
+                    tokens = _tokens(s, todo)
+                    cost, basis = _cost(spec, s, todo, tokens), "guess"
                 out.steps.append(
                     StepPlan(
                         s.id,
                         "agent",
                         "estimated",
                         len(recs),
-                        "high: every record also goes to the last llm" if s.escalate else "",
+                        "high: every record also goes to the last llm"
+                        if s.escalate
+                        else "router: each target is planned with every record (upper bound)"
+                        if s.routes is not None
+                        else "",
                         hits,
                         calls,
                         tokens,
-                        _cost(spec, s, todo, tokens),
+                        cost,
+                        basis,
                     )
                 )
-                known[s.id] = [{**r, **dict.fromkeys(s.output or {})} for r in recs]
+                fields = {} if s.routes is not None else dict.fromkeys(s.output or {})
+                known[s.id] = [{**r, **fields} for r in recs]
                 continue
             if s.kind == "check":
                 known[s.id] = inputs[0] if inputs else []

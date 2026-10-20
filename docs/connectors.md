@@ -3,6 +3,10 @@
 Connectors are used with `use:` and configured with `with:`. List what is installed with
 `agentl connectors`.
 
+Every connector step also takes `retries:` and `fallback:` (other connectors tried in order with
+the same input); see [retries and fallbacks](concepts.md#retries-and-fallbacks). The `retries`
+setting inside `http.get`'s `with:` keeps its own simple retry loop.
+
 ## Files
 
 <video class="feature-clip" autoplay muted loop playsinline preload="none" poster="../assets/clips/files.jpg" aria-label="Reading a folder of mixed files into records">
@@ -108,6 +112,7 @@ Every file writer (`csv.write`, `json.write`, `parquet.write`, `excel.write`) ta
 | Setting | Example | Effect |
 | --- | --- | --- |
 | `{date}` / `{datetime}` in `path` | `reports/sales_{date}.xlsx` | one file per day (`2026-10-14`) or per run (`2026-10-14T050007`), local time |
+| `{run_id}` in `path` | `out/alerts_{run_id}.json` | one file per run, named after the run id shown in `agentl runs` (outside a run, a timestamp) |
 | `latest` | `reports/sales.xlsx` | a copy of the new file under a fixed name, for people and links |
 | `keep` | `30` | delete all but the 30 newest versions (needs `{date}` or `{datetime}`) |
 
@@ -125,6 +130,30 @@ fixed name is enough.
     url: https://example.com/exports/sales.csv
     headers: { Authorization: "Bearer ${API_TOKEN}" }
 ```
+
+### Read a URL only when it changed
+
+The readers that take a `url` (`file.read`, `archive.read`, `csv.read`, `json.read`, `txt.read`,
+`excel.read`, `parquet.read`) accept the same `if_changed` and `on_unchanged` as
+[`http.get`](#download-only-when-the-source-changed): ETag, Last-Modified, Content-Length or a page
+stamp, with the body hash as the last resort, saved in the run store only when the run succeeds.
+A monthly bulk file checked daily downloads once a month:
+
+```yaml
+- id: bulk
+  use: archive.read
+  with:
+    url: https://example.org/downloads/psd_alldata_csv.zip
+    pattern: '\.csv$'
+    if_changed: { by: [etag, last_modified] }
+    on_unchanged: stop        # the run ends as no_change; continue_empty gives no records
+- id: rows
+  use: csv.read
+  input: bulk
+```
+
+`if_changed` needs `url` (not `path` or an input step). The changed file is held in memory once
+before it is written to disk.
 
 ## HTTP
 
@@ -208,9 +237,9 @@ responses.
 | Connector | Parameters |
 |---|---|
 | `sqlite.read` | `db`, `query`, `params` |
-| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace` or `upsert` with `key`), `on_conflict`, `update_columns` (upsert only) |
+| `sqlite.write` | `db`, `table`, `mode` (`append`, `replace`, `upsert`, `scd2` or `changeset` with `key`), `on_conflict`, `update_columns` (upsert only), `track`, `on_missing`, `as_of` (scd2 only), `deletes`, `partition_by`, `checksums`, `dry_run`, `emit` (changeset only) |
 | `postgres.read` | `dsn`, `query`, `params` (extra `postgres`) |
-| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`), `key`, `on_conflict`, `update_columns`, `batch_size`, `create` (extra `postgres`) |
+| `postgres.write` | `dsn`, `table` (or `schema.table`), `mode` (`append`, `replace`, `upsert`, `scd2`, `changeset`), `key`, `on_conflict`, `update_columns`, `track`, `on_missing`, `as_of`, `deletes`, `partition_by`, `checksums`, `dry_run`, `emit`, `batch_size`, `create` (extra `postgres`) |
 
 Other databases will ship as plugins.
 
@@ -221,6 +250,7 @@ Other databases will ship as plugins.
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
 | `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `skip_seen` | `key` (`sha256` of the file at `path`, `path`, or any field), `scope` (default: the pipeline name) | Only records no earlier successful run let through; see below |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
 | `flatten` | `sep` (`.`), `fields` | Nested objects become columns: `end.cidade` |
 | `explode` | `field`, `keep_empty` (true) | One record per item of a list |
@@ -344,8 +374,11 @@ order by day
   `read_parquet('data/*.parquet')`.
 - Errors name the step and keep DuckDB's `LINE n` pointer; a table that is not an input suggests
   the closest step id. `agentl validate` reports the same (AE009) when DuckDB is installed.
-- An input with no records has no columns: `count(*)` gives 0 and a query that names its columns
-  returns no records.
+- An input with no records keeps its columns when they are known: a `sqlite.read` of an empty
+  table, or the step's `schema:` or `output:`. A `left join` against it then returns every left
+  row. When they are unknown, `count(*)` gives 0; a query that names its columns returns no
+  records if every input is empty, and fails with an error otherwise (declare `schema:` on the
+  empty step).
 - With `chunk_size`, a `sql` step is a boundary: it collects its inputs before it runs.
 
 When to use which: `compute`, `aggregate`, `cast` and the other transforms above need no extra and
@@ -769,7 +802,10 @@ The HTML comes from `url`, `path`, or the `html` field of upstream records (`bro
 `extract: html`, `crawl`), so it chains after a login done in the browser. Supported selectors:
 tag, `#id`, `.class`, `[attr]`, `[attr=v]` (and `^=`, `$=`, `*=`, `~=`), `:first-child`,
 `:last-child`, `:nth-child(n)`, `:nth-of-type(n)`, descendant and `>` combinators, and groups
-with commas. XPath is not supported.
+with commas. When the HTML comes from upstream records, each result also keeps that page's `url`
+and `source_url` when those keys are present, including when `items` produces several records. If a
+selected field uses one of those names, its extracted value takes precedence.
+XPath is not supported.
 
 **Tables.** `html.read` takes `select` (a CSS selector for the tables to read), `header_rows: N`
 (several header rows are joined: `Sales` over `Q1` becomes `Sales Q1`) and repeats `colspan` and
@@ -950,6 +986,137 @@ type. A record with a null or missing key field cannot be matched to a row: `pos
 instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. The
 `step.succeeded` event of a writer reports the rows written in `records` and `written`.
 
+### Changeset writes
+
+`mode: changeset` on `sqlite.write`, `postgres.write` and `sql.write` compares the source with the
+table and writes only what changed: new keys are inserted, rows whose values differ are updated, equal rows are not touched.
+A table with triggers or versioning sees no write at all when nothing changed.
+
+```yaml
+load:
+  - id: save
+    use: postgres.write
+    input: rows
+    with:
+      dsn: ${DATABASE_URL}
+      table: facts
+      key: [country, month, product]
+      mode: changeset
+      partition_by: month
+      checksums: true                  # skip the partitions equal to the last run
+      deletes: { when: partition_replaced }
+```
+
+| Option | Meaning |
+|---|---|
+| `deletes: none` | Default. Rows missing from the source stay. |
+| `deletes: missing` | Delete rows whose key is not in the source (the source is the whole table). |
+| `deletes: partition_replaced` | Delete missing rows only in the partitions (`partition_by` values) the source has. |
+| `partition_by: month` | Also report `partitions` and `partitions_unchanged` (partitions with no insert, update or delete). |
+| `checksums: true` | With `partition_by`: skip, without comparing their rows, the partitions whose source records have the checksum stored by the last changeset write. Also reports `partitions_skipped`. |
+| `dry_run: true` | Compute the counts and write nothing: no rows, no new table or column, no checksum. |
+
+All chunks are staged in a temp table first and the diff runs as a few set-based statements in
+one transaction, so it stays fast on large loads; the last record of a repeated key wins. The
+result reports `inserted`, `updated`, `deleted`, `unchanged` and `outcome` (`no_change` when
+nothing was written, else `changed`); the counts go to the `step.succeeded` event and to `writes`
+in the run summary, so a notification rule can use `when: "deleted > 0"`. A record with a null
+key field is rejected, as in upsert, and does not count in the diff.
+
+`sqlite.write` and `postgres.write` stage the source in a temp table and diff it with a few
+set-based statements in one transaction; on Postgres the stage takes the table's column types, so
+values compare as the table stores them (`IS DISTINCT FROM`). `sql.write` reads the table in one
+query and compares in Python (a date read back equals its ISO string), so the table must fit in
+memory.
+
+`checksums: true` keeps one checksum per partition (the count and an order-independent hash of
+the source records) in a `_agentl_checksums` table in the same database, updated in the same
+transaction. A partition whose checksum matches is counted as unchanged and its rows are neither
+updated nor deleted, even with `deletes: missing`. The checksum describes the source, not the
+table: if something else writes to the table, a skipped partition will not notice; run once
+without `checksums` to resync.
+
+#### Changed rows downstream
+
+With `emit: changes` the writer's output is the rows that changed instead of the summary record,
+so the next step (a notification, a send, a file) consumes the diff directly, with no
+`sqlite.read` and `sql` steps to rebuild it:
+
+```yaml
+steps:
+  - id: save
+    use: postgres.write
+    input: prices
+    with:
+      dsn: ${DATABASE_URL}
+      table: prices
+      key: sku
+      mode: changeset
+      deletes: missing
+      emit: changes
+  - id: report
+    use: json.write
+    input: save
+    with: { path: out/price_changes.json }
+```
+
+Each record has `_change`:
+
+| `_change` | Record |
+|---|---|
+| `inserted` | The source record. |
+| `updated` | The source record, plus `_before` with the stored value of each column that changed (`null` for a column the table did not have). |
+| `deleted` | The row as the table had it. |
+
+The changes are read inside the write's transaction, before it applies them. With
+`dry_run: true` they are the changes the write would make, so a pipeline can preview them. No
+change gives an empty output. The counts still go to the `step.succeeded` event and to `writes`
+in the run summary. `emit: changes` needs `mode: changeset` (with `deletes: none` it behaves as
+an upsert that reports its diff); the default is `emit: counts`.
+
+### History of a dimension (SCD type 2)
+
+`mode: scd2` on `sqlite.write`, `postgres.write` and `sql.write` keeps every version of a row
+instead of overwriting it. The writer manages three columns: `valid_from`, `valid_to` (empty while
+the version is current) and `is_current`.
+
+```yaml
+- id: customers
+  use: postgres.write
+  with:
+    dsn: ${DATABASE_URL}
+    table: dim_customer
+    mode: scd2
+    key: customer_id
+    track: [address, segment]   # default: every column but the key
+    on_missing: close           # default: keep
+```
+
+For each record, by `key`:
+
+- a new key inserts a current version;
+- a key whose `track` columns changed closes the current version (`valid_to` set, `is_current`
+  false) and inserts a new one;
+- a key whose `track` columns did not change is left alone (columns outside `track` keep the
+  values of the version's first load);
+- with `on_missing: close`, current keys absent from the input are closed. An empty input changes
+  nothing.
+
+The result reports `inserted`, `versioned`, `unchanged` (and `closed`), which also appear in the
+`step.succeeded` event and under `writes` in the run summary. Re-running the same data changes
+nothing. If a key repeats in the input, the last record wins.
+
+`as_of` sets the time stamped on `valid_from` and `valid_to` (default: now). It must carry a time
+zone (`2026-01-31T00:00:00-03:00`, `...Z`) and is stored in UTC: `timestamptz` on Postgres, ISO
+8601 text such as `2026-01-31T03:00:00.000000+00:00` on SQLite. An `as_of` earlier than the start
+of a version it would close is an error. A record with a null key field is rejected, as in
+upsert: it goes to the step's rejected records and the others are written.
+
+`sqlite.write` and `postgres.write` stage the input in a temporary table and merge it with a few
+set-based statements in the write's transaction; Postgres adds a unique index on `key` among
+current rows. `sql.write` reads the key and tracked columns of the current versions in one query
+and compares them in Python, so those must fit in memory.
+
 ## Any SQL database
 
 `sql.read` and `sql.write` work with any database SQLAlchemy supports. Install the extra for yours:
@@ -980,7 +1147,8 @@ instead of writing it, so `rejected_rate` checks and `agentl rejected` see it. T
 
 | Parameter | Notes |
 |---|---|
-| `mode` | `append`, `replace` (drop and recreate) or `upsert` on `key` |
+| `mode` | `append`, `replace` (drop and recreate), `upsert` on `key`, `scd2` or `changeset` (see [Changeset writes](#changeset-writes)) |
+| `deletes`, `partition_by`, `checksums`, `dry_run`, `emit` | changeset only |
 | `key` | column or list of columns |
 | `schema`, `batch_size`, `create` | target schema, rows per batch (default 1000), create the table when missing (default true) |
 | `engine_options` | passed to `sqlalchemy.create_engine` (pool size, connect args) |
@@ -1120,6 +1288,33 @@ too: `sms.send` with `from: "whatsapp:+1..."` and `to: "whatsapp:+55..."`.
 
 Records are untrusted data: Slack `<!channel>`, Google Chat `<users/all>` and Discord `@everyone`
 in a record are sent as text and ping nobody; Telegram gets plain text (no Markdown or HTML).
+
+## Console and log
+
+`console.send` prints one line per record to stdout (`stream: stderr` for stderr); `log.write`
+logs one message per record through Python logging. Both return their input unchanged, so they
+can also sit in the middle of a pipeline.
+
+```yaml
+- id: show
+  use: console.send
+  input: alerts
+  with: { template: "{sku}: {stock}", max_rows: 50 }
+- id: audit
+  use: log.write
+  input: alerts
+  with: { level: warning, logger: myapp.alerts }
+```
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `template` | JSON | one line per record, with `{field}` placeholders |
+| `max_rows` | all | stop after this many lines and say how many were left out |
+| `level` (`log.write`) | `info` | `debug`, `info`, `warning` or `error` |
+| `logger` (`log.write`) | `agentl.records` | the logger name |
+
+To send a step's records to a chat or an incident tool only when there are any, use a
+[notify rule `on: records`](notifications.md#send-the-records-of-a-step).
 
 ## Discord
 

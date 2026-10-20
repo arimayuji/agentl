@@ -9,6 +9,7 @@ without the font installed. PNGs are rendered with Playwright.
 
 from __future__ import annotations
 
+import base64
 import glob
 from pathlib import Path
 
@@ -23,15 +24,13 @@ TEXT_FONT = TTFont(HERE / "font" / "inter-latin-400-normal.woff2")  # supporting
 OUT = HERE / "assets"
 TRACKING = -0.03  # em, slightly tighter than default
 
-# Carioca palette: white first, Rio blue, sun yellow, sunset orange, palm green.
+# Brand palette: blue, yellow and white (Brazil). Green and red appear only as status colors.
 WHITE = "#ffffff"
 BLUE = "#0070c9"
+BLUE_DEEP = "#005ea8"  # depth on blue backgrounds
 SUN = "#ffd400"
-SUNSET = "#ff6b3d"
-PALM = "#009c3b"
 INK = "#0b1b2b"  # text on light backgrounds
 NAVY = "#08131f"  # dark backgrounds
-MUTED = "#3d5266"  # supporting text on light backgrounds
 
 INK_DARK = WHITE  # wordmark on dark backgrounds
 INK_LIGHT = INK  # wordmark on light backgrounds
@@ -86,11 +85,19 @@ def _mark(size: float, scale: float) -> str:
     return f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, size * scale)}</g>'
 
 
+def _shade(width: float, height: float) -> str:
+    """The deep blue circle from the top right corner: depth on blue without a new color."""
+    return f'<circle cx="{width:.0f}" cy="0" r="{height * 0.62:.0f}" fill="{BLUE_DEEP}" opacity=".55"/>'
+
+
 def icon(size: int = 512) -> str:
     """App icon and favicon: rounded square."""
+    rx = f"{size * 0.22:.0f}"
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
-        f'<rect width="{size}" height="{size}" rx="{size * 0.22:.0f}" fill="{BLUE}"/>{_mark(size, 0.62)}</svg>'
+        f'<defs><clipPath id="r"><rect width="{size}" height="{size}" rx="{rx}"/></clipPath></defs>'
+        f'<g clip-path="url(#r)"><rect width="{size}" height="{size}" fill="{BLUE}"/>{_shade(size, size)}</g>'
+        f"{_mark(size, 0.62)}</svg>"
     )
 
 
@@ -98,39 +105,35 @@ def avatar(size: int = 512) -> str:
     """Profile picture: full bleed, since X, GitHub and others crop it to a circle."""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">'
-        f'<rect width="{size}" height="{size}" fill="{BLUE}"/>{_mark(size, 0.56)}</svg>'
+        f'<rect width="{size}" height="{size}" fill="{BLUE}"/>{_shade(size, size)}{_mark(size, 0.56)}</svg>'
     )
 
 
-BLOBS = [  # (cx, cy, r, color) of the soft color mesh behind the wide images
-    (0.00, 0.05, 0.24, "#9fd0f5"),  # sky
-    (0.36, -0.14, 0.20, "#fff1a8"),  # sun
-    (0.97, 0.00, 0.24, "#ffc2a8"),  # sunset
-    (1.04, 0.98, 0.26, "#a8e6c0"),  # palm
-    (0.58, 1.16, 0.22, "#fff1a8"),
-    (0.00, 1.04, 0.22, "#9fd0f5"),
-]
+def _cube_image(x: float, y: float, size: float) -> str:
+    """The 3D cube logo (rendered by cube.py) as an embedded image, or nothing if it is missing."""
+    png = OUT / "agentl-cube-onblue-1024.png"  # lighter front face, readable on the blue
+    if not png.exists():
+        return ""
+    data = base64.b64encode(png.read_bytes()).decode()
+    return f'<image x="{x:.1f}" y="{y:.1f}" width="{size:.1f}" height="{size:.1f}" href="data:image/png;base64,{data}"/>'
 
 
-def _wide(width: int, height: int, title: float, tagline: str, x_center: float) -> str:
+def _wide(width: int, height: int, title: float, tagline: str, x_center: float, cube: bool = False) -> str:
     d, w, top, bottom = outline("agentl", title)
     r = title * 0.075
     full = w + r * 2.6
-    gx = x_center - full / 2
+    cube_size = title * 1.9 if cube else 0.0
+    gx = x_center - full / 2 + cube_size * 0.42
     gy = height / 2 - title * 0.2 - (top + bottom) / 2
     tag, tw, _t, _b = outline(tagline, title * 0.16, TEXT_FONT, 0.01)
-    blobs = "".join(
-        f'<circle cx="{x * width:.0f}" cy="{y * height:.0f}" r="{r_ * width:.0f}" fill="{col}"/>'
-        for x, y, r_, col in BLOBS
-    )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
-        '<defs><filter id="soft" x="-50%" y="-50%" width="200%" height="200%">'
-        f'<feGaussianBlur stdDeviation="{width * 0.07:.0f}"/></filter></defs>'
-        f'<rect width="{width}" height="{height}" fill="{WHITE}"/>'
-        f'<g filter="url(#soft)" opacity=".85">{blobs}</g>'
-        f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{INK}"/>{_sun(w, 0, title)}</g>'
-        f'<path transform="translate({x_center - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{MUTED}"/>'
+        f'<rect width="{width}" height="{height}" fill="{BLUE}"/>'
+        f"{_shade(width, height)}"
+        + (_cube_image(gx - cube_size * 0.95, gy + top - cube_size * 0.28, cube_size) if cube else "")
+        + f'<g transform="translate({gx:.1f} {gy:.1f})"><path d="{d}" fill="{WHITE}"/>{_sun(w, 0, title)}</g>'
+        f'<path transform="translate({gx + full / 2 - tw / 2:.1f} {gy + bottom + title * 0.38:.1f})" d="{tag}" fill="{WHITE}" '
+        'fill-opacity=".85"/>'
         "</svg>"
     )
 
@@ -197,6 +200,7 @@ def main() -> None:
         "agentl-wordmark-light.svg",
         "agentl-icon-180.png",
         "agentl-social-1280x640.png",
+        "agentl-cube-256.png",
     ):
         (docs / name).write_bytes((OUT / name).read_bytes())
     (docs / "favicon.svg").write_text(files["agentl-icon.svg"])
