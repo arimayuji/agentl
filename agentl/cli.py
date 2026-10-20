@@ -543,6 +543,18 @@ def _param_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _fixtures(args: list[str]) -> dict[str | None, str]:
+    """`--fixture [STEP=]PATH` values: a path that exists is taken whole, even with an `=` in it."""
+    fixtures: dict[str | None, str] = {}
+    for f in args:
+        sid, sep, path = f.partition("=")
+        if sep and sid and not Path(f).exists():
+            fixtures[sid] = path
+        else:
+            fixtures[None] = f
+    return fixtures
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -631,6 +643,20 @@ def main(argv: list[str] | None = None) -> int:
         help="leave this field out of the comparison",
     )
     te.add_argument("--update", action="store_true", help="write the golden file from this run")
+
+    df = cmd("diff", "what a run would insert, update and delete in each database writer, without writing")
+    df.add_argument("pipeline")
+    df.add_argument(
+        "--fixture",
+        action="append",
+        default=[],
+        metavar="[STEP=]PATH",
+        help="file a source step reads instead (STEP= may be left out with one source step)",
+    )
+    df.add_argument("--echo", action="store_true", help="answer agent steps with the offline echo provider")
+    df.add_argument("--exit-code", action="store_true", help="exit 1 when something would change")
+    df.add_argument("--limit", type=int, default=10, help="changed rows shown per writer (default 10)")
+    df.add_argument("--json", action="store_true")
 
     pv = cmd("preview", "first records into and out of a step (readers and transforms only)")
     pv.add_argument("pipeline")
@@ -985,16 +1011,18 @@ def main(argv: list[str] | None = None) -> int:
             return _gaps(a)
         if a.cmd == "digest":
             return _digest(a)
+        if a.cmd == "diff":
+            from . import diffing
+
+            diffed = diffing.run_diff(load(a.pipeline), _fixtures(a.fixture), store=a.db, echo=a.echo)
+            print(json.dumps(diffed.to_dict(), indent=2, default=str) if a.json else diffed.text(a.limit))
+            if diffed.status != "succeeded":
+                return 1
+            return 1 if a.exit_code and diffed.changed else 0
         if a.cmd == "test":
             from . import testing
 
-            fixtures: dict[str | None, str] = {}
-            for f in a.fixture:
-                sid, sep, path = f.partition("=")
-                if sep and sid and not Path(f).exists():
-                    fixtures[sid] = path
-                else:
-                    fixtures[None] = f
+            fixtures = _fixtures(a.fixture)
             tested = testing.run_test(
                 load(a.pipeline),
                 fixtures,
