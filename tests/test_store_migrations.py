@@ -204,3 +204,38 @@ def test_postgres_old_store_migrates(pg_schema):
         assert s._query("SELECT COUNT(*) AS n FROM {schema_version}")[0]["n"] == 1
         assert s.cache_get("k") == {"a": 1}
     assert layout() == before
+
+
+def _use_errors_table(s):
+    row = s.error_seen("p", "agentl-err-1", "src", "RuntimeError", "RuntimeError: boom", 10.0)
+    assert (row["count"], row["status"]) == (1, "open")
+    assert [r["fingerprint"] for r in s.errors_resolve("p", 20.0)] == ["agentl-err-1"]
+
+
+def test_sqlite_version_3_store_gains_the_errors_table(tmp_path):
+    path = tmp_path / "v3.db"
+    with Store(path):
+        pass
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE errors")  # the layout agentl had at schema version 3
+    conn.execute("UPDATE schema_version SET version = 3")
+    conn.commit()
+    conn.close()
+    with Store(path) as s:
+        assert s.schema_version() == SCHEMA_VERSION == 4
+        assert s.cache_get("missing") is None
+        _use_errors_table(s)
+    assert {"fingerprint", "count", "alerted", "resolved"} <= columns(path, "errors")
+
+
+def test_postgres_version_3_store_gains_the_errors_table(pg_schema):
+    psycopg = pytest.importorskip("psycopg")
+    _, dsn = pg_schema
+    with PostgresStore(dsn):
+        pass
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("DROP TABLE agentl_errors")
+        conn.execute("UPDATE agentl_schema_version SET version = 3")
+    with PostgresStore(dsn) as s:
+        assert s.schema_version() == SCHEMA_VERSION == 4
+        _use_errors_table(s)

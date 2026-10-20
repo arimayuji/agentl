@@ -521,10 +521,11 @@ golden sets, reports the cost per right answer and exits 1 below `min_accuracy`.
 
 ## Digest
 
-`agentl digest pipeline.yaml [--force] [--show]` sends the pipeline's
+`agentl digest pipeline.yaml [--force] [--show] [--errors]` sends the pipeline's
 [`notify.digest`](checks.md#scheduled-digest) when it is due and not yet sent this period, and
 prints one line per channel. Run it from cron any time after `at`; it exits 1 when a channel
-failed. `--force` sends now, `--show` prints the digest without sending.
+failed. `--force` sends now, `--show` prints the digest without sending. `--errors` keeps only
+the [run errors](notifications.md#errors-in-the-digest) section, with its own sent-today guard.
 
 ## Gaps
 

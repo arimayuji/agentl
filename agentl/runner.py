@@ -426,8 +426,15 @@ class Runner:
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
         self._source_records: dict[str, int] = {}  # records read by steps without inputs, this run
         self._after_run: list = []  # (on_success, on_failure) from connectors, see registry.after_run
+        self._failed_step: str | None = None  # the step whose error failed this run (#356)
         self.listeners.append(
-            Notifier(spec.notify, spec.name, summarize=self._summarize, records=self._step_records)
+            Notifier(
+                spec.notify,
+                spec.name,
+                summarize=self._summarize,
+                records=self._step_records,
+                store=self.store,
+            )
         )
         from . import lineage
 
@@ -445,6 +452,8 @@ class Runner:
             "step": step,
             "data": data,
         }
+        if type == "step.failed" and "traceback" in data and data.get("required", True):
+            self._failed_step = self._failed_step or step  # the culprit, not the steps it stopped
         if type == "step.succeeded" and step is not None and not self.spec.step(step).inputs:
             self._source_records[step] = int(data.get("records") or 0)
         with self._events:  # steps may run in parallel: one event at a time, store and listeners
@@ -2522,6 +2531,7 @@ class Runner:
         result = RunResult(run_id=run_id, status="running")
         self._run_id = run_id
         self._result = result
+        self._failed_step = None
         self._outputs = result.outputs
         self._source_records = {}
         registry._RUN_ID.set(run_id)
@@ -2582,9 +2592,10 @@ class Runner:
         self._classify(result)
         self.store.finish_run(run_id, result.status, result.error, result.outcome)
         # before the final event, so run.<status> stays the last event of a run
+        fault = self._track_error(run_id, result)
         if result.outcome in self.spec.outcomes.alert_on:
             extra = {"error": result.error} if result.error else {}
-            self._emit(run_id, "run.alert", outcome=result.outcome, **extra)
+            self._emit(run_id, "run.alert", outcome=result.outcome, **extra, **fault)
         throttled: dict[str, Any] = (
             {"throttled_s": round(result.throttled_s, 3)} if result.throttled_s else {}
         )
@@ -2601,8 +2612,39 @@ class Runner:
             **partial,
             **({"reason": result.reason} if result.reason else {}),
             **({"error": result.error} if result.error else {}),
+            **fault,
         )
         return result
+
+    def _track_error(self, run_id: str, result: RunResult) -> dict[str, Any]:
+        """Record a failed run's error under its fingerprint (#356) and return what the failure
+        events carry; on the first successful run after open errors, emit `run.resolved`."""
+        from . import errors
+
+        at = errors.now()
+        if result.status == "failed" and result.error:
+            step = self._failed_step
+            cls, _ = errors.split(result.error)
+            fp = errors.fingerprint(result.error, step)
+            row = self.store.error_seen(self.spec.name, fp, step, cls, result.error, at)
+            return {
+                "fingerprint": fp,
+                "error_count": row["count"],
+                "first_seen": errors.iso(row["first_seen"]),
+            }
+        if result.status in ("succeeded", "no_change"):
+            fixed = self.store.errors_resolve(self.spec.name, at)
+            if fixed:
+                self._emit(
+                    run_id,
+                    "run.resolved",
+                    fingerprints=[r["fingerprint"] for r in fixed],
+                    errors=len(fixed),
+                    error_count=sum(int(r["count"]) for r in fixed),
+                    first_seen=errors.iso(min(float(r["first_seen"]) for r in fixed)),
+                    last_error=fixed[-1]["error"],
+                )
+        return {}
 
     def _classify(self, result: RunResult) -> None:
         """Set `result.outcome` from the status and the `outcomes` policy. Too many skipped runs in

@@ -335,8 +335,6 @@ def _gaps(a: argparse.Namespace) -> int:
 
 
 def _digest(a: argparse.Namespace) -> int:
-    import datetime as _dt
-
     from . import digest
 
     spec = load(a.pipeline, params=_params(a.param))
@@ -345,10 +343,9 @@ def _digest(a: argparse.Namespace) -> int:
         return 2
     with open_store(a.db) as store:
         if a.show:
-            today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
-            print(digest.render(spec, spec.notify.digest, digest.collect(spec, store, today), today)[0])
+            print(digest.show(spec, store, only_errors=a.errors))
             return 0
-        outcomes = digest.send_due(spec, store, force=a.force)
+        outcomes = digest.send_due(spec, store, force=a.force, only_errors=a.errors)
     for channel, outcome in outcomes.items():
         print(f"{channel}: {outcome}")
     return 1 if any(o.startswith("failed") for o in outcomes.values()) else 0
@@ -852,6 +849,9 @@ def main(argv: list[str] | None = None) -> int:
     dg.add_argument("pipeline")
     dg.add_argument("--force", action="store_true", help="send now, even if not due or already sent")
     dg.add_argument("--show", action="store_true", help="print the digest, send nothing")
+    dg.add_argument(
+        "--errors", action="store_true", help="only the run errors section, with its own sent-today guard"
+    )
     _param_arg(dg)
 
     gp = cmd("gaps", "missing partitions (days, hours, key x day) in the destination, from expect:")
