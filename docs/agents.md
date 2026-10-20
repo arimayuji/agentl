@@ -349,6 +349,24 @@ array per line, in the column order of `output`, and agentl builds the records:
   of llms or `rules:` (hybrid rules map one record to one output; rows mode makes many). Not
   with `attempts:` either: rows mode retries by continuation and rejects a bad row on its own.
 
+A very long document can also be split before it is sent, with `chunk:`:
+
+```yaml
+- id: items
+  input: doc
+  agent: List every line item of the invoice.
+  output_mode: rows
+  output: {date: str, item: str, value: float}
+  chunk: {by: page, size: 3}   # one call per 3 pages
+```
+
+- Pages are the items of `field` (default `text`) when it is a list, or its text split on form
+  feeds (`\f`); `pdf.read` separates pages that way.
+- Each group replaces `field` with its pages (joined by form feeds again) and is asked on its
+  own, with truncation and continuation as above. The rows of all groups come out in order.
+- A record without the field, or with no more than `size` pages, goes whole. Rejected rows and
+  failed groups carry `_pages`, the first and last page of the group (1-based).
+
 ### Batch mode
 
 For jobs that can wait, send the whole step through the provider's batch API. It answers within

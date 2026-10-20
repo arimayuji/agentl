@@ -223,6 +223,31 @@ class BudgetExceeded(RuntimeError):
     """The run reached `budget.max_tokens` or `budget.max_usd`."""
 
 
+def _page_chunks(step: StepSpec, records: Records) -> Iterator[tuple[int, dict, dict]]:
+    """Rows mode with `chunk: {by: page}` (#215): (source index, record, page info) per call.
+    Without `chunk`, each record goes whole. A record without the field, or with one page or
+    less per group, also goes whole. Each group replaces the field with its pages joined by form
+    feeds; `_pages` ([first, last], 1-based) marks the rejects of that group."""
+    c = step.chunk
+    for n, rec in enumerate(records):
+        value = rec.get(c.field) if c else None
+        if isinstance(value, str):
+            pages: list = value.split("\f")
+        elif isinstance(value, list):
+            pages = value
+        else:
+            yield n, rec, {}
+            continue
+        assert c is not None
+        if len(pages) <= c.size:
+            yield n, rec, {}
+            continue
+        for i in range(0, len(pages), c.size):
+            group = pages[i : i + c.size]
+            part = "\f".join(map(str, group)) if isinstance(value, str) else group
+            yield n, {**rec, c.field: part}, {"_pages": [i + 1, i + len(group)]}
+
+
 def remap_targets(spec: PipelineSpec, check_id: str) -> list[str]:
     """The map_schema steps that read check `check_id` (`on_drift: remap`, #178)."""
     return [s.id for s in spec.steps if s.use == "map_schema" and check_id in s.inputs]
@@ -764,7 +789,7 @@ class Runner:
 
         ok: Records = []
         bad: Records = []
-        for n, rec in enumerate(records):
+        for n, rec, pages in _page_chunks(step, records):
             k = agent_cache_key(self.spec, step, rec)
             hit = self.store.cache_get(k) if cacheable else None
             raw_rows: list[list]
@@ -777,18 +802,19 @@ class Runner:
                 except BudgetExceeded:
                     raise
                 except (ValueError, RuntimeError) as e:
-                    bad.append({**rec, "_error": str(e)})
+                    bad.append({**rec, **pages, "_error": str(e)})
                     continue
                 if cacheable:
                     self.store.cache_set(k, {"rows": raw_rows})
             for row_bad in raw_bad:
-                bad.append({**row_bad, "_source": n})
+                bad.append({**row_bad, "_source": n, **pages})
             for row in raw_rows:
                 if len(row) != len(columns):
                     bad.append(
                         {
                             "_row": row,
                             "_source": n,
+                            **pages,
                             "_error": f"row has {len(row)} values, expected {len(columns)}",
                         }
                     )
@@ -796,7 +822,7 @@ class Runner:
                 try:
                     ok.append(schema.model_validate(dict(zip(columns, row, strict=True))).model_dump())
                 except ValidationError as e:
-                    bad.append({"_row": row, "_source": n, "_error": str(e)})
+                    bad.append({"_row": row, "_source": n, **pages, "_error": str(e)})
                     continue
                 if hit is None:
                     stats["array_chars"] += len(json.dumps(row, default=str))
