@@ -13,7 +13,7 @@ name: orders
 steps:
   - id: orders
     use: csv.read
-    with: {{path: "{csv}"}}
+    with: {{path: '{csv}'}}
   - id: tag
     agent: Copy the fields.
     input: orders
@@ -21,11 +21,11 @@ steps:
   - id: save
     use: sqlite.write
     input: tag
-    with: {{db: "{db}", table: out, mode: {mode}, key: id}}
+    with: {{db: '{db}', table: out, mode: {mode}, key: id}}
   - id: dump
     use: json.write
     input: tag
-    with: {{path: "{out}"}}
+    with: {{path: '{out}'}}
 llm:
   provider: echo
   model: m
@@ -116,11 +116,11 @@ name: pg
 steps:
   - id: orders
     use: csv.read
-    with: {{path: "{csv}"}}
+    with: {{path: '{csv}'}}
   - id: save
     use: postgres.write
     input: orders
-    with: {{dsn: "{dsn}", table: agentl_diff_out, mode: upsert, key: id}}
+    with: {{dsn: '{dsn}', table: agentl_diff_out, mode: upsert, key: id}}
 """,
         encoding="utf-8",
     )
