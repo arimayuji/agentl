@@ -174,7 +174,8 @@ async function stats(){
   $('#stats').innerHTML=ps.map(p=>{const rate=p.success_rate==null?'—':Math.round(p.success_rate*100)+'%',f=p.failures[0];
     return `<div class="ps"><div class="row"><b>${esc(p.pipeline)}</b><span class="rate">${rate} · ${p.succeeded}/${p.succeeded+p.failed}</span></div>
     <div class="track"><div class="ok" style="width:${(p.success_rate??1)*100}%"></div></div>
-    ${f?`<div class="why">${f.count}× ${f.step?'['+esc(f.step)+'] ':''}${esc(f.reason)}</div>`:''}</div>`}).join('')||'<div class="empty">No runs in the last 30 days.</div>';
+    ${f?`<div class="why">${f.count}× ${f.step?'['+esc(f.step)+'] ':''}${esc(f.reason)}</div>`:''}
+    ${p.review&&p.review.pending?`<div class="why">${p.review.pending} waiting for review (agentl review list)</div>`:''}</div>`}).join('')||'<div class="empty">No runs in the last 30 days.</div>';
 }
 $('#flt').value=flt;
 if(S){$('#mode').textContent='snapshot '+new Date(S.generated*1000).toLocaleString();$('#dot').style.animation='none';refresh()}

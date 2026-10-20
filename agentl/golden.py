@@ -32,6 +32,13 @@ class EvalReport:
     output_tokens: int
     diffs: list[dict[str, Any]] = field(default_factory=list)  # {line, field, expected, got}
     min_accuracy: float | None = None
+    right: int = 0  # records with every expected field right
+
+    @property
+    def cost_per_right(self) -> float | None:
+        """What one right answer cost: the spend over the records it got fully right (#156).
+        None when none is right."""
+        return round(self.cost_usd / self.right, 6) if self.right else None
 
     @property
     def passed(self) -> bool:
@@ -43,6 +50,8 @@ class EvalReport:
             "label": self.label,
             "records": self.records,
             "accuracy": self.accuracy,
+            "right": self.right,
+            "cost_per_right": self.cost_per_right,
             "fields": self.fields,
             "cost_usd": round(self.cost_usd, 6),
             "input_tokens": self.input_tokens,
@@ -179,6 +188,7 @@ def evaluate(
         output_tokens=int(spend.get("output_tokens", result.output_tokens)),
         diffs=diffs,
         min_accuracy=golden.min_accuracy,
+        right=all_right,
     )
 
 
@@ -201,7 +211,8 @@ def render(reports: list[EvalReport], max_diffs: int = 20) -> str:
         )
         lines.append(
             f"{r.step} [{r.label}]: {r.accuracy:.1%} of {r.records} records right{verdict}, "
-            f"${r.cost_usd:.4f} ({r.input_tokens} in / {r.output_tokens} out tokens)"
+            f"${r.cost_usd:.4f} ({r.input_tokens} in / {r.output_tokens} out tokens), "
+            + ("no right answer" if r.cost_per_right is None else f"${r.cost_per_right:.6f} per right answer")
         )
         for f, acc in r.fields.items():
             lines.append(f"  {f}: {acc:.1%}")

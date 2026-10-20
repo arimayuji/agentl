@@ -193,3 +193,95 @@ def describe(finding: dict[str, Any]) -> str:
         f"{f['field']}: looks like {f['kind']} ({f['matched']} of {f['checked']} sampled values, "
         f"e.g. {f['example']}); protect it with {f['suggest']}"
     )
+
+
+# ---------------------------------------------------------------- before an llm call (#337)
+# Personal data inside free text: candidates found by these patterns are confirmed with the
+# detector of their kind (check digits, Luhn) before they count. Order matters: each pass
+# replaces what it found, so a later, looser pattern (phone) never sees an e-mail or a CPF.
+_EMBEDDED: list[tuple[str, re.Pattern[str]]] = [
+    ("email", re.compile(r"(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")),
+    ("cnpj", re.compile(r"(?<![\w/.-])\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}(?![\w/-])")),
+    ("cpf", re.compile(r"(?<![\w.-])\d{3}\.?\d{3}\.?\d{3}-?\d{2}(?![\w-])")),
+    ("ssn", re.compile(r"(?<![\w-])\d{3}-\d{2}-\d{4}(?![\w-])")),
+    ("card", re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")),
+    ("phone", re.compile(r"(?<![\w+])\+?(?:\(\d{2,3}\)\s?|\d)[\d\s().-]{6,18}\d(?!\w)")),
+]
+_PLACEHOLDER = re.compile(r"\[([A-Z]+)_(\d+)\]")
+
+
+class Masker:
+    """Replaces the personal data of one record with placeholders like `[EMAIL_1]`: the same
+    value gets the same placeholder everywhere in the record, and the numbering depends only
+    on the record, so a masked record (and the cache key made from it) is stable across runs.
+    `fields` and `kinds` narrow what is looked at (default: every field and kind)."""
+
+    def __init__(self, fields: Iterable[str] | None = None, kinds: Iterable[str] | None = None):
+        self.fields = set(fields) if fields else None
+        self.kinds = set(kinds) if kinds else None
+        self.originals: dict[str, Any] = {}  # placeholder -> original value
+        self.found: Counter[tuple[str, str]] = Counter()  # (field, kind) -> occurrences
+        self._by_value: dict[tuple[str, str, str], str] = {}
+        self._count: Counter[str] = Counter()
+
+    def _token(self, kind: str, value: Any, field: str) -> str:
+        self.found[(field, kind)] += 1
+        key = (kind, type(value).__name__, str(value))
+        if key not in self._by_value:
+            self._count[kind] += 1
+            token = f"[{kind.upper()}_{self._count[kind]}]"
+            self._by_value[key] = token
+            self.originals[token] = value
+        return self._by_value[key]
+
+    def _text(self, v: str, field: str) -> str:
+        if (kind := classify(v, field)) and (self.kinds is None or kind in self.kinds):
+            return self._token(kind, v, field)
+        for kind, pattern in _EMBEDDED:
+            if self.kinds is not None and kind not in self.kinds:
+                continue
+
+            def sub(m: re.Match[str], kind: str = kind) -> str:
+                s = m.group(0)
+                if not DETECTORS[kind](s.strip()):
+                    return s
+                return self._token(kind, s, field)
+
+            v = pattern.sub(sub, v)
+        return v
+
+    def _value(self, v: Any, field: str) -> Any:
+        if isinstance(v, str):
+            return self._text(v, field)
+        if isinstance(v, int) and not isinstance(v, bool):
+            kind = classify(v, field)  # e.g. a CPF or card number stored as a number
+            if kind and (self.kinds is None or kind in self.kinds):
+                return self._token(kind, v, field)
+            return v
+        if isinstance(v, dict):
+            return {k: self._value(x, field) for k, x in v.items()}
+        if isinstance(v, list):
+            return [self._value(x, field) for x in v]
+        return v
+
+    def mask(self, record: dict[str, Any]) -> dict[str, Any]:
+        """The record with its personal data replaced; `originals` maps placeholders back."""
+        return {
+            k: self._value(v, str(k)) if self.fields is None or k in self.fields else v
+            for k, v in record.items()
+        }
+
+    def restore(self, value: Any) -> Any:
+        """`value` with the placeholders of this record put back, in strings at any depth.
+        Placeholders the model invented (not from this record) stay as they are."""
+        if not self.originals:
+            return value
+        if isinstance(value, str):
+            if value in self.originals:  # a whole value comes back with its type (an int stays one)
+                return self.originals[value]
+            return _PLACEHOLDER.sub(lambda m: str(self.originals.get(m.group(0), m.group(0))), value)
+        if isinstance(value, dict):
+            return {k: self.restore(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.restore(v) for v in value]
+        return value

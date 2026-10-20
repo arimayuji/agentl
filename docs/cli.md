@@ -2,6 +2,7 @@
 
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
+agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -22,6 +23,7 @@ agentl stats [PIPELINE] [--since 30d] [--label KEY=VALUE ...] [--json]
 agentl serve PIPELINE... [--host 127.0.0.1] [--port 7071] [--param KEY=VALUE ...]
 agentl schedule next PIPELINE [--n 10]
 agentl mcp [--root DIR] [--allow-code]   # serve over stdio
+agentl mcp --http [HOST]:PORT [--token-env AGENTL_MCP_TOKEN] [--root DIR]   # streamable HTTP at /mcp
 agentl mcp install|uninstall --client CLIENT [--project] [--uvx]
 agentl mcp status
 agentl dashboard [--host 127.0.0.1] [--port 7070]
@@ -34,6 +36,7 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
+`agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
 
 ## Run ledger and LLM cost
 
@@ -118,6 +121,7 @@ set. Exit code 2 when there are errors.
 | AL009 | a `cron` trigger has no `timezone` (an error under `lint`: the schedule would follow the server clock) |
 | AL010 | a `cast` step has no `locale` (so pt-BR) and its numeric fields, read from a local CSV, look like en-US numbers (`1,234.56`, `1.050`) |
 | AL011 | an `http.*` source has a `fallback` but no `retries`, so it switches on the first transient error |
+| AL012 | a field of a local CSV source looks like personal data in its sample and reaches an agent step with no `pii:` setting and no `protect` step for it |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
@@ -169,9 +173,13 @@ plan for triage (nothing is written, no LLM is called)
 total: 40 LLM call(s), $0.0019-$0.0676
 ```
 
-Costs are a range: the length of each answer is unknown until the model writes it (about 4
-characters per token, output between short and long answers), and with a cascade the high end
-assumes every record also goes to the last llm. An llm with no `price` shows "cost unknown".
+When the run store has runs of the step with the same model in the last 90 days, the estimate
+uses the tokens a record really took in them (input and output, per model paid for, so
+escalations and fallbacks are priced at their own model): the low and high are the cheapest and
+the dearest run's average, and the line ends with `(history: N records in M runs)`. Otherwise it
+is a guess, marked `(guess)`: the length of each answer is unknown until the model writes it
+(about 4 characters per token, output between short and long answers), and with a cascade the
+high end assumes every record also goes to the last llm. `basis` in `--json` says which. An llm with no `price` shows "cost unknown".
 `--json` for scripts.
 
 ### Autocomplete in the editor
@@ -275,6 +283,11 @@ agentl dashboard                     # sees every run
 In Python: `agentl.run("pipeline.yaml", db="postgresql://...")` or `agentl.store.open_store(url)`.
 Postgres tables are prefixed (`agentl_runs`, `agentl_events`, `agentl_cache`), so the store can live
 in an existing database. They are created on first use; the user needs `CREATE` on the schema.
+
+The store records its schema version (`schema_version`, or `agentl_schema_version` on Postgres) and
+upgrades itself when a newer agentl opens it, keeping cache, state, seen keys and run history.
+Stores created before versioning are upgraded the same way. On Postgres, workers that start
+together take an advisory lock, so only one of them migrates; the user needs `ALTER` on the tables.
 
 Cached results can be dropped by key, by prefix or all at once:
 
@@ -411,6 +424,7 @@ agentl report --pipeline invoices.yaml            # the latest failed run
 agentl report 20261014-091203-ab12cd --pipeline invoices.yaml -o bug.md
 agentl report --crash                              # the last CLI crash
 agentl report --json
+agentl report --submit                             # ask, then file it with your gh account
 ```
 
 `report` builds a ready-to-paste bug report: the agentl version, Python and OS, the failing step
@@ -418,7 +432,18 @@ with its error and traceback, what `agentl doctor` sees, the pipeline YAML and a
 suggestion. It prints markdown that matches the Bug report issue form, and a prefilled
 `https://github.com/arimayuji/agentl/issues/new?template=bug_report.yml&...` URL; when the URL
 would pass 8000 characters it asks you to paste the markdown (or the `-o` file) into the form
-instead. **Nothing is sent over the network**: it only prints. Read it before you share it.
+instead. **Nothing is sent over the network** unless you pass `--submit`. Read it before you share
+it.
+
+Every report carries a fingerprint, `agentl-fp-` plus 12 hex characters, made of the error class,
+the innermost agentl frame of the traceback (file and function, no line number) and the agentl
+version. The same bug gets the same fingerprint, so it can be found among existing issues.
+
+`--submit` prints the report first, then uses your logged-in [GitHub CLI](https://cli.github.com/)
+(`gh`): it searches the agentl issues for the fingerprint and, when one matches, lists the matches
+and files nothing (add your details there with `gh issue comment`). Otherwise it asks
+`File this report as a new issue ... [y/N]` and runs `gh issue create` only on yes. Without `gh`
+installed it prints the prefilled URL instead. No project token is used: `gh` acts as you.
 
 In the YAML, `${VAR:-default}` loses its default, values of secret-looking keys (`token`,
 `password`, `dsn`, `api_key`...) that are not `${VAR}` references become `***`, and secret values
@@ -431,6 +456,15 @@ line after the error:
 
 ```text
 Looks like an agentl bug: run `agentl report <run_id>` to file it (silence with AGENTL_NO_REPORT_HINT=1)
+```
+
+Per pipeline, `report.on_bug` chooses what happens then:
+
+```yaml
+report:
+  on_bug: prompt   # the default: print the line above
+  # open: also open the prefilled issue form in the browser (nothing is submitted)
+  # off: print nothing
 ```
 
 A CLI crash keeps its traceback in `.agentl/last-crash.txt` for `agentl report --crash`. Set
@@ -475,13 +509,29 @@ For each agent step and model, `agent cost` divides the step's spend by its reco
 rejected), by its accepted answers (records not rejected) and by the records an LLM answered.
 `cache saved` prices the step's cache hits at that last number. In `--json` these are the
 `agents` rows of each pipeline: `cost_per_record`, `cost_per_accepted`, `cost_per_answer`,
-`cache_hits` and `cache_saved_usd`. Runs recorded by earlier versions have no model or cache hits in
+`cache_hits` and `cache_saved_usd`.
+
+On a step with [human review](review.md), an `approved` line also counts what people decided: the
+accepted answers that went out without review, plus the queued answers a person accepted as
+they were. Answers a person fixed or rejected, answers still pending, answers flagged
+`_review: pending` and answers that reused a person's answer are not approved. In `--json`:
+`approved`, `cost_per_approved` and `review_accepted`, `review_fixed`, `review_rejected` and
+`review_pending` (the queued answers of these runs, by status). For the cost per right answer
+on known answers, run `agentl eval` on a [golden set](agents.md#golden-sets-test-a-prompt-or-model-change). Runs recorded by earlier versions have no model or cache hits in
 their events and show up as model `unknown`.
 
 ## Eval
 
 `agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
-golden sets and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+golden sets, reports the cost per right answer and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+
+## Digest
+
+`agentl digest pipeline.yaml [--force] [--show] [--errors]` sends the pipeline's
+[`notify.digest`](checks.md#scheduled-digest) when it is due and not yet sent this period, and
+prints one line per channel. Run it from cron any time after `at`; it exits 1 when a channel
+failed. `--force` sends now, `--show` prints the digest without sending. `--errors` keeps only
+the [run errors](notifications.md#errors-in-the-digest) section, with its own sent-today guard.
 
 ## Gaps
 
@@ -513,6 +563,8 @@ agentl gaps pipeline.yaml --since 2025-06-01 --until 2025-06-30
 agentl gaps pipeline.yaml --json                  # missing periods, ranges and commands
 agentl gaps pipeline.yaml --commands              # also print `agentl backfill` lines
 agentl gaps pipeline.yaml --fail                  # exit 1 when something is missing
+agentl gaps pipeline.yaml --fill --max 30         # backfill only what is missing, 30 runs at most
+agentl gaps pipeline.yaml --notify ops            # send the gaps to a notify: channel
 ```
 
 `to:` defaults to the last complete period (yesterday, or the previous hour), in UTC. Values read
@@ -522,9 +574,27 @@ from the destination are normalised (dates, datetimes and ISO strings) to `forma
 `--commands` prints one `agentl backfill pipeline.yaml --from A --to B` line per contiguous run of
 missing days (with `--param key=value` for composite keys), for the `agentl backfill` command and
 run params of [#182](https://github.com/arimayuji/agentl/issues/182). Hourly gaps and custom
-formats get no lines. Running only the missing periods automatically (`--fill`, within request
-budgets) is not part of this release; for a scheduled check, run `agentl gaps --fail` from cron or
-CI and alert on the exit code.
+formats get no lines.
+
+`--fill` runs the pipeline once per missing partition through the same code as `agentl backfill`,
+so it is resumable: partitions finished in an earlier call are recorded in the run store and
+skipped. The period goes to the pipeline's only `date` param (hourly or custom `format:`
+partitions: its only `str` param that is not a composite key); pass `--param-name` when there are
+several. Composite keys are passed as params of the same name, so declare them under `params:`.
+Other `--param key=value` pairs are passed to every run. `--max N` is the run budget for one call:
+the oldest N missing partitions run and the rest are reported as deferred (with `--fail`, exit 1
+while some are deferred). `--concurrency` sets the runs at a time. Shared per-hour request budgets
+across runs are not part of this release (#212).
+
+Required params that `--param` does not give get a placeholder while `expect:` is read, so a
+pipeline with a required `day: date` param can be checked without passing one; `expect:` itself
+should not use params.
+
+For a periodic check, run `agentl gaps --notify ops` (or `--fill --notify ops`) from cron, a
+scheduler or CI. `--notify` takes a channel declared under the pipeline's `notify.channels`, is
+repeatable, and sends the summary (event type `gaps.found`, with the missing partitions as data)
+only when something is missing. A failing channel is reported on stderr and does not stop
+`--fill`; an unknown channel name exits 2.
 
 ## Diagram
 

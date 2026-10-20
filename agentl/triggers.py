@@ -215,6 +215,7 @@ class Service:
         self.routes: dict[str, tuple[Any, Any]] = {}
         self.next_cron: dict[tuple[str, int], _dt.datetime] = {}
         self.next_files: dict[tuple[str, int], float] = {}
+        self.next_digest: dict[str, float] = {}  # pipeline -> when to look at notify.digest again
         self.schedules: dict[tuple[str, int], Any] = {}
         self.next_cycle: dict[tuple[str, int], tuple[_dt.date, _dt.datetime] | None] = {}
         self.open_cycle: dict[tuple[str, int], _dt.date] = {}  # last cycle fired, until it closes
@@ -370,6 +371,23 @@ class Service:
                     if files:
                         busy.update(f["path"] for f in files)
                         self.submit(spec, files, "files", after=self._seen(name, i, t.files, files))
+            self._tick_digest(spec, wall)
+
+    def _tick_digest(self, spec: Any, wall: float) -> None:
+        """Send the pipeline's `notify.digest` when it is due (checked once a minute)."""
+        if not (spec.notify and spec.notify.digest) or wall < self.next_digest.get(spec.name, 0):
+            return
+        self.next_digest[spec.name] = wall + 60
+        from .digest import send_due
+
+        try:
+            for channel, outcome in send_due(
+                spec, self.store, _dt.datetime.fromtimestamp(wall, _dt.timezone.utc)
+            ).items():
+                if outcome == "sent" or outcome.startswith("failed"):
+                    log.info("%s: digest to %s: %s", spec.name, channel, outcome)
+        except Exception as e:  # the digest never stops the service
+            log.warning("%s: digest failed: %s", spec.name, e)
 
     def _cycle_key(self, name: str, i: int, d: _dt.date) -> str:
         return f"schedule-cycle:{name}:{i}:{d.isoformat()}"

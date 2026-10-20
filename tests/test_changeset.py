@@ -164,3 +164,47 @@ def test_null_keys_are_rejected_as_in_upsert(tmp_path):
     assert out[0]["inserted"] == 2
     assert len(out.rejected) == 1 and "is null" in out.rejected[0]["_error"]
     assert [r[0] for r in table(db)] == [0, 1]
+
+
+@pytest.mark.parametrize("chunk_size", [None, 2])
+def test_emit_changes_feeds_the_next_step_and_keeps_counts(tmp_path, chunk_size):
+    db = str(tmp_path / "x.db")
+    write(db, ROWS)
+    changed = [dict(r, v="new") if r["id"] == 2 else r for r in ROWS[:5]]
+    src = str(tmp_path / "src.db")
+    get("sqlite.write")(changed, db=src, table="src")  # sqlite.read streams, so chunk_size chains it
+    out = tmp_path / "changes.json"
+    spec = parse(
+        {
+            "name": "changes",
+            "chunk_size": chunk_size,
+            "steps": [
+                {"id": "src", "use": "sqlite.read", "with": {"db": src, "query": "select * from src"}},
+                {
+                    "id": "save",
+                    "use": "sqlite.write",
+                    "input": "src",
+                    "with": {
+                        "db": db,
+                        "table": "t",
+                        "mode": "changeset",
+                        "key": "id",
+                        "deletes": "missing",
+                        "emit": "changes",
+                    },
+                },
+                {"id": "log", "use": "json.write", "input": "save", "with": {"path": str(out)}},
+            ],
+        }
+    )
+    with Store(tmp_path / "state.db") as store:
+        result = Runner(spec, store=store).run()
+        events = store.events(result.run_id)
+    assert result.status == "succeeded", result.error
+    assert result.summary()["writes"]["save"] == {"inserted": 0, "updated": 1, "deleted": 1, "unchanged": 4}
+    done = next(e for e in events if e["type"] == "step.succeeded" and e["step"] == "save")
+    assert done["data"]["written"] == 2 and done["data"]["deleted"] == 1
+    assert done["data"].get("chunked", False) is (chunk_size is not None)
+    rows = json.loads(out.read_text())
+    assert [(r["_change"], r["id"]) for r in rows] == [("updated", 2), ("deleted", 5)]
+    assert rows[0]["_before"] == {"v": "v2"}

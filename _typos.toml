@@ -18,6 +18,8 @@ serie = "serie"
 cliente = "cliente"
 clientes = "clientes"
 Cliente = "Cliente"
+# in-toto, the attestation format (release provenance files are *.intoto.jsonl)
+intoto = "intoto"
 falso = "falso"
 anual = "anual"
 # US Employer Identification Number
