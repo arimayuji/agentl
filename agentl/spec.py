@@ -679,9 +679,11 @@ class StepSpec(BaseModel):
                 or not 1 <= vr.get("last", 5) <= 50
             ):
                 raise ValueError(f"step '{self.id}': vs_runs needs a mapping like {{last: 5, rows: 30%}}")
-            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
+            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum", "nulls")]
             if unknown_vr:
-                raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
+                raise ValueError(
+                    f"step '{self.id}': vs_runs takes last, rows, sum and nulls, not {unknown_vr}"
+                )
         if (
             self.expect or (isinstance(self.review, str) and not self.agent) or self.severity
         ) and not self.check:

@@ -209,6 +209,10 @@ def run_expectations(
                 after = sum(x for x in (_number(r.get(c)) for r in records) if x is not None)
                 if before is not None:
                     _change(fail, f"sum of {c}", before, after, parse_percent(limit))
+            for c, limit in (rule.get("nulls") or {}).items():
+                before_rate = _null_rate(previous, c)
+                if before_rate is not None:
+                    _rate_change(fail, c, before_rate, records, parse_percent(limit))
         elif key == "vs_runs":
             window = (history or [])[: int(rule.get("last", 5))]
             if not window:
@@ -226,6 +230,10 @@ def run_expectations(
                 after = sum(x for x in (_number(r.get(c)) for r in records) if x is not None)
                 if sums:
                     _change(fail, f"sum of {c}", _median(sums), after, parse_percent(limit), "vs_runs", label)
+            for c, limit in (rule.get("nulls") or {}).items():
+                rates = [r for r in (_null_rate(p, c) for p in window) if r is not None]
+                if rates:
+                    _rate_change(fail, c, _median(rates), records, parse_percent(limit), "vs_runs", label)
         elif key == "rejected_rate":
             for name, (op, limit) in rejected_limits(rule, step).items():
                 n_bad, total = (rejected or {}).get(name, (0, 0))
@@ -271,6 +279,36 @@ def _change(
     delta = (after - before) / abs(before)
     if abs(delta) > limit:
         fail(check, f"{label}: {after:g} vs {before:g} on {against} ({delta:+.0%}, limit {limit:.0%})")
+
+
+def _null_rate(prof: dict[str, Any], column: str) -> float | None:
+    """Share of empty values of a column in a kept profile; None when the column was not there."""
+    col = (prof.get("columns") or {}).get(column)
+    rows = prof.get("rows") or 0
+    if col is None or not rows:
+        return None
+    return float(col.get("nulls", 0)) / rows
+
+
+def _rate_change(
+    fail: Any,
+    column: str,
+    before: float,
+    records: Records,
+    limit: float,
+    check: str = "vs_last_run",
+    against: str = "the last run",
+) -> None:
+    """Null rate drift, in percentage points: rates near zero make a relative change useless."""
+    if not records:
+        return
+    now = sum(1 for r in records if _empty(r.get(column))) / len(records)
+    if abs(now - before) > limit:
+        fail(
+            check,
+            f"null rate of {column}: {now:.1%} vs {before:.1%} on {against} "
+            f"({(now - before) * 100:+.1f} points, limit {limit * 100:g} points)",
+        )
 
 
 def failing_rows(

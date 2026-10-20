@@ -487,11 +487,17 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
   last run: 20261014-090012-1a2b3c succeeded
   agent cost (USD):
     [classify] claude-haiku-4-5: 0.000410/record, 0.000432/accepted (9480 of 10000), 3100 cache hits, cache saved 1.8414
+  checks (passed/warn/reject/failed, last):
+    [verify] rows: 39/2/0/1, last passed
+    [verify] vs_runs: 41/0/0/1, last passed
   failures by reason:
       3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
       1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
   run days, oldest first (. all ok, x some failed): ....x.......x..x.....
 ```
+
+`checks` counts, per check step and rule, how many runs gave each [result](checks.md#severity-per-rule)
+and the latest one; `--json` has the same rows under `checks`.
 
 Failures are grouped by the step that failed first and the error with what changes between runs
 taken out (numbers, ids, paths, URLs), so the same timeout on different days counts as one

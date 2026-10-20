@@ -60,8 +60,8 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | `accepted` | `{ region: [north, south] }` | a column has a value outside the list |
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
-| `vs_last_run` | `{ rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, changed more than that since the last run that passed |
-| `vs_runs` | `{ last: 5, rows: 30%, sum: { total: 40% } }` | the row count, or a column's sum, is further than that from the median of the last `last` runs that passed |
+| `vs_last_run` | `{ rows: 30%, sum: { total: 40% }, nulls: { email: 5% } }` | the row count, or a column's sum, changed more than that since the last run that passed, or a column's null rate moved more than that many percentage points |
+| `vs_runs` | `{ last: 5, rows: 30%, sum: { total: 40% }, nulls: { email: 5% } }` | the row count, or a column's sum, is further than that from the median of the last `last` runs that passed, or a column's null rate is more than that many percentage points from their median rate |
 | `rejected_rate` | `"< 1%"` or `{ orders: "<= 0.5%" }` | a step rejected a larger share of its records in this run (see [contracts](#schema-contracts)) |
 | `pii` | `true` or `{ allow: [customer_email] }` | a field looks like unprotected personal data (below); `allow` lists fields that may carry it |
 
@@ -92,6 +92,10 @@ On the first run there is nothing to compare with, so it passes.
 one unusual run does not move the baseline. With fewer passing runs than `last` it uses the ones
 there are; with none it passes.
 
+`nulls` compares the share of empty values in a column (null, blank or NaN, as `not_null` counts
+them) with the baseline in percentage points, not as a relative change: going from 1% to 6% empty
+is 5 points. A column that the baseline runs did not have is skipped, and so is an empty input.
+
 ### Severity per rule
 
 By default a failing rule fails the check (and `on_fail` decides what that does). `severity` sets
@@ -118,7 +122,9 @@ it per rule:
 | `reject` | the failing rows are dropped and quarantined like rejected records (`item.rejected`); only for `not_null`, `unique`, `accepted` and `range` |
 
 `review` takes `fail` or `warn` too. The `check.passed` and `check.failed` events carry `rules`,
-the result of each rule in this run: `passed`, `failed`, `warn` or `reject`.
+the result of each rule in this run: `passed`, `failed`, `warn` or `reject`. The dashboard shows them
+per run in a **Checks** card, and `agentl stats` counts them per rule over the period, with the
+latest result (see [Track record](cli.md#track-record)).
 
 ## Agent review
 

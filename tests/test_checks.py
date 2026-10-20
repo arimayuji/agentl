@@ -256,6 +256,54 @@ def test_vs_runs_with_fewer_runs_than_the_window():
     assert "median of the last 2 runs" in fails[0]["detail"]
 
 
+def _nulls(rows, nulls):
+    return {"rows": rows, "columns": {"email": {"nulls": nulls}}}
+
+
+def _emails(n, empty):
+    return [{"id": i, "email": "" if i < empty else f"u{i}@x.io"} for i in range(n)]
+
+
+def test_vs_runs_null_rate_drift_uses_the_median_rate():
+    history = [_nulls(100, 2), _nulls(100, 80), _nulls(100, 1)]  # median 2%, one bad run ignored
+    rule = {"vs_runs": {"last": 3, "nulls": {"email": "5%"}}}
+    assert run_expectations(_emails(100, 6), rule, None, history=history) == []
+    fails = run_expectations(_emails(100, 30), rule, None, history=history)
+    assert fails == [
+        {
+            "check": "vs_runs",
+            "detail": "null rate of email: 30.0% vs 2.0% on median of the last 3 runs "
+            "(+28.0 points, limit 5 points)",
+        }
+    ]
+    # a column missing from the history, or an empty input, has nothing to compare
+    assert (
+        run_expectations(_emails(10, 10), {"vs_runs": {"nulls": {"phone": "1%"}}}, None, history=history)
+        == []
+    )
+    assert run_expectations([], rule, None, history=history) == []
+
+
+def test_vs_last_run_null_rate_drift():
+    rule = {"vs_last_run": {"nulls": {"email": "10%"}}}
+    assert run_expectations(_emails(10, 1), rule, _nulls(10, 0)) == []
+    (f,) = run_expectations(_emails(10, 5), rule, _nulls(10, 0))
+    assert f["check"] == "vs_last_run" and "+50.0 points" in f["detail"]
+
+
+def test_vs_runs_null_rate_in_a_pipeline_with_warn(tmp_path):
+    spec = pipeline({"vs_runs": {"last": 3, "nulls": {"order_id": "20%"}}})
+    spec.steps[1].severity = {"vs_runs": "warn"}
+    for _ in range(2):
+        DATA["rows"] = sales(10)
+        assert run(tmp_path, spec)[0].status == "succeeded"
+    DATA["rows"] = [{**r, "order_id": None} for r in sales(10)]
+    r, events = run(tmp_path, spec)
+    assert r.status == "succeeded"
+    warned = [e for e in events if e["type"] == "check.warned"]
+    assert "null rate of order_id" in warned[0]["data"]["findings"][0]["detail"]
+
+
 def test_vs_runs_in_a_pipeline_uses_the_passing_runs(tmp_path):
     spec = pipeline({"vs_runs": {"last": 3, "rows": "30%"}})
     for n in (10, 10, 12):
@@ -314,7 +362,52 @@ def test_severity_spec_errors():
         check(expect={"rows": {"min": 1}}, severity={"unique": "warn"})
     with pytest.raises(Exception, match="vs_runs"):
         check(expect={"vs_runs": {"last": 0, "rows": "10%"}})
+    with pytest.raises(Exception, match="rows, sum and nulls"):
+        check(expect={"vs_runs": {"null_rate": {"email": "10%"}}})
+    assert check(expect={"vs_runs": {"nulls": {"email": "5%"}}}).steps[1].expect["vs_runs"]
     assert check(expect={"rows": {"min": 1}}, severity={"rows": "warn"}).steps[1].severity == {"rows": "warn"}
+
+
+def test_rule_results_in_stats_and_dashboard(tmp_path, capsys):
+    from agentl import stats
+    from agentl.cli import main
+    from agentl.dashboard import PAGE, run_detail
+
+    spec = pipeline({"rows": {"min": 5}, "not_null": ["order_id"]})
+    spec.steps[1].severity = {"rows": "warn"}
+    with Store(tmp_path / "s.db") as store:
+        DATA["rows"] = sales(3)
+        warned = Runner(spec, store=store).run()
+        DATA["rows"] = sales(10)
+        Runner(spec, store=store).run()
+        DATA["rows"] = sales(10, r1={"order_id": None})
+        failed = Runner(spec, store=store).run()
+        assert failed.status == "failed"
+        detail = run_detail(store, warned.run_id)
+        report = stats.compute(store, 0)
+    assert detail["checks"] == [
+        {"step": "verify", "rule": "rows", "result": "warn"},
+        {"step": "verify", "rule": "not_null", "result": "passed"},
+    ]
+    assert "d.checks" in PAGE
+    rows = {c["rule"]: c for c in report["pipelines"][0]["checks"]}
+    assert rows["rows"] == {
+        "step": "verify",
+        "rule": "rows",
+        "runs": 3,
+        "passed": 2,
+        "warn": 1,
+        "reject": 0,
+        "failed": 0,
+        "last": "passed",
+    }
+    nn = rows["not_null"]
+    assert (nn["passed"], nn["failed"], nn["last"]) == (2, 1, "failed")
+    assert main(["stats", "--since", "3650d", "--db", str(tmp_path / "s.db")]) == 0
+    out = capsys.readouterr().out
+    assert "  checks (passed/warn/reject/failed, last):" in out
+    assert "    [verify] rows: 2/1/0/0, last passed" in out
+    assert "    [verify] not_null: 2/0/0/1, last failed" in out
 
 
 # ---------------------------------------------------------------- composite unique keys (#348)
