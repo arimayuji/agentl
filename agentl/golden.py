@@ -158,7 +158,8 @@ def evaluate(
 
     answers: dict[str, dict[str, Any]] = {}
     for out in result.outputs.get(step.id, []):
-        answers.setdefault(_key({k: v for k, v in out.items() if k not in outputs}), out)
+        # A hybrid step tags each answer with `_path` (rules or agent): not part of the input.
+        answers.setdefault(_key({k: v for k, v in out.items() if k not in outputs and k != "_path"}), out)
 
     right = {f: 0 for f in outputs if any(f in e for e in expected)}
     seen = dict.fromkeys(right, 0)

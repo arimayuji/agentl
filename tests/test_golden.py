@@ -69,7 +69,7 @@ def test_eval_reports_accuracy_cost_and_differences(project, capsys, tmp_path):
     assert report["fields"]["amount"] == 1.0  # within the tolerance
     assert report["accuracy"] == pytest.approx(2 / 3)
     assert report["cost_usd"] == pytest.approx(3 * (10 + 5 * 2) / 1e6)
-    assert report["right"] == 2
+    assert report["fields"]["category"] == pytest.approx(2 / 3)
     assert report["cost_per_right"] == pytest.approx(3 * (10 + 5 * 2) / 1e6 / 2, abs=1e-6)
     assert report["diffs"] == [{"line": 3, "field": "category", "expected": "travel", "got": "food"}]
 
@@ -97,3 +97,23 @@ def test_golden_only_on_agent_steps_and_helpers():
     assert parse_override("model=x") == {"model": "x"}
     with pytest.raises(ValueError):
         parse_override("temperature=1")
+
+
+def no_rules(records):
+    """Hybrid rules that never answer: every record goes to the model."""
+    return [None for _ in records]
+
+
+def test_eval_scores_hybrid_steps(project, capsys):
+    """The `_path` tag a hybrid step adds to its answers must not hide them from the scorer."""
+    path = project("golden/classify.jsonl")
+    with open(path, encoding="utf-8") as f:
+        text = f.read().replace(
+            "    golden:", "    rules:\n      - fn: tests.test_golden:no_rules\n    golden:"
+        )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    assert main(["eval", path, "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    report = report[0]
+    assert report["fields"]["category"] == pytest.approx(2 / 3)
