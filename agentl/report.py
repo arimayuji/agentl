@@ -2,15 +2,20 @@
 
 Everything is built locally and printed: version, Python and OS, the failing step with its error
 and traceback, what `agentl doctor` sees, the pipeline YAML with secrets masked and a minimal
-repro suggestion, plus a prefilled GitHub "new issue" URL. Nothing is sent over the network.
+repro suggestion, plus a prefilled GitHub "new issue" URL. Nothing is sent over the network, except
+with `--submit`, which asks first and then uses the user's own logged-in `gh` CLI (`submit`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import re
+import shutil
+import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -38,6 +43,7 @@ BUG_TYPES = (
     "ZeroDivisionError",
 )
 
+_FRAME = re.compile(r'File "([^"]+)", line \d+, in (\S+)')
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
 _KEY_VALUE = re.compile(r"^(\s*-?\s*[\"']?)([A-Za-z0-9_.-]+)([\"']?\s*:\s*)(\S.*?)\s*$")
 
@@ -91,6 +97,32 @@ def save_crash(argv: list[str], trace: str) -> Path | None:
     except OSError:
         return None
     return path
+
+
+# ---------------------------------------------------------------- dedupe
+def _top_frame(trace: str | None) -> str:
+    """The innermost traceback frame inside the agentl package, as `agentl/runner.py:func`. Line
+    numbers are left out so the same bug keeps its fingerprint across small edits."""
+    found = ""
+    for path, func in _FRAME.findall(trace or ""):
+        norm = path.replace("\\", "/")
+        if "/agentl/" in norm and "/tests/" not in norm:
+            found = "agentl/" + norm.rsplit("/agentl/", 1)[1] + ":" + func
+    return found
+
+
+def _error_class(error: str | None, trace: str | None) -> str:
+    if error:
+        return error.split(":", 1)[0].strip()
+    last = (trace or "").strip().splitlines()[-1:]
+    return last[0].split(":", 1)[0].strip() if last else ""
+
+
+def fingerprint(error: str | None, trace: str | None, version: str) -> str:
+    """A short id for one bug: error class + top agentl frame + agentl version. It goes in the
+    report body so `--submit` can search for an existing issue before filing a new one."""
+    key = f"{_error_class(error, trace)}|{_top_frame(trace)}|{version}"
+    return "agentl-fp-" + hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------- build
@@ -180,6 +212,7 @@ def build(
         "repro": _repro(step, kind, connector, error),
         "likely_bug": bool(crash) or likely_bug(error, kind),
         "where": where,
+        "fingerprint": fingerprint(error, trace, environment()["agentl"]),
         "notice": NOTICE,
     }
     report["markdown"] = markdown(report)
@@ -196,6 +229,7 @@ def _fields(r: dict) -> dict[str, str]:
     if r["error"]:
         what.append(f"Error: `{r['error'].splitlines()[0]}`")
     what += ["", "Expected: <what you expected instead>"]
+    what += ["", f"Fingerprint: `{r['fingerprint']}`"]
     if r["doctor"]:
         what += ["", "agentl doctor:", "```", r["doctor"], "```"]
     what += ["", "Minimal repro suggestion:", r["repro"]]
@@ -265,3 +299,68 @@ def text(r: dict, saved: str | None = None) -> str:
     lines.append(f"Want to fix it yourself, or with your AI agent? See {CONTRIBUTING_AI}")
     lines.append(NOTICE)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- submit
+Run = Callable[..., "subprocess.CompletedProcess[str]"]
+
+
+def _gh(args: list[str], run: Run | None, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    return (run or subprocess.run)(["gh", *args], input=stdin, capture_output=True, text=True, check=False)
+
+
+def find_existing(fp: str, run: Run | None = None) -> list[dict]:
+    """Issues in the agentl repo whose text has this fingerprint, through the user's `gh`."""
+    repo = REPO.removeprefix("https://github.com/")
+    args = ["search", "issues", f'"{fp}"', "--repo", repo, "--json", "number,title,url,state", "--limit", "5"]
+    done = _gh(args, run)
+    if done.returncode != 0:
+        raise RuntimeError(f"gh search failed: {(done.stderr or done.stdout).strip()}")
+    import json
+
+    return list(json.loads(done.stdout or "[]"))
+
+
+def submit(r: dict, confirm: Callable[[str], bool], run: Run | None = None) -> dict:
+    """File the report with the user's logged-in `gh` CLI, only after `confirm` says yes.
+
+    Returns `{"status": ...}`: `no_gh` (gh is not installed: use `url`), `duplicate` (issues with
+    the same fingerprint exist: `matches`, nothing filed), `declined`, `created` (`url`) or
+    `failed` (`error`). No project token is used: `gh` acts as the user."""
+    if shutil.which("gh") is None:
+        return {"status": "no_gh", "url": r["url"]}
+    try:
+        matches = find_existing(r["fingerprint"], run)
+    except (RuntimeError, ValueError) as e:
+        return {"status": "failed", "error": str(e), "url": r["url"]}
+    if matches:
+        return {"status": "duplicate", "matches": matches}
+    repo = REPO.removeprefix("https://github.com/")
+    if not confirm(f"File this report as a new issue on {repo} with your gh account?"):
+        return {"status": "declined", "url": r["url"]}
+    done = _gh(
+        ["issue", "create", "--repo", repo, "--title", r["title"], "--body-file", "-"], run, r["markdown"]
+    )
+    if done.returncode != 0:
+        return {"status": "failed", "error": (done.stderr or done.stdout).strip(), "url": r["url"]}
+    return {"status": "created", "url": done.stdout.strip().splitlines()[-1] if done.stdout.strip() else ""}
+
+
+def submit_text(result: dict) -> str:
+    status = result["status"]
+    if status == "created":
+        return f"Filed: {result['url']}"
+    if status == "duplicate":
+        lines = ["Already reported (same fingerprint), so nothing was filed:"]
+        lines += [
+            f"  #{m['number']} [{m.get('state', '').lower()}] {m['title']}  {m['url']}"
+            for m in result["matches"]
+        ]
+        lines.append("Add your details there, e.g. `gh issue comment <number> --body-file bug.md`.")
+        return "\n".join(lines)
+    if status == "declined":
+        return "Not filed. " + NOTICE
+    url = result.get("url")
+    lead = "gh is not installed" if status == "no_gh" else f"gh failed: {result.get('error')}"
+    tail = f" Open the prefilled form instead: {url}" if url else f" Paste the report at {REPO}/issues/new"
+    return f"{lead}; nothing was filed.{tail}"

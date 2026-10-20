@@ -69,6 +69,8 @@ def test_eval_reports_accuracy_cost_and_differences(project, capsys, tmp_path):
     assert report["fields"]["amount"] == 1.0  # within the tolerance
     assert report["accuracy"] == pytest.approx(2 / 3)
     assert report["cost_usd"] == pytest.approx(3 * (10 + 5 * 2) / 1e6)
+    assert report["right"] == 2
+    assert report["cost_per_right"] == pytest.approx(3 * (10 + 5 * 2) / 1e6 / 2, abs=1e-6)
     assert report["diffs"] == [{"line": 3, "field": "category", "expected": "travel", "got": "food"}]
 
 
@@ -78,6 +80,8 @@ def test_threshold_fails_and_compare_runs_side_by_side(project, capsys):
     out = capsys.readouterr().out
     assert "classify [default]: 66.7% of 3 records right FAIL (min 90%)" in out
     assert "classify [model=smart]: 100.0% of 3 records right ok" in out
+    assert "$0.000030 per right answer" in out  # 2 of 3 right, 0.00002 USD a call
+    assert "$0.000020 per right answer" in out  # the smart model gets all 3 right
 
 
 def test_without_tolerance_numbers_must_match(project, capsys):

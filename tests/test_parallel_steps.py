@@ -165,3 +165,64 @@ def test_spend_per_step_is_right_when_agent_steps_overlap(tmp_path):
     assert r.status == "succeeded", r.error
     assert r.spend["x"]["input_tokens"] == 30 and r.spend["y"]["input_tokens"] == 3000
     assert r.input_tokens == 3030 and r.llm_calls == 6
+
+
+WRITES: list[str] = []
+
+
+def save(input, name="save"):
+    with LOCK:
+        WRITES.append(name)
+    return input
+
+
+def test_failing_stop_check_blocks_a_sibling_writer(tmp_path):
+    """#278: `typed -> save` and `typed -> production -> check (on_fail: stop)`; save must not write."""
+    WRITES.clear()
+    spec = parse(
+        {
+            "name": "gate",
+            "max_parallel_steps": 4,
+            "steps": [
+                {
+                    "id": "typed",
+                    "fn": "tests.test_parallel_steps:slow",
+                    "with": {"name": "typed", "seconds": 0},
+                },
+                {"id": "save", "fn": "tests.test_parallel_steps:save", "input": "typed"},
+                {
+                    "id": "production",
+                    "fn": "tests.test_parallel_steps:slow",
+                    "input": "typed",
+                    "with": {"name": "production", "seconds": 0.2},
+                },
+                {"id": "production_ok", "check": "production", "expect": {"rows": {"min": 10}}},
+            ],
+        }
+    )
+    r, _, events = run(tmp_path, spec)
+    assert r.status == "failed"
+    assert WRITES == []
+    assert any(e["type"] == "step.failed" and e["step"] == "production_ok" for e in events)
+    assert "save" not in r.outputs
+
+
+def test_passing_stop_check_lets_the_writer_run(tmp_path):
+    WRITES.clear()
+    spec = parse(
+        {
+            "name": "gate",
+            "steps": [
+                {
+                    "id": "typed",
+                    "fn": "tests.test_parallel_steps:slow",
+                    "with": {"name": "typed", "seconds": 0},
+                },
+                {"id": "save", "fn": "tests.test_parallel_steps:save", "input": "typed"},
+                {"id": "ok", "check": "typed", "expect": {"rows": {"min": 1}}},
+            ],
+        }
+    )
+    r, _, _ = run(tmp_path, spec)
+    assert r.status == "succeeded", r.error
+    assert WRITES == ["save"]

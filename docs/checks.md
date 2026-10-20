@@ -56,7 +56,7 @@ Deterministic and free. Each failure explains itself, with the numbers.
 | --- | --- | --- |
 | `rows` | `{ min: 1000, max: 50000 }` | the row count is outside the range |
 | `not_null` | `[order_id, total]` | a column has empty values |
-| `unique` | `order_id` or `[a, b]` | a column has duplicates |
+| `unique` | `order_id`, `[a, b]` or `[[date, currency]]` | a column, or a composite key, has duplicates (below) |
 | `accepted` | `{ region: [north, south] }` | a column has a value outside the list |
 | `range` | `{ total: { min: 0, max: 10000 } }` | a number is outside the range |
 | `fresh` | `{ field: day, max_age: 1d }` | the newest date is older than `max_age` (`30m`, `6h`, `1d`, `2w`) |
@@ -74,6 +74,16 @@ field, the kind, a masked example (`*******4321`, never the full value) and the 
 action. From Python, `agentl.pii.scan(records)` returns the findings and
 `agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
 expect misses (free-text fields, unformatted phones) and some false positives.
+
+`unique` takes a column or a list. A flat list checks each column on its own: `[date, currency]`
+fails as soon as two rows share a date, even with different currencies. A nested list is one
+composite key, unique as a whole: `[[date, currency]]` allows many currencies per date and many
+dates per currency, but not the same pair twice. The two forms mix:
+`unique: [id, [date, currency]]` checks `id` alone and the pair. Rows with an empty value in a key
+column are left to `not_null`. The failure gives the number of duplicates and of duplicated keys,
+with up to three example keys; values of fields a `protect` step in the pipeline marks show as
+`<protected>`. With `severity: reject`, the first row of each key is kept and the later ones are
+rejected.
 
 `vs_last_run` compares with the profile of the last run whose check passed, kept in the run store.
 On the first run there is nothing to compare with, so it passes.
@@ -141,7 +151,7 @@ hybrid rule on a check step, or `rules:` on any other kind of step, is a validat
   rules:
     - { rule: between, column: amount, min: 0, max: 100000, on_fail: drop }
     - { rule: abs_diff_max, column: amount, other: billed, max: 500, on_fail: flag }
-    - { rule: not_null, column: customer }
+    - { rule: not_null, column: customer, notify: none }  # flagged, left out of the digest
     - { rule: accepted, column: status, values: [paid, refunded] }
     - { rule: matches, column: email, pattern: "@" }
 ```
@@ -159,13 +169,54 @@ notify:
     - { on: check.digest, to: [slack] }
 ```
 
-Not yet: a scheduled digest sent once a day at a fixed time with a "sent today" guard; today the
-digest goes out with each run of the check.
+That message goes out with each run of the check. Each rule also takes `notify`: `digest`
+(default) puts its findings in the digest, `none` acts silently (the row is still dropped, flagged
+or failed as `on_fail` says, but the finding is left out of the digest).
+
+### Scheduled digest
+
+`notify.digest` sends one digest per period at a set time instead, with a "sent today" guard:
+
+```yaml
+notify:
+  channels:
+    slack: { webhook: "${SLACK_WEBHOOK}" }
+    ops: { type: webhook, url: "${OPS_HOOK}" }
+  digest:
+    to: [slack, ops]                    # any notify channel
+    every: 1d                           # whole days: 1d, 7d
+    at: "08:00"                         # in tz
+    tz: America/Sao_Paulo               # default UTC
+    sections: [new, resolved, ongoing]  # which lists to show (default: all three; add errors for run errors)
+    heartbeat: true                     # "all clear" on a clean day (default true)
+    idempotent: true                    # guard after the send (default) or before it
+```
+
+It reads the daily buckets of every check step with `rules:` and sends, per step, the counts and
+the finding ids of each section (up to 50 per section). A step with no run today is reported as
+"no run today (last on ...)", which is never a clean day. With `heartbeat: false` a clean day sends
+nothing.
+
+The guard is kept per channel in the run store. With `idempotent: true` it is written only after
+a successful send, so a channel that failed is tried again on the next check and a channel that
+worked is not sent to twice (at least once). With `idempotent: false` it is written before the
+send, so a crash in the middle never sends twice, and a failed send is lost (at most once).
+
+Two ways to send it:
+
+- `agentl serve` checks the digest of each pipeline it serves once a minute.
+- `agentl digest pipeline.yaml` from cron (any time after `at`; it sends only when due and exits 1
+  when a channel failed). `--force` sends now, `--show` prints the digest and sends nothing.
+
+The buckets are UTC days, so with a `tz` far from UTC, `at` should come after the day's check runs.
 
 ## When a check fails
 
 - `on_fail: stop` (default): the step fails with the findings, so nothing after it runs and the
-  last good output stays in place.
+  last good output stays in place. It also gates the run's outputs: every final step (one no
+  other step depends on, usually a writer) waits for the stop checks of the pipeline, even when
+  the check is not on its input path, so a failing check stops a sibling writer too. A
+  best-effort check (`required: false`) does not gate.
 - `on_fail: warn`: the data goes on and the findings are reported.
 
 Both emit `check.failed` with `findings` (a list of `{check, detail}`), so any notification rule
@@ -199,9 +250,23 @@ Then:
 - `on_drift: warn`: the data goes on and the new layout becomes the one on record.
 - `on_drift: fail`: the step fails, nothing after it runs, and the old layout stays on record,
   so every run fails until the source is fixed.
-- `on_drift: remap`: the step fails like `fail`, and the event also carries `previous` and
-  `current` layouts for a new reviewed mapping. To accept the new layout once the mapping is
-  updated, run once with `warn`.
+- `on_drift: remap`: the data goes on to the `map_schema` steps that read the check (at least
+  one is required), and the event also carries `previous`, `current` and `remap` (those steps).
+  For this run they map the new layout as if they had `on_drift: infer`: a mapping already stored
+  for that layout is reused with no model call, a pinned `mapping:` is applied as is, and
+  otherwise one is inferred. With `review: required` the run stops until
+  `agentl mappings approve`. The new layout goes on record only once it has been mapped, so a run
+  that stops for review reports the drift again next time.
+
+```yaml
+- id: sheet_ok
+  check: { schema_matches: sheet, on_drift: remap }
+  input: sheet
+- id: mapped
+  use: map_schema
+  input: sheet_ok
+  with: { target: { report_date: date, region: str, value: float }, review: required }
+```
 
 Route it like any event: `notify: { rules: [{ on: schema.drift, to: [ops] }] }`. Inputs on the
 Arrow fast path are read from the Table's schema, without converting it first.

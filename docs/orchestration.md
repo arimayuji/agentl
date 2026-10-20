@@ -341,6 +341,58 @@ agentl backfill daily_sales.yaml --from 2026-01-01 --to 2026-03-31 --param-name 
 From Python: `agentl.backfill.backfill(path, items, param="day", concurrency=4)` with
 `agentl.backfill.periods("2026-01-01", "2026-03-31")` or `agentl.backfill.files("reports/*.xlsx")`.
 
+## Resume a failed run
+
+Running a failed pipeline again reruns every step, and a sink that already wrote writes again.
+`agentl resume` picks up where the run stopped instead:
+
+```bash
+agentl run orders.yaml            # fails at step "notify", after "save" wrote
+agentl resume 20261019-101500-a1b2c3 orders.yaml
+```
+
+- While a run executes, each completed step records a checkpoint in the run store: its id and a
+  fingerprint of its output. The output itself is spilled to `.agentl/checkpoints/<run_id>/`
+  (next to the SQLite store, or `$AGENTL_CHECKPOINT_DIR`) when it is plain JSON and under
+  `AGENTL_CHECKPOINT_MAX_BYTES` (8 MB per step by default). The files are deleted when the run
+  succeeds; `AGENTL_CHECKPOINTS=0` turns them off.
+- Resume works only on a **failed** run of the same pipeline whose spec hash is unchanged: the
+  YAML, its `${VAR}` values and `--param` values must be the same. Otherwise it stops with
+  `cannot resume` (exit code 2) and records nothing; run the pipeline again instead.
+- Completed steps, sinks included, are skipped and their outputs read back (checked against the
+  fingerprint). The new run starts from the first failed or pending step; its `run.started`
+  event carries `resumed_from`, and a `run.resumed` event lists the skipped and re-run steps.
+- When a step that is needed downstream has no stored output, that step runs again and
+  `run.resumed` says why. Agent steps hit the per-record cache, so they cost nothing twice. A
+  writer (`*.write`, `*.send`, `*.post`...) is never run again: if its output is missing,
+  resume refuses.
+- Outputs that are never stored, so the step runs again on resume: Arrow tables and values JSON
+  cannot hold (dates, bytes), outputs over the size limit or holding a secret value, `unprotect`
+  steps, `cursor:` sources (the cursor did not move, so they read the same rows), routers, and
+  queue consumers that acknowledge after the run.
+- A chunked chain (`chunk_size`) is one unit: it is skipped or run again as a whole.
+- With a Postgres store the checkpoints are events, but the files stay on the host that ran the
+  step: resume there, or point `AGENTL_CHECKPOINT_DIR` at shared storage.
+
+From Python: `agentl.runner.resume("orders.yaml", run_id)`, or `Runner(spec, resume_from=run_id)`.
+
+### Which writers are safe to run again
+
+Resume never writes a completed sink twice, but a step that failed half way (a sink that wrote
+some rows, then crashed) runs again from the start, and a plain re-run repeats every write. Make
+sinks idempotent so either is harmless:
+
+| Writer | Run again |
+|---|---|
+| `mode: upsert` (SQL writers) | Safe: one row per `key`, updated in place |
+| `mode: changeset`, `mode: scd2` | Safe: compares with what is there; unchanged rows are left alone |
+| `mode: replace`, file writers to a fixed path | Safe: the target is rewritten as a whole |
+| `mode: append`, file writers with `{run_id}` in the path | Duplicates rows or files |
+| `*.send`, `*.post`, `*.publish` (messages, webhooks, queues) | Delivers again; receivers must drop repeats (`Idempotency-Key`) |
+
+Recommendation: load with `upsert` or `changeset` on a stable key. `fn:` steps with side effects
+are not recognized as writers by name; keep them idempotent too.
+
 ## Celery
 
 `pip install 'agentl-etl[celery]'`

@@ -3,6 +3,8 @@ from __future__ import annotations
 import atexit
 import datetime as dt
 import glob as _glob
+import hashlib
+import json
 import re
 import shutil
 import tempfile
@@ -43,6 +45,22 @@ def download(url: str, headers: dict | None = None, timeout: float = 60, retries
                 raise
         time.sleep(2**attempt)
     raise RuntimeError("unreachable")
+
+
+def changed_download(
+    url: str, headers: dict | None, if_changed: dict, on_unchanged: str, timeout: float = 60, retries: int = 2
+) -> list[Path]:
+    """`url` saved to a temp file only when it changed since the last successful run."""
+    from .http import conditional_get
+
+    hdrs = {"User-Agent": "agentl", "Accept": "*/*", **(headers or {})}
+    body = conditional_get(url, hdrs, timeout, retries, if_changed, on_unchanged)
+    if body is None:
+        return []
+    name = Path(urllib.parse.urlparse(url).path).name or "download"
+    target = tmpdir("dl-") / name
+    target.write_bytes(body)
+    return [target]
 
 
 _REMOTE = re.compile(r"^(?!https?://|file://)[a-zA-Z][a-zA-Z0-9+.-]*://")
@@ -92,8 +110,16 @@ def paths(
     url: str | None = None,
     headers: dict | None = None,
     storage_options: dict | None = None,
+    if_changed: dict | None = None,
+    on_unchanged: str = "stop",
 ) -> list[Path]:
-    """Files from a `url`, a local or remote glob `path`, or the `field` of upstream records."""
+    """Files from a `url`, a local or remote glob `path`, or the `field` of upstream records.
+    With `if_changed`, the `url` is fetched conditionally (see `http.get`): unchanged gives no
+    files (`on_unchanged: continue_empty`) or ends the run as `no_change` (`stop`)."""
+    if if_changed is not None:
+        if not url:
+            raise ValueError("if_changed works only with 'url'")
+        return changed_download(url, headers, if_changed, on_unchanged)
     if url:
         return [download(url, headers)]
     if path and is_remote(path):
@@ -161,12 +187,14 @@ def changeset_options(
     deletes: str | dict | None,
     partition_by: str | list[str] | None,
     dry_run: bool,
+    checksums: bool = False,
 ) -> tuple[str, list[str]]:
     """Check the mode: changeset options before any I/O. `deletes` takes a name or `{when: name}`."""
     if mode != "changeset":
-        if deletes is not None or partition_by is not None or dry_run:
+        if deletes is not None or partition_by is not None or dry_run or checksums:
             raise ValueError(
-                f"{name}: deletes, partition_by and dry_run need mode: changeset (got mode: {mode})"
+                f"{name}: deletes, partition_by, checksums and dry_run need mode: changeset "
+                f"(got mode: {mode})"
             )
         return "none", []
     if not keys:
@@ -182,7 +210,70 @@ def changeset_options(
         raise ValueError(f"{name}: partition_by must be a column name or a list of names")
     if drop == "partition_replaced" and not parts:
         raise ValueError(f"{name}: deletes: partition_replaced needs partition_by")
+    if checksums and not parts:
+        raise ValueError(f"{name}: checksums needs partition_by (a checksum is kept per partition)")
     return drop, parts
+
+
+def emit_option(name: str, mode: str, emit: str | None) -> bool:
+    """True for `emit: changes` (#289): the writer returns the changed records, not the counts."""
+    if emit in (None, "counts"):
+        return False
+    if emit != "changes":
+        raise ValueError(f"{name}: emit must be counts or changes, got {emit!r}")
+    if mode != "changeset":
+        raise ValueError(f"{name}: emit: changes needs mode: changeset (got mode: {mode})")
+    return True
+
+
+def before(new: dict, old: Any, cols: list[str]) -> dict:
+    """`_before` of an updated record: the stored value of each of `cols` that differs."""
+    return {c: old.get(c) for c in cols if new.get(c) != old.get(c)}
+
+
+CHECKSUMS_TABLE = "_agentl_checksums"
+
+
+class PartitionSums:
+    """Order-independent checksum of the source records of each partition, built chunk by chunk:
+    the count and the sum (mod 2**256) of each record's SHA-256. A partition whose checksum equals
+    the one stored by the last changeset write is skipped without comparing its rows."""
+
+    def __init__(self, parts: list[str]) -> None:
+        self.parts = parts
+        self.sums: dict[str, list[int]] = {}
+        self.values: dict[str, tuple] = {}
+
+    def add(self, rows: list[dict]) -> None:
+        for r in rows:
+            vals = tuple(r.get(p) for p in self.parts)
+            part = partition_id(vals)
+            line = json.dumps(r, sort_keys=True, default=str, separators=(",", ":"))
+            h = int.from_bytes(hashlib.sha256(line.encode()).digest(), "big")
+            acc = self.sums.get(part)
+            if acc is None:
+                self.sums[part] = [1, h]
+                self.values[part] = vals
+            else:
+                acc[0] += 1
+                acc[1] = (acc[1] + h) % (1 << 256)
+
+    def digests(self) -> dict[str, str]:
+        return {p: f"{n}:{h:064x}" for p, (n, h) in self.sums.items()}
+
+    def equal(self, stored: dict[str, str]) -> list[tuple]:
+        """Partition values whose checksum matches `stored` (partition id -> digest)."""
+        return [self.values[p] for p, d in self.digests().items() if stored.get(p) == d]
+
+
+def partition_id(values: tuple) -> str:
+    """Text id of a partition's values; dates and times as ISO 8601, so a value read back from a
+    table matches the string or date the source had."""
+    return json.dumps(list(values), default=_iso, separators=(",", ":"))
+
+
+def _iso(v: Any) -> str:
+    return v.isoformat() if isinstance(v, (dt.date, dt.datetime, dt.time)) else str(v)
 
 
 def null_keys(name: str, rows: list[dict], keys: list[str]) -> tuple[list[dict], list[dict]]:

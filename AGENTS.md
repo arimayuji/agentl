@@ -35,12 +35,16 @@ Postgres tests run only with `AGENTL_TEST_PG_DSN=postgresql://...` set.
 3. Secrets only through environment variables. Never commit `.env` files or tokens.
 4. SQL: quote identifiers, always pass values as parameters.
 5. Files and archives from users are untrusted: keep the zip-slip and size checks.
-6. Every user-facing change gets docs and a CHANGELOG entry under `[Unreleased]`.
+6. Every user-facing change gets docs and a changelog fragment in `changes/`
+   (`<slug>.<section>.md`, see `changes/README.md`). Do not edit `CHANGELOG.md` directly.
 7. Commits, PRs, issues and comments carry no AI attribution: no `Co-Authored-By`, no session
    links, no "Generated with" footers.
 8. Everything in the repository is in English: code, identifiers, examples, sample data, docs,
    commits and PRs. No Portuguese pipeline names, step ids, field names or data values.
-9. Brand colors: blue `#0070c9` (main), yellow `#ffd400` (accent, the dot after the name) and white
+9. On a library bug hit while using agentl (an internal error, the "Looks like an agentl bug"
+   line), run `agentl report` and show the user the report. Ask the user before
+   `agentl report --submit`, and never file an issue for them without that answer.
+10. Brand colors: blue `#0070c9` (main), yellow `#ffd400` (accent, the dot after the name) and white
    (surfaces), with navy `#0b1b2b` for text. The logo is a blue 3D cube (die) with a white `a` and the yellow dot on its front face
    (`media/brand/cube.py`); at small sizes (favicon, 32 px) use the flat `a.` on a blue square.
    Blue surfaces carry the brand shade: a deep blue (`#005ea8`) circle from the top right corner.
