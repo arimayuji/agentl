@@ -202,3 +202,46 @@ def test_cli_schedule_next(tmp_path, capsys):
     assert main(["schedule", "next", str(p), "--n", "3"]) == 0
     out = capsys.readouterr().out
     assert out.count("T09:00:00+00:00  cycle") == 3 and out.count("T07:00:00+00:00") == 3
+
+
+def test_month_rules_nth_weekday():
+    spec = {
+        "tz": "Europe/London",
+        "expect": {"days": ["sun"], "nth": [1], "months": ["jan", "mar", "may", "jul", "sep", "nov"]},
+    }
+    sch = Schedule(_spec(spec).trigger[0].schedule)
+    days = [d for d, _ in sch.next_firings(dt.datetime(2026, 10, 20, tzinfo=UTC), 4)]
+    assert days == [dt.date(2026, 11, 1), dt.date(2027, 1, 3), dt.date(2027, 3, 7), dt.date(2027, 5, 2)]
+    spec = {"tz": "UTC", "expect": {"days": ["fri"], "nth": [-1], "months": [12]}}
+    sch = Schedule(_spec(spec).trigger[0].schedule)
+    assert [d for d, _ in sch.next_firings(dt.datetime(2026, 1, 1, tzinfo=UTC), 2)] == [
+        dt.date(2026, 12, 25),
+        dt.date(2027, 12, 31),
+    ]
+    with pytest.raises(ValueError, match=r"expect\.nth"):
+        _spec({"tz": "UTC", "expect": {"days": ["sun"], "nth": [6]}})
+    with pytest.raises(ValueError, match=r"expect\.months"):
+        _spec({"tz": "UTC", "expect": {"days": ["sun"], "months": ["smarch"]}})
+
+
+def test_more_calendars():
+    from agentl.schedule import CALENDARS
+
+    uk = CALENDARS["uk_england"](2027)
+    assert dt.date(2027, 3, 26) in uk and dt.date(2027, 3, 29) in uk  # Good Friday, Easter Monday
+    assert dt.date(2027, 12, 27) in uk and dt.date(2027, 12, 28) in uk  # Christmas on Saturday
+    assert dt.date(2027, 5, 31) in uk and dt.date(2027, 8, 30) in uk
+    assert dt.date(2022, 1, 3) in CALENDARS["uk_england"](2022)  # New Year on Saturday
+    de = CALENDARS["de_national"](2026)
+    assert {dt.date(2026, 5, 14), dt.date(2026, 5, 25), dt.date(2026, 10, 3)} <= de  # Ascension, Whit Monday
+    ca = CALENDARS["ca_federal"](2026)
+    assert {dt.date(2026, 5, 18), dt.date(2026, 7, 1), dt.date(2026, 10, 12), dt.date(2026, 9, 30)} <= ca
+    assert dt.date(2026, 12, 28) in ca and dt.date(2026, 12, 25) in ca  # Boxing Day on Saturday
+    spec = {"tz": "Europe/London", "expect": {"days": ["mon"], "calendar": "uk_england"}}
+    days = [
+        d
+        for d, _ in Schedule(_spec(spec).trigger[0].schedule).next_firings(
+            dt.datetime(2027, 3, 27, tzinfo=UTC), 1
+        )
+    ]
+    assert days == [dt.date(2027, 4, 5)]  # Easter Monday skipped

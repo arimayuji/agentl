@@ -9,17 +9,6 @@ They are always listed under **Changed** or **Removed**.
 
 ## [Unreleased]
 
-### Added
-
-- Schedules: a cycle whose window closes with no successful run now emits a `schedule.late`
-  event (`cycle`, `expected_at`) that `notify:` rules can route, besides the log warning.
-
-### Fixed
-
-- Schedules: a poll that comes due after its cycle's window closed (the service slept) is
-  skipped, so the cycle is not reopened and reported late twice.
-- Release workflow: when a draft release for the tag already exists (Release Drafter), it now
-  publishes the draft on the built commit instead of only attaching files to it.
 Unreleased changes live as fragments in [`changes/`](https://github.com/arimayuji/agentl/tree/main/changes) until the next release.
 
 ## [0.12.0] - 2026-10-18

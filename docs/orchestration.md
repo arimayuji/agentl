@@ -75,7 +75,7 @@ trigger:
       expect:
         days: [mon, tue]
         at: "16:00"
-        calendar: us_federal                  # or br_national
+        calendar: us_federal                  # br_national, uk_england, de_national, ca_federal
         exceptions: holidays.txt              # one extra closed date (YYYY-MM-DD) per line
         if_holiday: next_business_day         # skip (default), previous_business_day, run
       poll:
@@ -85,6 +85,20 @@ trigger:
       extra_dates: [2026-02-19]               # cycles on top of `expect`
       skip_dates: [2026-10-06]                # expected days with no cycle
 ```
+
+`expect.nth` and `expect.months` add month rules. "Every second month, first Sunday" is:
+
+```yaml
+expect: { days: [sun], nth: [1], months: [jan, mar, may, jul, sep, nov], at: "09:00" }
+```
+
+`nth` takes 1 to 5, or -1 for the last such weekday of the month; `months` takes `jan`..`dec`
+or 1..12. Holidays still apply after the rule picks a day.
+
+The built-in calendars cover national holidays only: `us_federal` (with the Saturday/Sunday
+observed rule), `br_national`, `uk_england` (England and Wales bank holidays, moved off
+weekends), `de_national` (nationwide German holidays, not state ones) and `ca_federal` (federal
+statutory holidays). Regional holidays and one-off closures go in the `exceptions` file.
 
 Each cycle fires at `at`, then on the cadence until its window (the sum of the `for`s) ends. The
 `trigger` step gets `[{scheduled_at, cycle, expected_at}]`. When a window closes with no

@@ -990,7 +990,9 @@ class PublicationSpec(BaseModel):
 
     days: list[str] = Field(default_factory=list)  # mon..sun
     at: str = "00:00"  # "16:00", in the schedule's tz
-    calendar: str | None = None  # us_federal, br_national
+    nth: list[int] = Field(default_factory=list)  # only the n-th such weekday of the month; -1 = last
+    months: list[str | int] = Field(default_factory=list)  # only these months: [jan, mar] or [1, 3]
+    calendar: str | None = None  # us_federal, br_national, uk_england, de_national, ca_federal
     exceptions: str | None = None  # file with one extra holiday (YYYY-MM-DD) per line
     if_holiday: Literal["skip", "next_business_day", "previous_business_day", "run"] = "skip"
 
@@ -998,12 +1000,20 @@ class PublicationSpec(BaseModel):
     def _check(self) -> PublicationSpec:
         import datetime as _dt
 
-        from .schedule import _DAYS, CALENDARS
+        from .schedule import _DAYS, _MONTHS, CALENDARS
 
         self.days = [d.lower() for d in self.days]
         bad = [d for d in self.days if d not in _DAYS]
         if bad:
             raise ValueError(f"expect.days: unknown day(s) {bad}; use mon, tue, wed, thu, fri, sat, sun")
+        bad_n = [n for n in self.nth if n not in (1, 2, 3, 4, 5, -1)]
+        if bad_n:
+            raise ValueError(f"expect.nth: {bad_n}; use 1 to 5, or -1 for the last one in the month")
+        months = [m.lower() if isinstance(m, str) else m for m in self.months]
+        bad_m = [m for m in months if m not in _MONTHS and m not in range(1, 13)]
+        if bad_m:
+            raise ValueError(f"expect.months: unknown month(s) {bad_m}; use jan..dec or 1..12")
+        self.months = [_MONTHS[m] if isinstance(m, str) else m for m in months]
         try:
             _dt.time.fromisoformat(self.at)
         except ValueError as e:
