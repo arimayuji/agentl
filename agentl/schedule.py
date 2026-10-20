@@ -10,6 +10,9 @@
           active: { between: ["2026-09-01", "2026-11-30"] }
           extra_dates: [2026-02-19]
 
+`expect.nth` and `expect.months` narrow the days to month rules: "every second month, first
+Sunday" is `{ days: [sun], nth: [1], months: [jan, mar, may, jul, sep, nov] }`.
+
 A cycle is one expected publication: a date and the time it is due. Each cycle fires at `at` and
 then on the poll cadence until its window ends. Standard library only."""
 
@@ -20,6 +23,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1
+    )
+}
 _DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
@@ -81,7 +90,64 @@ def _br_national(year: int) -> set[_dt.date]:
     return out
 
 
-CALENDARS = {"us_federal": _us_federal, "br_national": _br_national}
+def _weekend_to_monday(d: _dt.date, extra: int = 0) -> _dt.date:
+    """UK and Canada rule: a weekend holiday moves to the next Monday (plus `extra` days)."""
+    return d + _dt.timedelta(days=(7 - d.weekday()) % 7 + extra) if d.weekday() >= 5 else d
+
+
+def _uk_england(year: int) -> set[_dt.date]:
+    """England and Wales bank holidays (one-off royal holidays go in an exceptions file)."""
+    easter = _easter(year)
+    out = {
+        _weekend_to_monday(_dt.date(year, 1, 1)),
+        easter - _dt.timedelta(days=2),  # Good Friday
+        easter + _dt.timedelta(days=1),  # Easter Monday
+        _nth(year, 5, 0, 1),  # early May
+        _nth(year, 5, 0, -1),  # spring
+        _nth(year, 8, 0, -1),  # summer
+    }
+    xmas, boxing = _dt.date(year, 12, 25), _dt.date(year, 12, 26)
+    out.add(xmas + _dt.timedelta(days=2) if xmas.weekday() >= 5 else xmas)
+    out.add(boxing + _dt.timedelta(days=2) if boxing.weekday() >= 5 else boxing)
+    return out
+
+
+def _de_national(year: int) -> set[_dt.date]:
+    """German nationwide holidays (state holidays go in an exceptions file); no weekend shift."""
+    easter = _easter(year)
+    out = {_dt.date(year, m, d) for m, d in [(1, 1), (5, 1), (10, 3), (12, 25), (12, 26)]}
+    out |= {easter + _dt.timedelta(days=n) for n in (-2, 1, 39, 50)}  # Good Fri, Easter/Whit Mon, Ascension
+    return out
+
+
+def _ca_federal(year: int) -> set[_dt.date]:
+    """Canadian federal statutory holidays, a weekend date observed on the next business day."""
+    easter = _easter(year)
+    may24 = _dt.date(year, 5, 24)
+    out = {
+        _weekend_to_monday(_dt.date(year, 1, 1)),
+        easter - _dt.timedelta(days=2),  # Good Friday
+        may24 - _dt.timedelta(days=may24.weekday()),  # Victoria Day: Monday on or before May 24
+        _weekend_to_monday(_dt.date(year, 7, 1)),  # Canada Day
+        _nth(year, 9, 0, 1),  # Labour Day
+        _nth(year, 10, 0, 2),  # Thanksgiving
+        _weekend_to_monday(_dt.date(year, 11, 11)),  # Remembrance Day
+    }
+    if year >= 2021:
+        out.add(_weekend_to_monday(_dt.date(year, 9, 30)))  # Truth and Reconciliation
+    xmas, boxing = _dt.date(year, 12, 25), _dt.date(year, 12, 26)
+    out.add(xmas + _dt.timedelta(days=2) if xmas.weekday() >= 5 else xmas)
+    out.add(boxing + _dt.timedelta(days=2) if boxing.weekday() >= 5 else boxing)
+    return out
+
+
+CALENDARS = {
+    "us_federal": _us_federal,
+    "br_national": _br_national,
+    "uk_england": _uk_england,
+    "de_national": _de_national,
+    "ca_federal": _ca_federal,
+}
 
 
 def read_exceptions(path: str | Path) -> set[_dt.date]:
@@ -111,6 +177,8 @@ class Schedule:
         exp = spec.expect
         self.days = {_DAYS[d] for d in exp.days} if exp else set()
         self.at = _dt.time.fromisoformat(exp.at) if exp else _dt.time(0, 0)
+        self.nth = set(exp.nth) if exp else set()
+        self.months = {int(m) for m in exp.months} if exp else set()
         self.calendar = CALENDARS[exp.calendar] if exp and exp.calendar else None
         self.if_holiday = exp.if_holiday if exp else "skip"
         self.exceptions: set[_dt.date] = set()
@@ -138,6 +206,16 @@ class Schedule:
     def business_day(self, d: _dt.date) -> bool:
         return d.weekday() < 5 and not self.holiday(d)
 
+    def expected(self, d: _dt.date) -> bool:
+        """Whether `d` matches `expect` (weekday, month, n-th weekday), before holidays."""
+        if d.weekday() not in self.days or (self.months and d.month not in self.months):
+            return False
+        if not self.nth:
+            return True
+        n = (d.day - 1) // 7 + 1
+        last = (d + _dt.timedelta(days=7)).month != d.month
+        return n in self.nth or (last and -1 in self.nth)
+
     def _active(self, d: _dt.date) -> bool:
         return self.between is None or self.between[0] <= d <= self.between[1]
 
@@ -149,7 +227,7 @@ class Schedule:
         while d <= last:
             if d in self.extra:
                 found.add(d)
-            elif d.weekday() in self.days and d not in self.skip and self._active(d):
+            elif self.expected(d) and d not in self.skip and self._active(d):
                 moved = self._shift(d) if self.holiday(d) else d
                 if moved is not None:
                     found.add(moved)
