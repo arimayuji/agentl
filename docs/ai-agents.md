@@ -97,6 +97,47 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `list_connectors` | Installed connectors, one line each |
 | `describe_connector` | One connector's `with:` parameters, types, defaults and notes |
 
+### Resources and prompts
+
+Clients that list resources can read these on demand instead of fetching the website:
+
+| Resource | What it is |
+| --- | --- |
+| `agentl://docs/skill` | The agent guide: how to build, check and run pipelines |
+| `agentl://docs/connectors` | Installed connectors, one line each |
+| `agentl://docs/schema` | JSON Schema of a pipeline file |
+| `agentl://templates/<name>` | A tested template, e.g. `agentl://templates/incremental-api-load` |
+| `agentl://connectors/<name>` | One connector's `with:` parameters, e.g. `agentl://connectors/csv.read` |
+| `agentl://pipelines/<path>` | A pipeline YAML file under `--root` (listed when it has a top-level `steps:`) |
+| `agentl://runs`, `agentl://runs/<run_id>` | The latest runs; one run's summary (status, failing step, error) |
+
+Prompts show as shortcuts in clients that list them: `build_pipeline` (asks for the sources and
+the destination, then works from the templates), `explain_failed_run` and `estimate_cost` (calls
+`plan`, never runs the pipeline).
+
+### Over HTTP
+
+Web and cloud agents that cannot start a local command can use streamable HTTP (MCP 2025-06-18):
+
+```bash
+export AGENTL_MCP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+agentl mcp --http :7072 --root ./pipelines
+```
+
+The endpoint is `http://127.0.0.1:7072/mcp`. Each POST carries one JSON-RPC message and gets one
+JSON answer; the server opens no event stream (GET answers 405). When `AGENTL_MCP_TOKEN` (or the
+variable named by `--token-env`) is set, every request needs `Authorization: Bearer <token>`, and
+gets 401 without it. The same `--root` sandbox and `--allow-code` rule apply as over stdio.
+
+To expose it safely:
+
+- it binds to `127.0.0.1` by default; it refuses to listen on another address without a token;
+- requests with a browser `Origin` that is not localhost are refused (DNS rebinding);
+- the server speaks plain HTTP: to reach it from another machine put it behind a TLS reverse
+  proxy or a tunnel (Cloudflare Tunnel, Tailscale, SSH `-L`), not straight on a public port;
+- keep `--allow-code` off, point `--root` at the pipelines folder only, and rotate the token if
+  it leaks. Anyone with the token can run the pipelines under `--root` with your credentials.
+
 `run_pipeline` and `new_from_template` are the tools marked as not read-only, so clients that ask
 before side effects ask before running a pipeline or writing a file. It runs with your environment and permissions, so it is limited:
 
