@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS review (
   reason TEXT, input TEXT, answer TEXT, status TEXT, value TEXT, reviewed REAL
 );
 CREATE INDEX IF NOT EXISTS review_key ON review(pipeline, step, key);
+CREATE TABLE IF NOT EXISTS errors (
+  pipeline TEXT, fingerprint TEXT, step TEXT, error_class TEXT, error TEXT, first_seen REAL,
+  last_seen REAL, count INTEGER, status TEXT, alerted REAL, resolved REAL,
+  PRIMARY KEY (pipeline, fingerprint)
+);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -79,17 +84,23 @@ POSTGRES_SCHEMA = [
       id BIGSERIAL PRIMARY KEY, run_id TEXT, pipeline TEXT, step TEXT, key TEXT, ts DOUBLE PRECISION,
       reason TEXT, input TEXT, answer TEXT, status TEXT, value TEXT, reviewed DOUBLE PRECISION)""",
     "CREATE INDEX IF NOT EXISTS agentl_review_key ON agentl_review(pipeline, step, key)",
+    """CREATE TABLE IF NOT EXISTS agentl_errors (
+      pipeline TEXT, fingerprint TEXT, step TEXT, error_class TEXT, error TEXT,
+      first_seen DOUBLE PRECISION, last_seen DOUBLE PRECISION, count INTEGER, status TEXT,
+      alerted DOUBLE PRECISION, resolved DOUBLE PRECISION, PRIMARY KEY (pipeline, fingerprint))""",
 ]
 
 
 # Ordered schema migrations: (version, table key in Store.T, column, SQLite type, Postgres type).
 # The base schema above only ever gains new tables (CREATE ... IF NOT EXISTS); a change to an
-# existing table is appended here and never edited. Each step is idempotent, so a store created
-# before versioning (schema_version missing) replays them all safely.
-MIGRATIONS: list[tuple[int, str, str, str, str]] = [
+# existing table is appended here and never edited. A new table is recorded with column None:
+# the base schema creates it on open, so the step only moves the version. Each step is
+# idempotent, so a store created before versioning (schema_version missing) replays them all safely.
+MIGRATIONS: list[tuple[int, str, str | None, str, str]] = [
     (1, "runs", "outcome", "TEXT", "TEXT"),  # run outcomes (#188)
     (2, "runs", "labels", "TEXT", "TEXT"),  # run labels (#295)
     (3, "cache", "expires", "REAL", "DOUBLE PRECISION"),  # cache TTLs (#204)
+    (4, "errors", None, "", ""),  # run errors by fingerprint (#356)
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -107,6 +118,7 @@ class Store:
         "locks": "locks",
         "seen": "seen",
         "review": "review",
+        "errors": "errors",
         "schema_version": "schema_version",
     }
     INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
@@ -145,7 +157,7 @@ class Store:
         row = self._conn.execute(f'SELECT version FROM "{table}"').fetchone()
         current = row["version"] if row else 0
         for version, key, column, sqlite_type, pg_type in MIGRATIONS:
-            if version > current:
+            if version > current and column is not None:
                 self._add_column(self.T[key], column, sqlite_type, pg_type)
         if row is None:
             self._conn.execute(f'INSERT INTO "{table}" (version) VALUES ({SCHEMA_VERSION})')
@@ -608,6 +620,68 @@ class Store:
         rows = self._query("SELECT * FROM {runs} WHERE id = ?", (run_id,))
         return self._with_labels(rows)[0] if rows else None
 
+    # run errors by fingerprint (#356), see agentl/errors.py --------------------
+    def error_seen(
+        self, pipeline: str, fingerprint: str, step: str | None, error_class: str, error: str, at: float
+    ) -> dict:
+        """Count one occurrence of an error and return its row. A resolved error that comes back
+        opens again with a fresh count, first seen and alert."""
+        found = self.errors_of(pipeline, fingerprint)
+        if found and found[0]["status"] == "open":
+            self._exec(
+                "UPDATE {errors} SET count = count + 1, last_seen = ?, error = ?, step = ? "
+                "WHERE pipeline = ? AND fingerprint = ?",
+                (at, error, step, pipeline, fingerprint),
+            )
+        elif found:
+            self._exec(
+                "UPDATE {errors} SET count = 1, first_seen = ?, last_seen = ?, error = ?, step = ?, "
+                "status = 'open', alerted = NULL, resolved = NULL WHERE pipeline = ? AND fingerprint = ?",
+                (at, at, error, step, pipeline, fingerprint),
+            )
+        else:
+            self._exec(
+                "INSERT INTO {errors} (pipeline, fingerprint, step, error_class, error, first_seen, "
+                "last_seen, count, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'open')",
+                (pipeline, fingerprint, step, error_class, error, at, at),
+            )
+        return self.errors_of(pipeline, fingerprint)[0]
+
+    def error_alerted(self, pipeline: str, fingerprint: str, at: float) -> None:
+        self._exec(
+            "UPDATE {errors} SET alerted = ? WHERE pipeline = ? AND fingerprint = ?",
+            (at, pipeline, fingerprint),
+        )
+
+    def errors_resolve(self, pipeline: str, at: float) -> list[dict]:
+        """Mark the pipeline's open errors resolved; returns them as they were."""
+        rows = self._query(
+            "SELECT * FROM {errors} WHERE pipeline = ? AND status = 'open' ORDER BY first_seen",
+            (pipeline,),
+        )
+        if rows:
+            self._exec(
+                "UPDATE {errors} SET status = 'resolved', resolved = ? "
+                "WHERE pipeline = ? AND status = 'open'",
+                (at, pipeline),
+            )
+        return rows
+
+    def errors_of(
+        self, pipeline: str, fingerprint: str | None = None, resolved_since: float | None = None
+    ) -> list[dict]:
+        """One error by fingerprint, or the pipeline's open errors plus those resolved at or after
+        `resolved_since` (all resolved ones when None), oldest first."""
+        if fingerprint is not None:
+            return self._query(
+                "SELECT * FROM {errors} WHERE pipeline = ? AND fingerprint = ?", (pipeline, fingerprint)
+            )
+        return self._query(
+            "SELECT * FROM {errors} WHERE pipeline = ? AND (status = 'open' OR resolved >= ?) "
+            "ORDER BY first_seen",
+            (pipeline, resolved_since if resolved_since is not None else float("-inf")),
+        )
+
     def events(self, run_id: str) -> list[dict]:
         rows = self._query(
             "SELECT ts, type, step, data FROM {events} WHERE run_id = ? ORDER BY id", (run_id,)
@@ -618,7 +692,7 @@ class Store:
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
     Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state,
-    agentl_samples, agentl_rejected, agentl_locks, agentl_seen, agentl_review."""
+    agentl_samples, agentl_rejected, agentl_locks, agentl_seen, agentl_review, agentl_errors."""
 
     T: ClassVar[dict[str, str]] = {
         "runs": "agentl_runs",
@@ -630,6 +704,7 @@ class PostgresStore(Store):
         "locks": "agentl_locks",
         "seen": "agentl_seen",
         "review": "agentl_review",
+        "errors": "agentl_errors",
         "schema_version": "agentl_schema_version",
     }
     INSERT_SEEN = (
@@ -679,6 +754,14 @@ class PostgresStore(Store):
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:
             return list(self._conn.execute(self._sql(sql), params).fetchall())
+
+    def cache_get(self, key: str) -> Any | None:
+        """As in SQLite. The JSONB column comes back decoded, so a cached string (the digest's
+        sent-today guard) is not parsed a second time."""
+        rows = self._query(
+            "SELECT value FROM {cache} WHERE key = ? AND (expires IS NULL OR expires > ?)", (key, time.time())
+        )
+        return rows[0]["value"] if rows else None
 
     def event(self, run_id: str, type: str, step: str | None, data: dict[str, Any]) -> None:
         self._exec(

@@ -187,7 +187,7 @@ notify:
     every: 1d                           # whole days: 1d, 7d
     at: "08:00"                         # in tz
     tz: America/Sao_Paulo               # default UTC
-    sections: [new, resolved, ongoing]  # which lists to show (default: all three)
+    sections: [new, resolved, ongoing]  # which lists to show (default: all three; add errors for run errors)
     heartbeat: true                     # "all clear" on a clean day (default true)
     idempotent: true                    # guard after the send (default) or before it
 ```

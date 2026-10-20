@@ -910,9 +910,19 @@ class Rule(BaseModel):
     step: str | None = None
     template: str | None = None  # one line per record, e.g. "{id}: {message}"; default JSON
     max_rows: int = Field(default=20, ge=1)
+    # Run errors (#356): alert once per error fingerprint and count the repeats; `remind_every`
+    # (e.g. 6h) alerts again with the count. Off by default, so every failure still alerts.
+    dedupe: bool = False
+    remind_every: str | None = None
 
     @model_validator(mode="after")
     def _records_rule(self) -> Rule:
+        if self.remind_every is not None:
+            from .checks import parse_duration
+
+            if parse_duration(self.remind_every) <= 0:
+                raise ValueError(f"notify rule remind_every '{self.remind_every}': use a duration like 6h")
+            self.dedupe = True  # a reminder only makes sense for a deduplicated alert
         kinds = [self.on] if isinstance(self.on, str) else self.on
         if "records" in kinds and not self.step:
             raise ValueError("notify rule 'on: records' needs 'step: <step id>'")
@@ -921,7 +931,8 @@ class Rule(BaseModel):
         return self
 
 
-DigestSection = Literal["new", "resolved", "ongoing"]
+DigestSection = Literal["new", "resolved", "ongoing", "errors"]
+# The default: the check findings. `errors` (#356) lists run errors and is added by name.
 DIGEST_SECTIONS: tuple[DigestSection, ...] = ("new", "resolved", "ongoing")
 
 

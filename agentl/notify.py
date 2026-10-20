@@ -7,6 +7,7 @@ import logging
 import operator
 import re
 from collections.abc import Callable
+from typing import Any
 
 from .spec import Channel, NotifySpec, Rule
 
@@ -20,6 +21,7 @@ _OPS = {
     "==": operator.eq,
     "!=": operator.ne,
 }
+_FAILURE_KINDS = {"run.failed", "run.alert"}
 _WHEN = re.compile(r"^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*(-?[\d.]+)\s*$")
 
 
@@ -254,17 +256,52 @@ class Notifier:
         pipeline: str,
         summarize: Callable[[dict], str] | None = None,
         records: Callable[[str], list | None] | None = None,
+        store: Any = None,
     ):
         self.spec = spec or NotifySpec()
         self.pipeline = pipeline
         self.summarize = summarize
         self.records = records  # step id -> the records it produced in the current run
+        self.store = store  # error state for `dedupe` rules (#356)
         self._sent: set[tuple[str, str, str]] = set()
+        # (run id, fingerprint, rule index) -> alert or not: run.alert and run.failed of one run
+        # get the same answer, so the second is not taken for a repeat
+        self._dedupe: dict[tuple[str, str, int], bool] = {}
+
+    def _matches(self, rule: Rule, event: dict) -> bool:
+        if matches(rule, event):
+            return True
+        # a deduplicated failure rule also hears when the failure is fixed
+        kinds = [rule.on] if isinstance(rule.on, str) else rule.on
+        return rule.dedupe and event["type"] == "run.resolved" and bool(set(kinds) & _FAILURE_KINDS)
+
+    def _repeat(self, index: int, rule: Rule, event: dict) -> bool:
+        """True when a `dedupe` rule stays quiet on this failure: its fingerprint was already
+        alerted and no reminder is due. A due alert is recorded in the store."""
+        from . import errors
+        from .checks import parse_duration
+
+        fp = event.get("data", {}).get("fingerprint")
+        if not (rule.dedupe and fp and self.store is not None):
+            return False
+        key = (event.get("run_id") or "", fp, index)
+        if key not in self._dedupe:
+            rows = self.store.errors_of(self.pipeline, fp)
+            at = errors.now()
+            remind = parse_duration(rule.remind_every) if rule.remind_every else None
+            alert = not rows or errors.should_alert(rows[0], remind, at)
+            if alert:
+                self.store.error_alerted(self.pipeline, fp, at)
+            self._dedupe[key] = alert
+        return not self._dedupe[key]
 
     def __call__(self, event: dict) -> None:
-        for rule in self.spec.rules:
+        for index, rule in enumerate(self.spec.rules):
             try:
-                if not matches(rule, event):
+                if not self._matches(rule, event):
+                    continue
+                if self._repeat(index, rule, event):
+                    log.info("notify: %s repeats %s, not sent", event["type"], event["data"]["fingerprint"])
                     continue
                 rows = None
                 if rule.step and event["type"] == "step.succeeded":
