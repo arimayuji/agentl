@@ -9,6 +9,8 @@ text exactly, numbers within `golden.tolerance`.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,9 +122,12 @@ def evaluate(
     step: StepSpec,
     override: dict[str, str] | None = None,
     base_dir: str | Path | None = None,
+    prompt: str | None = None,
+    label: str | None = None,
 ) -> EvalReport:
     """Run `step` on its golden records and score the answers. `override` replaces fields of the
-    step's llm settings (e.g. {"model": "other"}) for a side-by-side check."""
+    step's llm settings (e.g. {"model": "other"}) and `prompt` the step's agent instruction, for a
+    side-by-side check."""
     from .runner import Runner
 
     golden: GoldenSpec | None = step.golden
@@ -145,7 +150,14 @@ def evaluate(
         expected.append(exp)
 
     one = step.model_copy(
-        update={"input": None, "cache": False, "schema_": None, "rejected_to": None, "golden": None}
+        update={
+            "agent": prompt if prompt is not None else step.agent,
+            "input": None,
+            "cache": False,
+            "schema_": None,
+            "rejected_to": None,
+            "golden": None,
+        }
     )
     sub = _apply(spec, step, dict(override or {})).model_copy(
         update={"steps": [one], "chunk_size": None, "arrow": False, "trigger": [], "notify": None}
@@ -180,7 +192,7 @@ def evaluate(
     spend = result.spend.get(step.id, {})
     return EvalReport(
         step=step.id,
-        label=", ".join(f"{k}={v}" for k, v in (override or {}).items()) or "default",
+        label=label or ", ".join(f"{k}={v}" for k, v in (override or {}).items()) or "default",
         records=len(rows),
         accuracy=all_right / len(rows),
         fields={f: right[f] / seen[f] for f in right},
@@ -204,9 +216,140 @@ def parse_override(text: str) -> dict[str, str]:
     return out
 
 
+@dataclass
+class Variant:
+    """One `--compare` run: llm overrides, or the agent prompt at a git ref."""
+
+    label: str
+    override: dict[str, str] = field(default_factory=dict)
+    ref: str | None = None
+
+
+def parse_compare(text: str) -> Variant:
+    """`prompt@HEAD~1` -> the prompt at that git ref; else `model=...`/`provider=...`."""
+    if text.startswith("prompt@"):
+        ref = text[len("prompt@") :].strip()
+        if not ref or ref.startswith("-") or any(c.isspace() for c in ref):
+            raise ValueError(f"--compare prompt@REF needs a git ref, got '{text}'")
+        return Variant(label=f"prompt@{ref}", ref=ref)
+    override = parse_override(text)
+    return Variant(label=", ".join(f"{k}={v}" for k, v in override.items()), override=override)
+
+
+def prompt_at(pipeline: str | Path, ref: str, step_id: str) -> str:
+    """The `agent:` instruction of `step_id` in the pipeline file as it was at git `ref`."""
+    from .spec import _Loader, parse
+
+    path = Path(pipeline).resolve()
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(path.parent), "show", f"{ref}:./{path.name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        raise ValueError(f"--compare prompt@{ref}: cannot run git: {e}") from None
+    if done.returncode != 0:
+        msg = done.stderr.strip().splitlines()[-1] if done.stderr.strip() else "git show failed"
+        raise ValueError(f"--compare prompt@{ref}: {msg}")
+    import yaml
+
+    try:
+        raw = yaml.load(done.stdout, Loader=_Loader)
+        old = parse(raw, os.environ)
+    except Exception as e:
+        raise ValueError(f"--compare prompt@{ref}: the pipeline at {ref} does not load: {e}") from None
+    match = next((s for s in old.steps if s.id == step_id), None)
+    if match is None or not match.agent:
+        raise ValueError(f"--compare prompt@{ref}: no agent step '{step_id}' in the pipeline at {ref}")
+    return match.agent
+
+
+def compare(
+    spec: PipelineSpec, step: StepSpec, variant: Variant, pipeline: str | Path | None = None
+) -> EvalReport:
+    if variant.ref is None:
+        return evaluate(spec, step, variant.override, label=variant.label)
+    if pipeline is None:
+        raise ValueError("--compare prompt@REF needs the pipeline file")
+    return evaluate(spec, step, prompt=prompt_at(pipeline, variant.ref, step.id), label=variant.label)
+
+
+_CLIPPED = "\u2026"
+
+
+def run_records(store: Store, run_id: str, step: StepSpec) -> tuple[list[dict[str, Any]], str]:
+    """The answers `step` gave in run `run_id`, as golden lines (input plus answer), and where they
+    came from: the step's checkpoint when it is still kept (failed runs), else the stored sample
+    of its first records. Records with a value cut short in the sample are left out."""
+    from . import resume
+
+    run = store.run(run_id)
+    if run is None:
+        raise ValueError(f"no run {run_id} in the run store")
+    rows: list[dict[str, Any]] | None = None
+    source = "checkpoint"
+    for e in store.events(run_id):
+        if e["type"] == "checkpoint" and e["step"] == step.id:
+            out = resume._load(store, e["data"] or {})
+            if isinstance(out, list):
+                rows = out
+    if rows is None:
+        sample = store.sample(run_id, step.id)
+        if sample is None:
+            raise ValueError(f"run {run_id} kept no records of step '{step.id}'")
+        rows, source = sample["records"], f"sample ({len(sample['records'])} of {sample['total']} records)"
+    outputs = set(step.output or {})
+    lines = []
+    for r in rows:
+        if not isinstance(r, dict) or not outputs & set(r):
+            continue
+        if any(isinstance(v, str) and v.endswith(_CLIPPED) for v in r.values()):
+            continue
+        lines.append({k: v for k, v in r.items() if not k.startswith("_") and k != "confidence"})
+    return lines, source
+
+
+def append_lines(path: Path, lines: list[dict[str, Any]], outputs: list[str]) -> int:
+    """Append golden lines to `path`, skipping inputs (the line without its `outputs` fields) it
+    already has. Returns how many were added."""
+
+    def key(rec: Any) -> str:
+        return _key({k: v for k, v in rec.items() if k not in outputs}) if isinstance(rec, dict) else ""
+
+    seen: set[str] = set()
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    for line in text.splitlines():
+        try:
+            seen.add(key(json.loads(line)))
+        except json.JSONDecodeError:
+            continue
+    new = []
+    for rec in lines:
+        if key(rec) not in seen:
+            seen.add(key(rec))
+            new.append(json.dumps(rec, ensure_ascii=False, default=str))
+    if new:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not text or text.endswith("\n") else "\n"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(prefix + "\n".join(new) + "\n")
+    return len(new)
+
+
+def golden_path(spec: PipelineSpec, step: StepSpec) -> Path:
+    if step.golden is None:
+        raise ValueError(f"step '{step.id}' has no golden set (golden: path/to/file.jsonl)")
+    path = Path(step.golden.file)
+    return path if path.is_absolute() else Path(spec.base_dir or ".") / path
+
+
 def render(reports: list[EvalReport], max_diffs: int = 20) -> str:
     lines: list[str] = []
+    base: dict[str, EvalReport] = {}
     for r in reports:
+        first = base.setdefault(r.step, r)
         verdict = (
             "" if r.min_accuracy is None else (" ok" if r.passed else f" FAIL (min {r.min_accuracy:.0%})")
         )
@@ -216,7 +359,10 @@ def render(reports: list[EvalReport], max_diffs: int = 20) -> str:
             + ("no right answer" if r.cost_per_right is None else f"${r.cost_per_right:.6f} per right answer")
         )
         for f, acc in r.fields.items():
-            lines.append(f"  {f}: {acc:.1%}")
+            delta = ""
+            if first is not r and f in first.fields:
+                delta = f"  (vs {first.label}: {acc - first.fields[f]:+.1%})"
+            lines.append(f"  {f}: {acc:.1%}{delta}")
         for d in r.diffs[:max_diffs]:
             lines.append(
                 f"  line {d['line']} {d['field']}: expected {json.dumps(d['expected'], default=str)}, "

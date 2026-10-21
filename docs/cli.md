@@ -128,6 +128,7 @@ set. Exit code 2 when there are errors.
 | AL012 | a field of a local CSV source looks like personal data in its sample and reaches an agent step with no `pii:` setting and no `protect` step for it |
 | AL013 | an `http.*` step sets `tls: {verify: false}`, so HTTPS certificates are not checked |
 | AL014 | a field of a local CSV source looks like personal data in its sample and reaches a writer step with no `protect` step for it and no `pii` check before it; `sensitive: false` on the writer silences it |
+| AL015 | a field the golden set of an agent step gives as input is never named in its `agent:` instruction |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a
 `# agentl: disable=AL003` comment. `--strict` fails (exit 1) on warnings too.
@@ -564,8 +565,10 @@ their events and show up as model `unknown`.
 
 ## Eval
 
-`agentl eval pipeline.yaml [STEP] [--compare model=NAME] [--json]` scores agent steps on their
-golden sets, reports the cost per right answer and exits 1 below `min_accuracy`. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+`agentl eval pipeline.yaml [STEP] [--compare model=NAME|provider=NAME|prompt@GIT_REF] [--json]`
+scores agent steps on their golden sets, reports the cost per right answer and exits 1 below
+`min_accuracy`. `agentl eval add pipeline.yaml STEP --from-run RUN_ID` appends the answers of a
+past run to the step's golden file for correction by hand. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
 
 ## Digest
 

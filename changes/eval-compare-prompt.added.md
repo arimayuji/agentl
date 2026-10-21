@@ -1,0 +1,1 @@
+`agentl eval --compare prompt@REF` scores an agent step with its prompt as it was at a git ref, side by side, with per-field changes against the first run; `agentl eval add PIPELINE STEP --from-run RUN_ID` appends a past run's answers to the golden file for correction by hand; new lint warning AL015 for a golden input field the agent prompt never names (#216).

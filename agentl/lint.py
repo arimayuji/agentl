@@ -69,6 +69,7 @@ RULES = {
     "AL012": "personal data in sample records reaches an agent step without protect or pii",
     "AL013": "an http step turns off TLS certificate checks",
     "AL014": "personal data in sample records reaches a writer step without protect",
+    "AL015": "a golden input field the agent prompt never mentions",
 }
 
 
@@ -507,6 +508,7 @@ def _warnings(spec: PipelineSpec, raw_text_tree: Any, pos: _Positions) -> list[F
             )
     out += _locale_hints(spec, pos)
     out += _pii_hints(spec, pos)
+    out += _golden_hints(spec, pos)
     for s in spec.steps:
         if s.fallback and s.retries is None and (s.use or "").startswith("http.") and not s.inputs:
             line, col = pos.step(s.id, "fallback")
@@ -635,6 +637,61 @@ def _locale_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
                     line,
                     col,
                     "set `locale: en-US` in its `with` (or `locale: pt-BR` to keep the default)",
+                )
+            )
+    return out
+
+
+def _golden_fields(path: Path, limit: int = 200) -> list[str]:
+    """Field names of the first lines of a golden JSONL file, in order; [] when unreadable."""
+    names: dict[str, None] = {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            for n, line in enumerate(f):
+                if n >= limit:
+                    break
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    names.update(dict.fromkeys(map(str, row)))
+    except OSError:
+        return []
+    return list(names)
+
+
+def _mentions(prompt: str, name: str) -> bool:
+    text = prompt.lower()
+    words = {name.lower(), name.lower().replace("_", " "), name.lower().replace("_", "-")}
+    return any(re.search(rf"(?<![a-z0-9_]){re.escape(w)}(?![a-z0-9_])", text) for w in words)
+
+
+def _golden_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """AL015: a field the golden set gives the step as input that its prompt never names. The model
+    sees the whole record, but a field the instruction never mentions is often a renamed
+    placeholder or a leftover the eval scores without the prompt using it."""
+    out: list[Finding] = []
+    for s in spec.steps:
+        if not (s.agent and s.golden):
+            continue
+        path = Path(s.golden.file)
+        if not path.is_absolute():
+            path = Path(spec.base_dir or ".") / path
+        outputs = set(s.output or {})
+        unused = [f for f in _golden_fields(path) if f not in outputs and not f.startswith("_")]
+        unused = [f for f in unused if not _mentions(s.agent, f)]
+        if unused:
+            line, col = pos.step(s.id, "agent")
+            out.append(
+                Finding(
+                    "AL015",
+                    "warning",
+                    f"agent step '{s.id}': its golden set gives {', '.join(unused)} as input and the "
+                    "prompt never mentions them",
+                    line,
+                    col,
+                    "name the field(s) in the `agent:` instruction, or drop them from the golden file",
                 )
             )
     return out

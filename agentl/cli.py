@@ -707,14 +707,21 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ev = cmd("eval", "score agent steps on their golden sets: accuracy per field, cost, differences")
-    ev.add_argument("pipeline")
+    ev.add_argument("pipeline", help="the pipeline, or `add` (then PIPELINE STEP --from-run RUN_ID)")
     ev.add_argument("step", nargs="?", help="one step (default: every step with a golden set)")
+    ev.add_argument("add_step", nargs="?", help=argparse.SUPPRESS)
     ev.add_argument(
         "--compare",
         action="append",
         default=[],
         metavar="model=NAME",
-        help="also run with another model (or provider=NAME), side by side; repeatable",
+        help="also run with another model (or provider=NAME, or prompt@GIT_REF: the step's prompt "
+        "at that git ref), side by side; repeatable",
+    )
+    ev.add_argument(
+        "--from-run",
+        metavar="RUN_ID",
+        help="add: append the step's records of this run, with the answers it gave, to its golden file",
     )
     ev.add_argument("--json", action="store_true", help="print the reports as JSON")
 
@@ -1139,10 +1146,30 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "eval":
             from . import golden
 
+            if a.pipeline == "add":
+                if not (a.step and a.add_step and a.from_run):
+                    print("usage: agentl eval add PIPELINE STEP --from-run RUN_ID", file=sys.stderr)
+                    return 2
+                spec = load(a.step)
+                step = spec.step(a.add_step)
+                target = golden.golden_path(spec, step)
+                with open_store(a.db) as store:
+                    lines, origin = golden.run_records(store, a.from_run, step)
+                added = golden.append_lines(target, lines, list(step.output or {}))
+                print(
+                    f"added {added} golden record(s) to {target} from run {a.from_run} ({origin}); "
+                    "check and correct the answers by hand"
+                )
+                return 0
+            if a.add_step or a.from_run:
+                print("--from-run goes with `agentl eval add PIPELINE STEP`", file=sys.stderr)
+                return 2
             spec = load(a.pipeline)
-            variants: list[dict[str, str]] = [{}] + [golden.parse_override(c) for c in a.compare]
+            variants = [golden.Variant("default")] + [golden.parse_compare(c) for c in a.compare]
             reports = [
-                golden.evaluate(spec, s, v) for s in golden.golden_steps(spec, a.step) for v in variants
+                golden.compare(spec, s, v, a.pipeline)
+                for s in golden.golden_steps(spec, a.step)
+                for v in variants
             ]
             if a.json:
                 print(json.dumps([r.as_dict() for r in reports], ensure_ascii=False, indent=2, default=str))
