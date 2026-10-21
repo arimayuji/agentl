@@ -1,12 +1,13 @@
 import http.server
 import json
 import threading
+from pathlib import Path
 
 import jsonschema
 import pytest
 
 from agentl import parse
-from agentl.lineage import OpenLineage, from_env, run_uuid, step_datasets
+from agentl.lineage import OpenLineage, column_lineage, from_env, run_uuid, step_datasets
 from agentl.runner import Runner
 from agentl.store import Store
 
@@ -83,8 +84,33 @@ RUN_EVENT = {
 }
 
 
+# The official facet schemas, vendored unchanged from openlineage.io/spec (no network in tests):
+# ColumnLineageDatasetFacet 1-2-0 and the OpenLineage 2-0-2 core it refers to.
+_SCHEMAS = Path(__file__).parent / "schemas" / "openlineage"
+
+
+def _column_validator():
+    from referencing import Registry, Resource
+
+    docs = [
+        json.loads((_SCHEMAS / n).read_text(encoding="utf-8"))
+        for n in ("OpenLineage.json", "ColumnLineageDatasetFacet.json")
+    ]
+    registry = Registry().with_resources((d["$id"], Resource.from_contents(d)) for d in docs)
+    facet = docs[1]
+    return jsonschema.Draft202012Validator(
+        facet, registry=registry, format_checker=jsonschema.FormatChecker()
+    )
+
+
+COLUMN_FACET = _column_validator()
+
+
 def validate(event):
     jsonschema.validate(event, RUN_EVENT, format_checker=jsonschema.FormatChecker())
+    for ds in event.get("outputs", []):
+        if "columnLineage" in ds["facets"]:
+            COLUMN_FACET.validate({"columnLineage": ds["facets"]["columnLineage"]})
 
 
 def rows(input=None):
@@ -215,3 +241,117 @@ def test_step_datasets(step, expected):
     side, ns, name = expected
     ds = (ins if side == "in" else outs)[0]
     assert (ds["namespace"], ds["name"]) == (ns, name)
+
+
+def _facets(steps):
+    spec = parse({"name": "p", "steps": steps})
+    return column_lineage(spec, {s.id: step_datasets(s, "agentl") for s in spec.steps})
+
+
+def _origins(facet, field):
+    return sorted(
+        (f["name"], f["field"], f["transformations"][0]["subtype"])
+        for f in facet["fields"][field]["inputFields"]
+    )
+
+
+SRC = {"id": "src", "use": "csv.read", "with": {"path": "in/orders.csv"}}
+OUT = {"id": "out", "use": "json.write", "input": "t", "with": {"path": "out/x.json"}}
+
+
+def test_column_lineage_on_the_written_dataset(tmp_path):
+    spec = pipeline(tmp_path)
+    got: list[dict] = []
+    run(tmp_path, spec, [OpenLineage(spec, sink=got.append)])
+    for e in got:
+        validate(e)
+    out = next(e for e in got if e["job"]["name"] == "orders")["outputs"][0]
+    facet = out["facets"]["columnLineage"]
+    assert facet["_schemaURL"].endswith("ColumnLineageDatasetFacet.json#/$defs/ColumnLineageDatasetFacet")
+    assert _origins(facet, "id") == [((tmp_path / "orders.csv").as_posix(), "id", "IDENTITY")]
+
+
+def test_select_rename_and_passthrough():
+    facets = _facets(
+        [
+            SRC,
+            {"id": "f", "use": "filter", "input": "src", "with": {"where": "total > 0"}},
+            {
+                "id": "t",
+                "use": "select",
+                "input": "f",
+                "with": {"fields": ["id", "valor"], "rename": {"total": "valor"}},
+            },
+            OUT,
+        ]
+    )
+    facet = facets["out"]
+    COLUMN_FACET.validate({"columnLineage": facet})
+    assert set(facet["fields"]) == {"id", "valor"}
+    assert _origins(facet, "valor") == [("in/orders.csv", "total", "IDENTITY")]
+
+
+def test_compute_cast_and_aggregate():
+    facets = _facets(
+        [
+            SRC,
+            {"id": "c", "use": "cast", "input": "src", "with": {"fields": {"price": "decimal"}}},
+            {
+                "id": "m",
+                "use": "compute",
+                "input": "c",
+                "with": {"fields": {"amount": "round(price * qty, 2)", "big": "if(amount > 100, 'y', 'n')"}},
+            },
+            {
+                "id": "t",
+                "use": "aggregate",
+                "input": "m",
+                "with": {"group_by": "region", "metrics": {"total": "sum(amount)", "n": "count()"}},
+            },
+            OUT,
+        ]
+    )
+    facet = facets["out"]
+    COLUMN_FACET.validate({"columnLineage": facet})
+    assert set(facet["fields"]) == {"region", "total"}  # count() reads no field
+    assert _origins(facet, "region") == [("in/orders.csv", "region", "IDENTITY")]
+    assert _origins(facet, "total") == [
+        ("in/orders.csv", "price", "AGGREGATION"),
+        ("in/orders.csv", "qty", "AGGREGATION"),
+    ]
+
+
+def test_agent_output_fields_come_from_the_known_input_fields():
+    facets = _facets(
+        [
+            SRC,
+            {"id": "s", "use": "select", "input": "src", "with": {"fields": ["id", "text"]}},
+            {"id": "t", "agent": "Classify the text.", "input": "s", "output": {"label": "str"}},
+            OUT,
+        ]
+    )
+    facet = facets["out"]
+    COLUMN_FACET.validate({"columnLineage": facet})
+    assert _origins(facet, "label") == [
+        ("in/orders.csv", "id", "TRANSFORMATION"),
+        ("in/orders.csv", "text", "TRANSFORMATION"),
+    ]
+    assert _origins(facet, "id") == [("in/orders.csv", "id", "IDENTITY")]
+
+
+def test_simple_sql_is_traced_and_the_rest_is_not():
+    q = "select region, sum(total) as total, upper(name) as who from src group by region"
+    facets = _facets([SRC, {"id": "t", "sql": q, "input": "src"}, OUT])
+    facet = facets["out"]
+    COLUMN_FACET.validate({"columnLineage": facet})
+    assert _origins(facet, "total") == [("in/orders.csv", "total", "AGGREGATION")]
+    assert _origins(facet, "who") == [("in/orders.csv", "name", "TRANSFORMATION")]
+    joined = "select o.id from src o join src p using (id)"
+    assert _facets([SRC, {"id": "t", "sql": joined, "input": "src"}, OUT]) == {}
+
+
+def test_no_facet_when_columns_cannot_be_traced():
+    # A fn step can do anything to the columns; a writer straight after a reader knows no names.
+    fn = {"id": "t", "fn": "tests.test_lineage:rows", "input": "src"}
+    assert _facets([SRC, fn, OUT]) == {}
+    assert _facets([SRC, {**OUT, "input": "src"}]) == {}
