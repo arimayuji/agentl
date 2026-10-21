@@ -488,6 +488,9 @@ class StepSpec(BaseModel):
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
     cursor: CursorSpec | None = None
+    # Raw zone (#208): `persist: raw` keeps this step's output, the original payload, as an
+    # immutable content-addressed file, so `agentl replay --from-raw` can reprocess it later.
+    persist: Literal["raw"] | None = None
     input: str | list[str] | None = None
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
@@ -1369,6 +1372,15 @@ def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
     return value
 
 
+class RawSpec(BaseModel):
+    """Where `persist: raw` keeps originals and for how long (#208). See agentl/raw.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str | None = None  # default: $AGENTL_RAW_DIR, else `raw/` next to the run store
+    keep_days: float | None = Field(default=None, gt=0)  # default: keep forever
+
+
 class PipelineSpec(BaseModel):
     name: str
     # Free-form str -> str tags (team, domain, ...) recorded with each run; see agentl.labels.
@@ -1402,6 +1414,7 @@ class PipelineSpec(BaseModel):
     mcp: dict[str, MCPServerSpec] = Field(default_factory=dict)
     # Partitions the destination should hold; `agentl gaps` lists the missing ones.
     expect: ExpectSpec | None = None
+    raw: RawSpec | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 

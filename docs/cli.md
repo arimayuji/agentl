@@ -3,6 +3,8 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
+agentl replay PIPELINE --from-raw RUN_ID [--no-cache] [--param KEY=VALUE ...]   # reprocess kept originals
+agentl raw ls|prune [PIPELINE] [--dir DIR] [--run RUN_ID] [--keep-days N] [--json]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -37,6 +39,8 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
 `agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
+`agentl replay --from-raw` and `agentl raw` are described in
+[Keep originals and replay them](orchestration.md#keep-originals-and-replay-them).
 
 ## Run ledger and LLM cost
 
