@@ -155,9 +155,42 @@ on_failure:
 - `emit` posts `{id, topic, pipeline, run_id, status, payload}`; `id` and the `Idempotency-Key`
   header are `<run_id>:<topic>`, so receivers can drop repeats. `secret` adds `X-Signature-256`.
 - A child run gets a `chain.parent` event and its parent a `chain.child` event (with the child's
-  status), shown in the dashboard's event list.
+  status). The dashboard's run view has a Chain card with links to the parent and each child.
 - Every chained pipeline must be passed to `agentl serve`; a pipeline only started by others needs
   no `trigger:`. Cycles (`a -> b -> a`) are rejected when the service starts.
+
+Fan out, then act once every child is done, and wait for reference loads:
+
+```yaml
+name: plan_loads
+trigger: [{ cron: "0 5 * * *" }]
+depends_on: [load_reference]           # its last run must have succeeded
+steps: [...]
+on_success:
+  - trigger: load_day                  # one child run per record of the step `days`
+    foreach: "${outputs.days}"
+    with: { day: "${item.day}" }       # without `with`, the child gets the record itself
+after_all:                             # once every foreach child finished, whatever the outcome
+  when: all_ok and rows_changed > 0    # over the children taken together
+  do:
+    - use: email.send                  # `use` calls a connector once with `with`
+      with: { to: [desk@example.org], subject: "Loads for ${run.pipeline} done" }
+    - emit: { use: sqs.send, with: { queue_url: "${QUEUE_URL}", dedup_field: id }, topic: loads.done }
+```
+
+- `foreach` takes a reference to a list of records (`${outputs.<step>}`, `${trigger.<field>}`);
+  `${item.<field>}` reads the current one. Each child gets a `chain.parent` event as above.
+- `after_all.when` reads the same metrics, combined: `all_ok` and `outcome` only if every child
+  succeeded, `rows_changed`, `records`, `rejected` and `cost_usd` summed. The parent run gets a
+  `chain.after_all` event with them and the number of children. A fan-out with no records runs
+  `after_all` at once.
+- `depends_on`: before a run starts, a dependency that is queued or running is waited for; if its
+  last run did not succeed (or it never ran under this service and the store has no run of it),
+  the run is not started and the service logs why.
+- `emit` with `use` instead of `url` sends the event as one record through a queue connector
+  (`sqs.send`, `kafka.produce`, `rabbitmq.publish`, `pubsub.publish`, `mqtt.publish`). Key or
+  deduplicate by its `id` field (`dedup_field: id` on a FIFO queue, `key: id` on Kafka) to keep it
+  idempotent by run.
 
 `agentl serve` is one process. If you already have cron, Airflow or GitHub Actions, keep them:
 they bring retries, history and high availability that a single process does not. Put a reverse

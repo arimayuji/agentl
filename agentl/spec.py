@@ -1146,14 +1146,28 @@ class TriggerSpec(BaseModel):
 
 
 class EmitSpec(BaseModel):
-    """POST an event to a webhook: `{id, topic, pipeline, run_id, status, payload}`."""
+    """Send an event `{id, topic, pipeline, run_id, status, payload}`: POST it to `url`, or hand it
+    to a queue connector with `use` (`sqs.send`, `kafka.produce`, `rabbitmq.publish`, ...) and
+    its `with` parameters."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    url: str
+    url: str | None = None
+    use: str | None = None  # a connector that sends records: the event is its one input record
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     topic: str
     payload: dict[str, Any] = Field(default_factory=dict)
-    secret: str | None = None  # signs the body: X-Signature-256: sha256=<hmac>
+    secret: str | None = None  # url only: signs the body: X-Signature-256: sha256=<hmac>
+
+    @model_validator(mode="after")
+    def _target(self) -> EmitSpec:
+        if bool(self.url) == bool(self.use):
+            raise ValueError("emit has exactly one of url or use")
+        if self.secret and not self.url:
+            raise ValueError("emit: secret belongs to url")
+        if self.with_ and not self.use:
+            raise ValueError("emit: with belongs to use")
+        return self
 
 
 class ActionSpec(BaseModel):
@@ -1162,18 +1176,45 @@ class ActionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     trigger: str | None = None  # another pipeline to run, its `use: trigger` step gets `with`
+    use: str | None = None  # a connector to call once with `with` (e.g. email.send)
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     emit: EmitSpec | None = None
     when: str | None = None  # e.g. "all_ok and rows_changed > 0"
+    # trigger only: one child run per record, e.g. "${outputs.days}"; `${item.<field>}` in `with`
+    foreach: str | None = None
 
     @model_validator(mode="after")
     def _one(self) -> ActionSpec:
-        if bool(self.trigger) == bool(self.emit):
-            raise ValueError("an action has exactly one of trigger or emit")
+        if sum(bool(x) for x in (self.trigger, self.emit, self.use)) != 1:
+            raise ValueError("an action has exactly one of trigger, use or emit")
+        if self.foreach is not None and not self.trigger:
+            raise ValueError("foreach belongs to trigger actions")
+        if self.with_ and self.emit:
+            raise ValueError("an emit action takes its parameters under emit:")
         if self.when:
             from .chain import check_when
 
             check_when(self.when)
+        return self
+
+
+class AfterAllSpec(BaseModel):
+    """`after_all:` under `agentl serve`: once every child run started by a `foreach` action has
+    finished, run `do` if `when` holds over the children's metrics taken together."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    when: str | None = None
+    do: list[ActionSpec]
+
+    @model_validator(mode="after")
+    def _check(self) -> AfterAllSpec:
+        if self.when:
+            from .chain import check_when
+
+            check_when(self.when)
+        if any(a.foreach is not None for a in self.do):
+            raise ValueError("after_all: its actions cannot use foreach")
         return self
 
 
@@ -1390,6 +1431,9 @@ class PipelineSpec(BaseModel):
     on_success: list[ActionSpec] = Field(default_factory=list)
     on_failure: list[ActionSpec] = Field(default_factory=list)
     after: list[ActionSpec] = Field(default_factory=list)  # either outcome
+    after_all: AfterAllSpec | None = None  # once every `foreach` child run has finished
+    # Under `agentl serve`: pipelines whose last run must have succeeded before this one runs.
+    depends_on: list[str] = Field(default_factory=list)
     budget: BudgetSpec | None = None
     outcomes: OutcomesSpec = Field(default_factory=OutcomesSpec)
     # After a failed run whose error looks like an agentl bug; see agentl.report.

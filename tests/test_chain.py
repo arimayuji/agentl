@@ -132,3 +132,140 @@ def test_failure_runs_on_failure_and_emit_is_idempotent_by_run(tmp_path):
             },
         )
     ]
+
+
+def test_foreach_fans_out_and_after_all_fires_once(tmp_path, monkeypatch):
+    from agentl import chain
+
+    calls = []
+    monkeypatch.setattr(chain, "call", lambda use, params, rec: calls.append((use, params, rec)))
+    parent = spec(
+        "plan",
+        trigger=[{"webhook": "/p"}],
+        on_success=[{"trigger": "load_day", "foreach": "${outputs.t}", "with": {"day": "${item.day}"}}],
+        after_all={
+            "when": "all_ok and records == 3",
+            "do": [{"use": "email.send", "with": {"subject": "done ${run.pipeline}"}}],
+        },
+    )
+    with Store(tmp_path / "s.db") as store:
+        svc = Service([parent, spec("load_day")], store)
+        seen = []
+        orig = svc._run
+
+        def run(s, records, kind):
+            if s.name == "load_day":
+                seen.append(records[0]["day"])
+            return orig(s, records, kind)
+
+        svc._run = run
+        svc.submit(parent, [{"day": d} for d in ("a", "b", "c")], "webhook")
+        wait(svc, ["plan", "load_day"])
+        assert sorted(seen) == ["a", "b", "c"]
+        assert calls == [("email.send", {"subject": "done plan"}, calls[0][2])]
+        plan_run = store.recent_runs("plan", 1)[0]["id"]
+        done = [e for e in store.events(plan_run) if e["type"] == "chain.after_all"]
+        assert len(done) == 1 and done[0]["data"]["children"] == 3
+        # the dashboard shows the link both ways
+        from agentl.dashboard import run_detail
+
+        d = run_detail(store, plan_run)
+        assert len(d["chain"]["children"]) == 3 and d["chain"]["parent"] is None
+        child = d["chain"]["children"][0]["run_id"]
+        assert run_detail(store, child)["chain"]["parent"]["run_id"] == plan_run
+
+
+def test_after_all_when_sees_a_failed_child(tmp_path, monkeypatch):
+    from agentl import chain
+
+    calls = []
+    monkeypatch.setattr(chain, "call", lambda *a: calls.append(a))
+    parent = spec(
+        "plan",
+        trigger=[{"webhook": "/p"}],
+        on_success=[{"trigger": "kid", "foreach": "${trigger.days}"}],
+        after_all={"when": "all_ok", "do": [{"use": "email.send"}]},
+    )
+    results = iter(["succeeded", "failed"])
+
+    def run(s, r, k):
+        return RunResult(run_id=f"{s.name}{id(r)}", status="succeeded" if s.name == "plan" else next(results))
+
+    with Store(tmp_path / "s.db") as store:
+        svc = Service([parent, spec("kid")], store, run=run)
+        svc.submit(parent, [{"days": [1, 2]}], "webhook")
+        wait(svc, ["plan", "kid"])
+        assert calls == []
+        with pytest.raises(ValueError, match="after_all needs"):
+            Service(
+                [spec("x", trigger=[{"webhook": "/x"}], after_all={"do": [{"use": "email.send"}]})], store
+            )
+
+
+def test_depends_on_waits_and_skips_when_dependency_failed(tmp_path):
+    status = {"ref": "failed"}
+    ran = []
+
+    def run(s, r, k):
+        ran.append(s.name)
+        return RunResult(run_id=s.name, status=status.get(s.name, "succeeded"))
+
+    ref = spec("ref", trigger=[{"webhook": "/r"}])
+    load = spec("load", trigger=[{"webhook": "/l"}], depends_on=["ref"])
+    with Store(tmp_path / "s.db") as store:
+        svc = Service([ref, load], store, run=run)
+        svc.submit(load, [], "webhook")  # ref never ran
+        wait(svc, ["load"])
+        svc.submit(ref, [], "webhook")
+        wait(svc, ["ref"])
+        svc.submit(load, [], "webhook")  # ref failed
+        wait(svc, ["load"])
+        assert ran == ["ref"]
+        status["ref"] = "succeeded"
+        svc.submit(ref, [], "webhook")
+        svc.submit(load, [], "webhook")
+        wait(svc, ["ref", "load"])
+        assert ran == ["ref", "ref", "load"]
+        with pytest.raises(ValueError, match="not served"):
+            Service([load], store)
+        with pytest.raises(ValueError, match="itself"):
+            Service([spec("z", trigger=[{"webhook": "/z"}], depends_on=["z"])], store)
+
+
+def test_emit_to_a_queue_connector_carries_the_run_id(tmp_path, monkeypatch):
+    from agentl import registry
+
+    sent = []
+
+    def fake(input, queue_url="", dedup_field=None, **kw):
+        sent.append((queue_url, dedup_field, input))
+        return [{"sent": len(input)}]
+
+    monkeypatch.setattr(registry, "get", lambda name: fake if name == "sqs.send" else None)
+    p = spec(
+        "load",
+        trigger=[{"webhook": "/l"}],
+        after=[
+            {
+                "emit": {
+                    "use": "sqs.send",
+                    "with": {"queue_url": "q", "dedup_field": "id"},
+                    "topic": "load.done",
+                }
+            }
+        ],
+    )
+    with Store(tmp_path / "s.db") as store:
+        svc = Service([p], store, run=lambda s, r, k: RunResult(run_id="r9", status="succeeded"))
+        svc.submit(p, [], "webhook")
+        wait(svc, ["load"])
+    assert sent == [
+        ("q", "id", [{**sent[0][2][0], "id": "r9:load.done", "run_id": "r9", "topic": "load.done"}])
+    ]
+    for bad in (
+        {"topic": "t"},
+        {"url": "u", "use": "sqs.send", "topic": "t"},
+        {"use": "sqs.send", "secret": "s", "topic": "t"},
+    ):
+        with pytest.raises(ValueError):
+            spec("x", after=[{"emit": bad}])

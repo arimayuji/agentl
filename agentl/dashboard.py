@@ -125,6 +125,11 @@ function graph(d){
       <text class="stat" x="${W/2}" y="62" text-anchor="middle">${esc(stat)}</text></g>`}).join('');
   return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;max-width:${width}px;height:auto">${edges}${nodes}</svg>`;
 }
+function chainCard(c){
+  if(!c||(!c.parent&&!c.children.length))return '';
+  const link=(r,rel)=>`<div class="ck" style="cursor:pointer" onclick="sel='${esc(r.run_id)}';pinned=true;tick()"><span class="st">${rel}</span><span><b>${esc(r.pipeline)}</b> <code>${esc(r.run_id)}</code></span><span class="pill s-${esc(r.status)}">${esc(r.status)}</span></div>`;
+  return `<div class="card" style="margin-bottom:20px"><h2>Chain</h2>${c.parent?link(c.parent,'started by'):''}${c.children.map(r=>link(r,'started')).join('')}</div>`;
+}
 function render(d){
   const run=d,sp=d.spend,started=run.started,secs=(run.finished||Date.now()/1000)-started;
   const out=Object.values(d.steps).reduce((a,s)=>s.last?a+(s.records||0):a,0);
@@ -136,6 +141,7 @@ function render(d){
   <div class="kpis">${kpi('Duration',dur(secs))}${kpi('Steps',`${Object.values(d.steps).filter(s=>s.status==='succeeded').length}/${d.graph.nodes.length}`)}
   ${kpi('Records out',num(out))}${kpi('Rejected',num(rejected),rejected?'color:var(--amber)':'')}${kpi('Tokens',num(sp.total.input_tokens+sp.total.output_tokens))}${kpi('Cost',usd(sp.total.cost_usd))}</div>
   ${run.error?`<div class="card err">${esc(run.error)}</div>`:''}
+  ${chainCard(d.chain)}
   <div class="card"><h2>Pipeline</h2><div class="graph">${graph(d)}</div></div>
   ${(d.checks||[]).length?`<div class="card" style="margin-top:20px"><h2>Checks</h2>${d.checks.map(c=>`<div class="ck"><span class="st">${esc(c.step)}</span><span>${esc(c.rule)}</span><span class="pill r-${esc(c.result)}">${esc(c.result)}</span></div>`).join('')}</div>`:''}
   <div class="grid2"><div class="card"><h2>Spend per step</h2>${steps.length?steps.map(([k,v])=>`<div class="bar"><span>${esc(k)}</span>
@@ -213,7 +219,21 @@ def run_detail(store: Store, run_id: str) -> dict | None:
         "events": events,
         "spend": spend(events),
         "checks": check_results(events),
+        "chain": chain_links(events),
     }
+
+
+def chain_links(events: list[dict]) -> dict:
+    """The runs this one is chained to under `agentl serve`: the parent that started it and the
+    children it started (latest status of each)."""
+    parent = None
+    children: dict[str, dict] = {}
+    for e in events:
+        if e["type"] == "chain.parent":
+            parent = e["data"]
+        elif e["type"] == "chain.child" and e["data"].get("run_id"):
+            children[e["data"]["run_id"]] = e["data"]
+    return {"parent": parent, "children": list(children.values())}
 
 
 def check_results(events: list[dict]) -> list[dict]:
