@@ -629,6 +629,49 @@ record first; only the records they cannot handle are sent to the llm. (On a `ch
 - Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
   `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
 
+### Parsers first, the agent last
+
+`first_valid` tries whole-input alternatives in order: deterministic parsers first, an agent last.
+The first one that runs without an error and whose output passes `validate` wins; the others are
+skipped. Use it for semi-structured documents whose layout changes between versions.
+
+```yaml
+- id: rows
+  input: doc
+  first_valid:
+    validate: { rows_min: 1, required: [date, value], types: { value: float } }
+    try:
+      - fn: parsers:parse_v2
+      - fn: parsers:parse_v1
+      - agent: Extract the table's rows.
+        output: { date: str, value: float }
+    alert_agent_share: 0.2       # optional: alert when the agent wins more than 20% of runs
+```
+
+- Each alternative is `fn: module:function` or `use: connector` (with `with:`), or `agent:` with
+  its `output:` and an optional `llm:`. It gets the step's whole input, as a step of that kind
+  would. `name:` sets its label; the default is the function, the connector or `agent`.
+- `validate`: at least `rows_min` records (default 1), every `required` field set (not null or
+  empty), and every `types` field a clean value of its semantic type, as in `schema:`.
+- An alternative that raises or fails `validate` emits `first_valid.fallthrough` (with the
+  reason) and the next one runs. The step fails only when every alternative does, with each
+  reason in the error.
+- Each record carries `_path`, the winning label (`report_path: false` turns this off). The
+  `first_valid.path` event and `spend[step]["paths"]` record which one ran. The dashboard shows
+  the share of the last 20 runs each path won.
+- `alert_agent_share` (0 to 1): emit `first_valid.alert` when the agent won in more than that
+  share of the last `alert_window` runs (default 20). Route it with a notify rule
+  `on: first_valid.alert`.
+
+How it differs from the neighbours:
+
+- `rules:` on an agent step (above) decides per record: each record tries the rules and only the
+  ones they miss go to the llm. `first_valid` decides once for the whole input, which suits a
+  parser that reads a document and returns its rows.
+- `fallback:` on a use or fn step only catches errors and has no agent. `first_valid` also falls
+  through on output that runs but fails `validate`, the "plausible garbage" a parser gives on a
+  new layout.
+
 ### Route each record to one branch
 
 A router is an agent step with `routes:`. It labels each record with one of the route keys and
@@ -677,6 +720,42 @@ constrained to the labels, so there is no `output:` on a router.
 Records that are exactly the same within a step are sent once and share the answer; the step logs
 an `agent.deduplicated` event with how many were saved. Across runs the cache does the same. Select
 only the fields the instruction needs first (a `select` step) so near-duplicates become identical.
+
+## Drift alerts: the step starts answering differently
+
+A provider updates a model, or the input data changes, and the answers shift with no error raised.
+`drift:` on an agent step profiles its answers after each successful run and compares them with
+the mean of its last runs:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: {category: str, amount: float}
+  drift: {window: 7, threshold: 0.15}   # or `drift: true` for these defaults
+```
+
+| Metric | Change measured |
+|---|---|
+| `reject_rate`: rejected records over all records | points (`0.15` is 15 points) |
+| `review_rate`: answers sent to the [review queue](review.md) over all records | points |
+| `share(field=value)`: the share of each value of a `str` or `bool` output field | points |
+| `mean(field)`: the mean of an `int` or `float` output field | relative (`0.15` is 15%) |
+| `cost_per_record`: the step's cost over its records | relative |
+
+A `str` field with more than 20 distinct values in a run is free text and has no distribution.
+`min_runs` (default 1) sets how many earlier runs are needed before comparing. A change beyond the
+threshold emits `step.drift` with `window`, `threshold`, `changes` (each with `metric`, `before`,
+`after`, `change` and `kind`) and a one-line `summary`; route it like any event:
+
+```yaml
+notify:
+  rules: [{on: step.drift, to: [ops]}]
+```
+
+The profile is kept in the run store and travels on `step.succeeded` as `profile`, so
+[`agentl stats`](cli.md#track-record) shows the same comparison. Only answers are compared; numeric
+values are summarized as means and only the shares of short categorical values are kept.
+Steps with `chunk:` do not support `drift:` yet.
 
 ## Tools and MCP servers
 

@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import checks, contracts, drift, graph, llm, registry, waits
+from . import answers, checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
 from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, RetrySpec, ReviewSpec, StepSpec, load
@@ -598,6 +598,40 @@ class Runner:
         except Exception as e:
             return f"(summary unavailable: {e})"
 
+    def _answer_drift(self, run_id: str, step: StepSpec, out: Any, result: RunResult) -> dict[str, Any]:
+        """`drift:` on an agent step (#155): profiles this run's answers, compares the profile with
+        the last runs' (kept in the store cache), emits `step.drift` on a change beyond the
+        threshold and records the profile. Returns {"profile": ...} for `step.succeeded`."""
+        if step.drift is None or not step.agent:
+            return {}
+        rows = out.to_pylist() if _is_table(out) else list(out or [])
+        with self._spend:
+            spend = dict(result.spend.get(step.id) or {})
+        now = answers.profile(
+            rows,
+            step.output or {},
+            rejected=len(result.rejected.get(step.id) or []),
+            review_queued=int((spend.get("review") or {}).get("queued") or 0),
+            cost_usd=float(spend.get("cost_usd") or 0),
+        )
+        key = _hash("answer-drift", self.spec.name, step.id)
+        history = list(self.store.cache_get(key) or [])[: step.drift.window]
+        if len(history) >= step.drift.min_runs:
+            changes = answers.compare(now, history, step.drift.threshold)
+            if changes:
+                self._emit(
+                    run_id,
+                    "step.drift",
+                    step.id,
+                    window=len(history),
+                    threshold=step.drift.threshold,
+                    changes=changes,
+                    summary="; ".join(answers.describe(c) for c in changes[:5]),
+                )
+        if now["records"]:  # an empty run says nothing about the answers
+            self.store.cache_set(key, [now, *history][: step.drift.window])
+        return {"profile": now, "drift": {"window": step.drift.window, "threshold": step.drift.threshold}}
+
     def _step_spend(self, step: StepSpec, result: RunResult) -> dict[str, Any]:
         """The step's spend, with cost rounded for events. Empty for non-agent steps."""
         with self._spend:
@@ -1002,6 +1036,74 @@ class Runner:
 
             slots.append((back(good), back(rejected)))
         return slots
+
+    def _run_first_valid(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
+        """`first_valid` (#195): each alternative in order with the whole input; the first that
+        runs without error and whose output passes `validate` wins. A failing alternative is an
+        event (`first_valid.fallthrough`), not a failed step; the step fails only when all do."""
+        fv = step.first_valid
+        assert fv is not None
+        failures: list[str] = []
+        for i, alt in enumerate(fv.try_):
+            body = step.model_copy(
+                update={
+                    "first_valid": None,
+                    "fn": alt.fn,
+                    "use": alt.use,
+                    "agent": alt.agent,
+                    "with_": dict(alt.with_),
+                    "output": alt.output,
+                    "llm": alt.llm or step.llm,
+                }
+            )
+            try:
+                got: Any = self._run_step(run_id, body, result.outputs, result, data)
+                out = got.to_pylist() if _is_table(got) else list(got)
+                problem = _first_valid_problem(out, fv.validate_)
+            except (BudgetExceeded, registry.NoChange):
+                raise
+            except Exception as e:
+                problem = _describe(e)
+            if problem is not None:
+                failures.append(f"{alt.label}: {problem}")
+                self._emit(run_id, "first_valid.fallthrough", step.id, path=alt.label, index=i, error=problem)
+                continue
+            if fv.report_path:
+                out = [{**r, "_path": alt.label} if isinstance(r, dict) else r for r in out]
+            with self._spend:
+                result.spend[step.id]["paths"] = {alt.label: len(out)}
+            self._emit(
+                run_id,
+                "first_valid.path",
+                step.id,
+                path=alt.label,
+                index=i,
+                agent=bool(alt.agent),
+                records=len(out),
+                failed=len(failures),
+            )
+            if alt.agent and fv.alert_agent_share is not None:
+                self._first_valid_alert(run_id, step, fv.alert_agent_share, fv.alert_window)
+            return out
+        raise ValueError(f"step '{step.id}': no first_valid alternative passed ({'; '.join(failures)})")
+
+    def _first_valid_alert(self, run_id: str, step: StepSpec, limit: float, window: int) -> None:
+        """`first_valid.alert` when the agent path ran in more than `limit` of the last `window`
+        runs of this pipeline that ran the step (this one included)."""
+        runs = [r["id"] for r in self.store.recent_runs(self.spec.name, window + 1) if r["id"] != run_id]
+        agent, seen = 1, 1
+        for rid in runs[: window - 1]:
+            picked = [
+                e for e in self.store.events(rid) if e["type"] == "first_valid.path" and e["step"] == step.id
+            ]
+            if picked:
+                seen += 1
+                agent += bool(picked[-1]["data"].get("agent"))
+        share = agent / seen
+        if share > limit:
+            self._emit(
+                run_id, "first_valid.alert", step.id, agent_share=round(share, 3), runs=seen, limit=limit
+            )
 
     def _run_route(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """A router (#299): `rules:` pick a label first; the llm labels the other records, with
@@ -1762,6 +1864,9 @@ class Runner:
             # A source agent step (no input) runs once; an empty upstream means nothing to do.
             return self._run_agent(run_id, step, [{}] if data is None else data, result)
 
+        if step.kind == "first_valid":
+            return self._run_first_valid(run_id, step, data, result)
+
         if step.use == "trigger":
             return [dict(r) for r in self.trigger]
 
@@ -2223,7 +2328,7 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind == "agent" or step.review or step.use in ("map_schema", "resolve"):
+        if step.kind in ("agent", "first_valid") or step.review or step.use in ("map_schema", "resolve"):
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
@@ -2299,6 +2404,7 @@ class Runner:
             **counts,
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
+            **self._answer_drift(run_id, step, out, result),
         )
         self._checkpoint(run_id, step, out, hooks_after > hooks_before)
         if step.persist == "raw":
@@ -3115,6 +3221,23 @@ def _apply_rules(
             continue
         found[r[tag]] = value.model_dump()
     return found
+
+
+def _first_valid_problem(out: list, check: Any) -> str | None:
+    """Why an alternative's output fails `first_valid.validate`, or None when it passes."""
+    if len(out) < check.rows_min:
+        return f"{len(out)} records, rows_min is {check.rows_min}"
+    for n, r in enumerate(out):
+        if not isinstance(r, dict):
+            return f"record {n} is not a mapping"
+        missing = [f for f in check.required if r.get(f) is None or r.get(f) == ""]
+        if missing:
+            return f"record {n} misses {', '.join(missing)}"
+    if check.types:
+        _, bad = contracts.validate(out, check.types, on_bad="reject")
+        if bad:
+            return f"type check failed: {bad[0].get('_error', 'bad value')}"
+    return None
 
 
 def _route_instruction(question: str, labels: list[str]) -> str:

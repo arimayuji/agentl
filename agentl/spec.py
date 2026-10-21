@@ -251,6 +251,83 @@ class FallbackSpec(BaseModel):
         return raw
 
 
+class FirstValidCheck(BaseModel):
+    """What an alternative of `first_valid` must produce to be accepted (#195): at least
+    `rows_min` records, every `required` field set (not null, not empty) and every `types` field a
+    clean value of its semantic type (as in `schema:`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows_min: int = Field(default=1, ge=0)
+    required: list[str] = Field(default_factory=list)
+    types: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _types(self) -> FirstValidCheck:
+        if self.types:
+            from . import contracts
+
+            contracts.parse(self.types)
+        return self
+
+
+class FirstValidAlt(BaseModel):
+    """One alternative of `first_valid`: a function, a connector or an agent with its `output:`.
+    `name` is the label in `_path` (default: the function, the connector or `agent`)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    fn: str | None = None
+    use: str | None = None
+    agent: str | None = None
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+    output: dict[str, str] | None = None
+    llm: str | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> FirstValidAlt:
+        kinds = [k for k in ("fn", "use", "agent") if getattr(self, k)]
+        if len(kinds) != 1:
+            raise ValueError("each first_valid alternative sets exactly one of fn, use or agent")
+        if self.fn and ":" not in self.fn:
+            raise ValueError(f"first_valid fn '{self.fn}': use module:function")
+        if self.agent and not self.output:
+            raise ValueError("a first_valid agent alternative needs 'output:'")
+        if not self.agent and (self.output is not None or self.llm is not None):
+            raise ValueError("output and llm belong to the agent alternative of first_valid")
+        return self
+
+    @property
+    def label(self) -> str:
+        return self.name or self.fn or self.use or "agent"
+
+
+class FirstValidSpec(BaseModel):
+    """`first_valid` (#195): try each alternative in order with the step's input and keep the
+    output of the first that runs without error and passes `validate`. Each record carries `_path`
+    (the alternative's label) unless `report_path: false`. `alert_agent_share` (0-1) emits
+    `first_valid.alert` when the agent path ran in more than that share of the last
+    `alert_window` runs."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    validate_: FirstValidCheck = Field(default_factory=FirstValidCheck, alias="validate")
+    try_: list[FirstValidAlt] = Field(alias="try", min_length=1)
+    report_path: bool = True
+    alert_agent_share: float | None = Field(default=None, gt=0, lt=1)
+    alert_window: int = Field(default=20, ge=1)
+
+    @model_validator(mode="after")
+    def _labels(self) -> FirstValidSpec:
+        labels = [a.label for a in self.try_]
+        if len(set(labels)) != len(labels):
+            raise ValueError("first_valid alternatives need distinct labels; set 'name' on repeats")
+        if self.alert_agent_share is not None and not any(a.agent for a in self.try_):
+            raise ValueError("first_valid alert_agent_share needs an agent alternative")
+        return self
+
+
 class GoldenSpec(BaseModel):
     """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
     `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
@@ -422,6 +499,25 @@ class ViewSpec(BaseModel):
         return self.from_ or {"pages": "text", "html.compact": "html"}.get(self.use, "path")
 
 
+class DriftSpec(BaseModel):
+    """Answer drift of an agent step (#155): after each run its answers (reject and review rates,
+    the share of each `str`/`bool` output value, numeric means, cost per record) are compared with
+    the mean of the last `window` runs; a change beyond `threshold` emits `step.drift`. Rates and
+    shares move by points (0.15 is 15 points), means and cost by relative change (15%)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window: int = Field(default=7, ge=1, le=100)
+    threshold: float = Field(default=0.15, gt=0)
+    min_runs: int = Field(default=1, ge=1)  # runs of history needed before comparing
+
+    @model_validator(mode="after")
+    def _runs(self) -> DriftSpec:
+        if self.min_runs > self.window:
+            raise ValueError(f"drift min_runs ({self.min_runs}) is larger than window ({self.window})")
+        return self
+
+
 class CriticSpec(BaseModel):
     """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
     step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
@@ -547,6 +643,8 @@ class StepSpec(BaseModel):
     attempts: list[AttemptSpec] = Field(default_factory=list)
     # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
     critic: CriticSpec | None = None
+    # Answer drift alerts (#155): `drift: {window: 7, threshold: 0.15}` or `drift: true`.
+    drift: DriftSpec | None = None
     # Several llms answer and a vote or a judge decides (#299). See JurySpec.
     jury: JurySpec | None = None
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
@@ -598,6 +696,8 @@ class StepSpec(BaseModel):
     # ({use, with}) in order with the same input. See RetrySpec and FallbackSpec.
     retries: RetrySpec | None = None
     fallback: list[FallbackSpec] = Field(default_factory=list)
+    # Deterministic parsers first, an agent last (#195), see FirstValidSpec.
+    first_valid: FirstValidSpec | None = None
     fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
     fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
     fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
@@ -643,6 +743,8 @@ class StepSpec(BaseModel):
     def llms(self) -> list[str]:
         """Every llm the step may call, in order, without repeats."""
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
+        if self.first_valid:
+            names = [a.llm or self.llm for a in self.first_valid.try_ if a.agent]
         if self.critic is not None:
             names.append(self.critic.llm or self.llm)
         if self.jury is not None:
@@ -654,6 +756,10 @@ class StepSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _cascade(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and raw.get("drift") is True:
+            raw = {**raw, "drift": {}}  # `drift: true` takes the defaults
+        elif isinstance(raw, dict) and raw.get("drift") is False:
+            raw = {k: v for k, v in raw.items() if k != "drift"}
         if isinstance(raw, dict) and isinstance(raw.get("check"), dict):
             # `check: {schema_matches: sheet, on_drift: fail}` is short for check + on_drift
             short = dict(raw["check"])
@@ -698,9 +804,16 @@ class StepSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
-        kinds = [k for k in ("use", "fn", "agent", "check", "wait_until") if getattr(self, k)]
+        kinds = [k for k in ("use", "fn", "agent", "check", "wait_until", "first_valid") if getattr(self, k)]
         if len(kinds) != 1:
-            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent/check/wait_until")
+            raise ValueError(
+                f"step '{self.id}': set exactly one of use/fn/agent/check/wait_until/first_valid"
+            )
+        if self.first_valid and (self.output is not None or self.rules or self.fallback or self.with_):
+            raise ValueError(
+                f"step '{self.id}': first_valid takes with, output and fallbacks per alternative; "
+                "drop them from the step"
+            )
         if self.wait_until and self.input is not None:
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
@@ -770,6 +883,10 @@ class StepSpec(BaseModel):
             )
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
+        if self.drift is not None and not self.agent:
+            raise ValueError(f"step '{self.id}': drift belongs to agent steps")
+        if self.drift is not None and self.chunk is not None:
+            raise ValueError(f"step '{self.id}': drift does not support chunk steps yet")
         if self.mode == "batch" and self.records_per_call > 1:
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
@@ -962,6 +1079,8 @@ class StepSpec(BaseModel):
     def kind(self) -> str:
         if self.wait_until:
             return "wait"
+        if self.first_valid:
+            return "first_valid"
         return "use" if self.use else "fn" if self.fn else "check" if self.check else "agent"
 
     @property
@@ -1162,6 +1281,51 @@ class ScheduleSpec(BaseModel):
         return self
 
 
+class GatherExpectSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int | None = None  # at least this many distinct items
+    items: list[str] = Field(default_factory=list)  # these items, by name (missing ones are listed)
+
+    @model_validator(mode="after")
+    def _some(self) -> GatherExpectSpec:
+        if self.count is None and not self.items:
+            raise ValueError("gather.expect needs `count` or `items`")
+        if self.count is not None and self.count < 1:
+            raise ValueError("gather.expect.count must be at least 1")
+        return self
+
+
+class GatherDeadlineSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    after: str | float  # counted from the group's first part
+    fire: Literal["partial", "fail"] = "fail"
+
+
+class GatherSpec(BaseModel):
+    """Fan in: fire once per group when the expected parts (added by `gather.add`) arrived."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    group: str  # pattern: "batch-{date}"; `{date}` reaches the run as a field
+    expect: GatherExpectSpec
+    ttl: str | float = "24h"  # parts and the fired mark are dropped this long after the first part
+    deadline: GatherDeadlineSpec | None = None  # without it, a group still short at `ttl` fails
+
+    @model_validator(mode="after")
+    def _times(self) -> GatherSpec:
+        from .checks import parse_duration
+
+        ttl = parse_duration(self.ttl)
+        if self.deadline and parse_duration(self.deadline.after) > ttl:
+            raise ValueError("gather.deadline.after must not be longer than ttl")
+        from .gather import pattern
+
+        pattern(self.group)
+        return self
+
+
 class TriggerSpec(BaseModel):
     """What starts a run under `agentl serve`: a cron schedule, a webhook path or new files."""
 
@@ -1177,14 +1341,17 @@ class TriggerSpec(BaseModel):
     storage_options: dict[str, Any] = Field(default_factory=dict)
     after: str | None = None  # another pipeline's name: run when that one finishes
     status: Literal["succeeded", "failed", "any"] = "succeeded"  # after: which outcomes count
+    gather: GatherSpec | None = None  # fan in parts added by `gather.add` in other runs
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
-        kinds = [k for k in ("cron", "schedule", "webhook", "files", "after") if getattr(self, k)]
+        kinds = [k for k in ("cron", "schedule", "webhook", "files", "after", "gather") if getattr(self, k)]
         if not kinds and "every" in self.model_fields_set:
             kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, schedule, webhook, files, after or every")
+            raise ValueError(
+                "a trigger has exactly one of cron, schedule, webhook, files, after, gather or every"
+            )
         if self.cron:
             from .triggers import Cron
 
@@ -1199,7 +1366,7 @@ class TriggerSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        for k in ("cron", "schedule", "webhook", "files", "after"):
+        for k in ("cron", "schedule", "webhook", "files", "after", "gather"):
             if getattr(self, k):
                 return k
         return "every"
@@ -1528,7 +1695,7 @@ class PipelineSpec(BaseModel):
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
         if self.budget and self.budget.max_usd is not None:
-            used = {n for s in self.steps if s.kind == "agent" for n in s.llms}
+            used = {n for s in self.steps if s.kind in ("agent", "first_valid") for n in s.llms}
             used |= {f for n in used if n in self.llm for f in self.llm[n].fallback}
             unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
             free = ("echo", "ollama", "openrouter")  # openrouter reports the cost of each call
@@ -1558,7 +1725,7 @@ class PipelineSpec(BaseModel):
             for ref in s.after:
                 if ref not in ids or ref == s.id:
                     raise ValueError(f"step '{s.id}': after names unknown step '{ref}'")
-            for name in s.llms if s.kind == "agent" else []:
+            for name in s.llms if s.kind in ("agent", "first_valid") else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
             if s.on_drift == "remap" and not any(

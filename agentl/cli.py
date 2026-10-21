@@ -517,6 +517,28 @@ def _schedule_next(spec: PipelineSpec, n: int) -> int:
     return 0
 
 
+def _gather(a: argparse.Namespace) -> int:
+    from . import gather
+
+    with open_store(a.db) as store:
+        if a.action == "forget":
+            if not a.group:
+                print("agentl gather forget needs a group", file=sys.stderr)
+                return 2
+            print(f"forgot {gather.forget(store, a.group)} part(s) of {a.group}")
+            return 0
+        groups = gather.groups(store)
+        for g in groups:
+            first = time.strftime("%Y-%m-%d %H:%M", time.localtime(g["first"]))
+            last = time.strftime("%Y-%m-%d %H:%M", time.localtime(g["last"]))
+            fired = ", ".join(f"{p} ({how})" for p, how in sorted(g["fired"].items())) or "not fired"
+            print(f"{g['group']}  {len(g['items'])} part(s), first {first}, last {last}, {fired}")
+            print(f"  items: {', '.join(sorted(g['items']))}")
+        if not groups:
+            print("no gather groups stored")
+    return 0
+
+
 def _mappings(a: argparse.Namespace) -> int:
     """`agentl mappings`: print stored mappings as YAML ready to pin, approve or forget them."""
     with open_store(a.db) as store:
@@ -819,6 +841,10 @@ def main(argv: list[str] | None = None) -> int:
     se.add_argument("action", choices=["list", "forget"])
     se.add_argument("key", nargs="?", help="forget: only this key (default: the whole scope)")
     se.add_argument("--scope", help="only this scope (default scope: the pipeline name)")
+
+    ga = cmd("gather", "fan-in groups of gather.add: list their parts and firings, or forget one")
+    ga.add_argument("action", choices=["ls", "forget"])
+    ga.add_argument("group", nargs="?", help="forget: the group to drop (it can gather and fire again)")
 
     mp = cmd("mappings", "column mappings of map_schema steps: show, approve or forget them")
     mp.add_argument("action", choices=["show", "approve", "forget"])
@@ -1351,6 +1377,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"forgot {count} key(s) of {a.scope}; the next run handles them again")
                 return 0
 
+        if a.cmd == "gather":
+            return _gather(a)
         if a.cmd == "mappings":
             return _mappings(a)
         if a.cmd == "rejected":

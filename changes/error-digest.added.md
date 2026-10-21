@@ -1,1 +1,0 @@
-Run errors are grouped by fingerprint (error class, step and normalised message) in the store. Notify rules take `dedupe: true` to alert once per fingerprint and `remind_every` to remind with the count, the first successful run after a failure emits `run.resolved`, and `notify.digest` gains an `errors` section, with `agentl digest --errors` for cron (#356).

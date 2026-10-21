@@ -1,1 +1,0 @@
-`http.get` and `http.post` honour `Retry-After` (`retry_after: respect`), take a request budget per host shared across steps and runs through the run store (`rate_limit: {per_hour: 1000}`, pausing instead of failing), fall back to `mirrors`, and trust a private CA with `tls: {ca_bundle: ...}`; `agentl lint` warns (AL013) on `tls: {verify: false}` (#212).

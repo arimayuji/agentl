@@ -431,6 +431,20 @@ class Store:
         for key in keys:
             self._exec(self.INSERT_SEEN, (scope, key, run_id, now))
 
+    def seen_claim(self, scope: str, key: str, run_id: str) -> bool:
+        """Mark one key; True only for the caller that inserted it (one statement, so atomic
+        across threads, processes and hosts sharing the store)."""
+        return self._exec(self.INSERT_SEEN, (scope, key, run_id, time.time())) > 0
+
+    def seen_scopes(self, prefix: str = "") -> list[dict]:
+        """Scopes starting with `prefix`: `{scope, keys, first, last}` (first and last key times)."""
+        like = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        return self._query(
+            "SELECT scope, COUNT(*) AS keys, MIN(ts) AS first, MAX(ts) AS last FROM {seen} "
+            "WHERE scope LIKE ? ESCAPE '!' GROUP BY scope ORDER BY scope",
+            (like,),
+        )
+
     def seen_list(self, scope: str | None = None) -> list[dict]:
         where, params = (" WHERE scope = ?", (scope,)) if scope else ("", ())
         return self._query(

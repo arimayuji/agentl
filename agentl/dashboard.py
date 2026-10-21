@@ -143,6 +143,8 @@ function render(d){
   ${run.error?`<div class="card err">${esc(run.error)}</div>`:''}
   ${chainCard(d.chain)}
   <div class="card"><h2>Pipeline</h2><div class="graph">${graph(d)}</div></div>
+  ${(d.paths||[]).length?`<div class="card" style="margin-top:20px"><h2>Paths</h2>${d.paths.map(p=>`<div class="bar"><span>${esc(p.step)} · ${esc(p.path)}</span>
+    <div class="track"><div class="fill" style="width:${100*p.share}%"></div></div><span class="n">${Math.round(100*p.share)}%${p.runs?` of ${num(p.runs)} runs`:` · ${num(p.count)}`}</span></div>`).join('')}</div>`:''}
   ${(d.checks||[]).length?`<div class="card" style="margin-top:20px"><h2>Checks</h2>${d.checks.map(c=>`<div class="ck"><span class="st">${esc(c.step)}</span><span>${esc(c.rule)}</span><span class="pill r-${esc(c.result)}">${esc(c.result)}</span></div>`).join('')}</div>`:''}
   <div class="grid2"><div class="card"><h2>Spend per step</h2>${steps.length?steps.map(([k,v])=>`<div class="bar"><span>${esc(k)}</span>
     <div class="track"><div class="fill" style="width:${100*(v.cost_usd||v.input_tokens+v.output_tokens)/max}%"></div></div><span class="n">${v.cost_usd?usd(v.cost_usd):num(v.input_tokens+v.output_tokens)+' tok'}</span></div>`).join(''):'<div class="empty">No agent steps in this run.</div>'}</div>
@@ -220,7 +222,44 @@ def run_detail(store: Store, run_id: str) -> dict | None:
         "spend": spend(events),
         "checks": check_results(events),
         "chain": chain_links(events),
+        "paths": path_shares(store, run["pipeline"], run_id, events),
     }
+
+
+def path_shares(store: Store, pipeline: str, run_id: str, events: list[dict], window: int = 20) -> list[dict]:
+    """Which path produced the records, per step: the records of each path in this run for a
+    hybrid agent step (`rules`/`agent`); for `first_valid` (#195), which ran one path for the
+    whole input, the share of the last `window` runs each path won, this one included."""
+    out: list[dict] = []
+    for e in events:
+        if e["type"] == "hybrid.paths" and e["step"]:
+            d = e["data"]
+            total = d.get("total") or 0
+            for path in ("rules", "agent"):
+                n = d.get(path, 0)
+                out.append(
+                    {"step": e["step"], "path": path, "count": n, "share": n / total if total else 0.0}
+                )
+    steps = list(dict.fromkeys(e["step"] for e in events if e["type"] == "first_valid.path" and e["step"]))
+    if steps:
+        wins: dict[str, dict[str, int]] = {s: {} for s in steps}
+        seen = dict.fromkeys(steps, 0)
+        ids = [r["id"] for r in store.recent_runs(pipeline, window)]
+        if run_id not in ids:
+            ids = [run_id, *ids[: window - 1]]
+        for rid in ids:
+            evs = events if rid == run_id else store.events(rid)
+            last = {e["step"]: e["data"].get("path") for e in evs if e["type"] == "first_valid.path"}
+            for step in steps:
+                if step in last:
+                    seen[step] += 1
+                    wins[step][last[step]] = wins[step].get(last[step], 0) + 1
+        for step in steps:
+            for path, n in wins[step].items():
+                out.append(
+                    {"step": step, "path": path, "count": n, "share": n / seen[step], "runs": seen[step]}
+                )
+    return out
 
 
 def chain_links(events: list[dict]) -> dict:

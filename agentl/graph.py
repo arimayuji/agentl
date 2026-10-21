@@ -24,6 +24,7 @@ _SHAPES = {
     "agent": ("{{", "}}"),
     "check": ("[[", "]]"),
     "wait": ("[/", "/]"),
+    "first_valid": ("[(", ")]"),
     "route": ("{", "}"),
 }
 _STATUS_CLASS = {
@@ -38,7 +39,19 @@ def mermaid(spec: PipelineSpec, status: dict[str, str] | None = None) -> str:
     for s in spec.steps:
         router = s.routes is not None
         left, right = _SHAPES["route" if router else s.kind]
-        detail = s.use or s.fn or ("check" if s.check else "wait" if s.wait_until else "agent")
+        detail = (
+            s.use
+            or s.fn
+            or (
+                "check"
+                if s.check
+                else "wait"
+                if s.wait_until
+                else "first_valid"
+                if s.first_valid
+                else "agent"
+            )
+        )
         detail = "route" if router else detail
         label = f"{s.id}<br/><small>{detail}</small>".replace('"', "'")
         lines.append(f'  {s.id}{left}"{label}"{right}')

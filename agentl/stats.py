@@ -1,6 +1,7 @@
 """Track record per pipeline: success rate, durations, cost, failures grouped by reason, a
 per-day trend, and per agent step and model what a record, an accepted answer and a cache hit
-cost, and the human review queue (#153). Computed from the runs, events and review queue the
+cost, the human review queue (#153), and the answer drift of agent steps with `drift:`
+(#155). Computed from the runs, events and review queue the
 store already keeps; nothing new is stored.
 
     agentl stats [PIPELINE] [--since 30d] [--json]"""
@@ -131,6 +132,7 @@ def compute(
                 o = outcomes.setdefault((item["run_id"], item["step"]), {})
                 o[item["status"]] = o.get(item["status"], 0) + 1
     agents = _agent_costs(done_steps, rejected, run_pipeline, outcomes)
+    drifts = _answer_drift(done_steps, run_pipeline)
     queue: dict[str, dict[str, int]] = {}
     if hasattr(store, "review_counts"):
         for c in store.review_counts(pipeline):
@@ -141,6 +143,7 @@ def compute(
         p["agents"] = agents.get(p["pipeline"], [])
         p["checks"] = [row for (name, _, _), row in checks.items() if name == p["pipeline"]]
         p["review"] = queue.get(p["pipeline"], {"pending": 0, "reviewed": 0})
+        p["drift"] = drifts.get(p["pipeline"], [])
         secs = sorted(p.pop("_secs"))
         done = p["succeeded"] + p["failed"]
         p["success_rate"] = round(p["succeeded"] / done, 4) if done else None
@@ -166,6 +169,37 @@ def _count_rules(out: dict[tuple[str, str, str], dict], pipeline: str, e: dict) 
         if result in RESULTS:
             row[result] += 1
         row["last"] = result
+
+
+def _answer_drift(done: list[dict], run_pipeline: dict[str, str]) -> dict[str, list[dict]]:
+    """Per pipeline, one row per agent step with `drift:` (#155): its latest run's answer profile
+    against the mean of the runs before it in the period, as the runner compares them."""
+    from . import answers
+
+    runs: dict[tuple[str, str], list[dict]] = {}
+    for e in sorted(done, key=lambda e: e["ts"]):
+        d = e["data"] or {}
+        if isinstance(d.get("profile"), dict) and d["profile"].get("records"):
+            runs.setdefault((run_pipeline[e["run_id"]], e["step"]), []).append(e)
+    out: dict[str, list[dict]] = {}
+    for (pipeline, step), events in sorted(runs.items()):
+        last = events[-1]["data"]
+        cfg = last.get("drift") or {}
+        window = int(cfg.get("window") or 7)
+        threshold = float(cfg.get("threshold") or 0.15)
+        history = [e["data"]["profile"] for e in reversed(events[:-1])][:window]
+        out.setdefault(pipeline, []).append(
+            {
+                "step": step,
+                "last_run": events[-1]["run_id"],
+                "window": len(history),
+                "threshold": threshold,
+                "profile": last["profile"],
+                "baseline": {k: round(v, 6) for k, (_, v) in sorted(answers.baseline(history).items())},
+                "changes": answers.compare(last["profile"], history, threshold),
+            }
+        )
+    return out
 
 
 def _per(cost: float, n: int) -> float | None:
@@ -264,6 +298,8 @@ def _when(ts: float) -> str:
 
 
 def text(report: dict, top: int = 5) -> str:
+    from . import answers
+
     if not report["pipelines"]:
         return f"no runs since {_when(report['since'])}"
     lines = [f"since {_when(report['since'])}"]
@@ -314,6 +350,19 @@ def text(report: dict, top: int = 5) -> str:
                     f" rejected {a['review_rejected']}, {a['review_pending']} pending),"
                     f" {_usd(a['cost_per_approved'])}/approved"
                 )
+        for dr in p.get("drift") or []:
+            if not dr["window"]:
+                lines.append(f"  [{dr['step']}] answer drift: no earlier run to compare yet")
+                continue
+            head = (
+                f"  [{dr['step']}] answer drift vs the last {dr['window']} runs"
+                f" (threshold {dr['threshold']:g}):"
+            )
+            if not dr["changes"]:
+                lines.append(f"{head} no change")
+                continue
+            lines.append(head)
+            lines.extend(f"    {answers.describe(c)}" for c in dr["changes"])
         if p["failures"]:
             lines.append("  failures by reason:")
             for g in p["failures"][:top]:
