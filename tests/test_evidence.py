@@ -158,6 +158,7 @@ def test_http_get_tags_records_and_captures_failures(site, tmp_path):
 
 
 def test_storage_url_and_verify(site, tmp_path, capsys):
+    pytest.importorskip("fsspec")  # storage URLs need the `remote` extra
     db = tmp_path / "a.db"
     ev = {"storage": "memory://evidence-test/objects-root"}
     with Store(db) as store:
