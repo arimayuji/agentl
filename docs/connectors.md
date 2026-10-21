@@ -164,7 +164,7 @@ before it is written to disk.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `retry_after`, `rate_limit`, `mirrors`, `tls`, `if_changed`, `on_unchanged` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `retry_after`, `rate_limit`, `mirrors`, `tls`, `auth`, `if_changed`, `on_unchanged` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -228,9 +228,82 @@ steps do not run, the CLI exits 0 and `run(..., raise_on_failure=True)` does not
 `continue_empty` returns no records and lets the run go on. `if_changed` works on one URL: not with
 an input step or `paginate`. Without a run store (the connector called directly) it always downloads.
 
-Pages are requested until the `next` field of the response is empty (or, without `next`, until a page
-returns no items). Requests are retried with exponential backoff on network errors, 429 and 5xx
-responses (see [resilience](#retries-budgets-mirrors-and-tls) for `Retry-After`).
+Requests are retried with exponential backoff on network errors, 429 and 5xx responses (see
+[resilience](#retries-budgets-mirrors-and-tls) for `Retry-After`).
+
+### Pagination styles
+
+`paginate.style` says how the next page is asked for. The items of every page (picked with
+`items`) are concatenated into the step's records. Every style stops on a page with no items, and
+fails after `max_pages` (default 1000) pages instead of looping forever.
+
+```yaml
+paginate: { style: page, param: page, next: next_page }               # page numbers (default)
+paginate: { style: page, param: page, total_key: meta.totalPages, concurrency: 5 }
+paginate: { style: offset, limit: 500, total_key: meta.total }        # ?offset=0&limit=500, ...
+paginate: { style: cursor, param: after, cursor_key: paging.next }    # token from the answer
+paginate: { style: link }                                             # Link: <...>; rel="next"
+```
+
+| Style | Keys | Stops when |
+|---|---|---|
+| `page` | `param` (`page`), `start` (1), `next`, `total_key`, `concurrency` (1) | the `next` field is empty, or `total_key` pages were read |
+| `offset` | `param` (`offset`), `limit_param` (`limit`), `limit` (100), `start` (0), `total_key` | a page has fewer than `limit` items, or the offset reaches `total_key` |
+| `cursor` | `param` (`cursor`), `cursor_key` (required) | the token at `cursor_key` is empty or repeats |
+| `link` | none | the `Link` header (RFC 8288, formerly 5988) has no `rel="next"` |
+
+- `total_key` is a dotted path read in the first answer: a page count for `page`, an item count for
+  `offset`. With `page` and `total_key`, the remaining pages are known up front and are fetched
+  `concurrency` at a time, still returned in page order.
+- `cursor`: the first request goes without the token; each next one sends the token of the last
+  answer in `param`.
+- `link`: the next URL (absolute or relative) is followed as is, with its own query string.
+
+### Login sessions and token cache
+
+For APIs and sites behind a login, `auth.login` makes the login request and adds the session to
+every request of the step: the cookies it set (redirects included) or, with `token_key`, the token
+of its JSON answer.
+
+```yaml
+- id: report
+  use: http.get
+  with:
+    url: https://portal.example.com/reports/daily
+    auth:
+      login:
+        url: https://portal.example.com/login
+        form: { user: "${PORTAL_USER}", pass: "${PORTAL_PASS}" }   # or json: {...}
+      expired_if: "Please sign in"          # a regex on the body: the session expired
+      token_cache_ttl: 30m
+
+- id: orders
+  use: http.get
+  with:
+    url: https://api.example.com/orders
+    auth:
+      login:
+        url: https://api.example.com/oauth/token
+        json: { client_id: "${CLIENT_ID}", client_secret: "${CLIENT_SECRET}" }
+        token_key: access_token             # sent as `Authorization: Bearer <token>`
+        # header: X-Api-Key, prefix: ""     # another header or prefix
+      shared: true
+```
+
+- `login`: `url`, `method` (POST), `form` (URL-encoded) or `json`, `headers`, and for a token
+  `token_key` (a dotted path), `header` (`Authorization`) and `prefix` (`Bearer `). Put
+  credentials in environment variables.
+- A session counts as expired when an answer has a status in `expired_status` (default `[401]`)
+  or its body matches the `expired_if` regex (for sites that answer 200 with the login form). Then
+  the step logs in once more and repeats that request; if the new session is refused too, the step
+  fails instead of logging in again and again.
+- The session is cached for `token_cache_ttl` (default 30m) and the login runs under a lock: with
+  `concurrency` or several steps using the same login, one request logs in and the others wait for
+  its session, and an expired session is replaced once, not once per worker. The cache lives in the
+  process; `shared: true` keeps it in the run store instead (cache entries `http-login:*`), so runs
+  and workers sharing the store log in once. That stores the session token in the run store.
+- Cookies are sent to every URL of the step (mirrors too), whatever their domain or path.
+- `auth` applies to the `if_changed` requests and to every page.
 
 ### Retries, budgets, mirrors and TLS
 
@@ -261,7 +334,7 @@ responses (see [resilience](#retries-budgets-mirrors-and-tls) for `Retry-After`)
   `tls.verify: false` turns certificate checks off; it logs a warning each time the step runs and
   `agentl lint` reports AL013. Prefer a CA bundle.
 
-All four options work on `http.post` too, and `rate_limit`, `mirrors` and `tls` apply to the
+These options work on `http.post` too, and `rate_limit`, `mirrors` and `tls` apply to the
 `if_changed` requests as well.
 
 ## SQL

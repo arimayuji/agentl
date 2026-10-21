@@ -173,15 +173,17 @@ def urlopen(
     check: Any = None,
     proxy: str | None = None,
     context: Any = None,
+    cookies: Any = None,
 ) -> Any:
     """urllib.request.urlopen with the guard applied to the URL, every redirect and the address
     actually connected to. `check(url)` runs on the URL and on every redirect target too. `proxy`
     (an operator-configured http(s) proxy URL) is used for both schemes instead of the
     environment's; the target URL is still checked. `context` is the TLS context for HTTPS (a
-    custom CA bundle), instead of `ssl_context()`."""
+    custom CA bundle), instead of `ssl_context()`. `cookies` (an `http.cookiejar.CookieJar`) keeps
+    the cookies set along the way, redirects included."""
     check_url(req.full_url)
     opener = _opener()
-    if check is not None or proxy or context is not None:
+    if check is not None or proxy or context is not None or cookies is not None:
         if check is not None:
             check(req.full_url)
         extra = staticmethod(check) if check is not None else None
@@ -190,6 +192,8 @@ def urlopen(
         handlers: list[Any] = [_HTTPHandler, https, redirects]
         if proxy:
             handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        if cookies is not None:
+            handlers.append(urllib.request.HTTPCookieProcessor(cookies))
         opener = urllib.request.build_opener(*handlers)
     try:
         return opener.open(req, timeout=timeout)

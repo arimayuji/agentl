@@ -54,6 +54,8 @@ class Client:
     tls: dict | None = None
     store: Any = None
     context: Any = None
+    auth: dict | None = None
+    session: Session | None = None
 
     def __post_init__(self) -> None:
         if self.retry_after not in ("respect", "ignore"):
@@ -76,6 +78,8 @@ class Client:
             self.context = _tls_context(self.tls)
         if self.store is None:
             self.store = run_store()
+        if self.auth is not None and self.session is None:
+            self.session = Session(self.auth, self)
 
     def _budget(self, url: str) -> None:
         """Wait for a request of the budget; the budget pauses the step, it never fails it."""
@@ -120,6 +124,13 @@ class Client:
         return out
 
     def open(self, req: urllib.request.Request) -> tuple[int, Any, bytes]:
+        """`_send` with the `auth` session: its headers on every request, and one new login and
+        retry when the answer says the session expired."""
+        if self.session is None:
+            return self._send(req)
+        return self.session.open(req)
+
+    def _send(self, req: urllib.request.Request, cookies: Any = None) -> tuple[int, Any, bytes]:
         """(status, headers, body) with retries on network errors, 429 and 5xx; a 304 is returned.
         When a host keeps failing that way, the next mirror is tried with the same retries."""
         candidates = self._candidates(req.full_url)
@@ -131,8 +142,10 @@ class Client:
                 )
                 self._budget(target)
                 try:
-                    tls = {"context": self.context} if self.context is not None else {}
-                    with netguard.urlopen(one, timeout=self.timeout, **tls) as resp:
+                    extra: dict[str, Any] = {"context": self.context} if self.context is not None else {}
+                    if cookies is not None:
+                        extra["cookies"] = cookies
+                    with netguard.urlopen(one, timeout=self.timeout, **extra) as resp:
                         return getattr(resp, "status", 200), getattr(resp, "headers", {}), resp.read()
                 except urllib.error.HTTPError as e:
                     if e.code == 304:
@@ -154,13 +167,147 @@ class Client:
         raise AssertionError("unreachable")
 
     def request(self, method: str, url: str, headers: dict, body: Any) -> Any:
+        return self.fetch(method, url, headers, body)[1]
+
+    def fetch(self, method: str, url: str, headers: dict, body: Any) -> tuple[Any, Any]:
+        """(response headers, parsed JSON body)."""
         data = None
         headers = {"Accept": "application/json", **headers}
         if body is not None:
             data = json.dumps(body).encode()
             headers.setdefault("Content-Type", "application/json")
-        _, _, raw = self.open(urllib.request.Request(url, data=data, headers=headers, method=method))
-        return _parse(raw)
+        _, resp_headers, raw = self.open(
+            urllib.request.Request(url, data=data, headers=headers, method=method)
+        )
+        return resp_headers, _parse(raw)
+
+
+_TOKENS: dict[str, tuple[float, dict]] = {}  # login key -> (expires, headers), for this process
+_TOKEN_LOCKS: dict[str, threading.Lock] = {}
+_TOKEN_LOCKS_LOCK = threading.Lock()
+
+
+class SessionExpired(RuntimeError):
+    pass
+
+
+class Session:
+    """`auth: {login: {...}, expired_if, token_cache_ttl, shared}` (#212): log in once, add the
+    session (cookies, or a token from the login answer) to every request, log in again when an
+    answer says the session expired. Concurrent requests, steps (and, with `shared: true`, runs
+    sharing the run store) log in once: the login runs under a lock and its result is cached."""
+
+    KEYS = frozenset({"login", "expired_if", "expired_status", "token_cache_ttl", "shared"})
+    LOGIN_KEYS = frozenset({"url", "method", "form", "json", "headers", "token_key", "header", "prefix"})
+
+    def __init__(self, auth: dict, client: Client):
+        from ..checks import parse_duration
+
+        unknown = set(auth) - self.KEYS
+        if unknown:
+            raise ValueError(f"auth: unknown key {sorted(unknown)[0]!r}; use {', '.join(sorted(self.KEYS))}")
+        login = auth.get("login")
+        if not isinstance(login, dict) or not login.get("url"):
+            raise ValueError("auth.login needs a url (and form or json)")
+        unknown = set(login) - self.LOGIN_KEYS
+        if unknown:
+            raise ValueError(f"auth.login: unknown key {sorted(unknown)[0]!r}")
+        if login.get("form") is not None and login.get("json") is not None:
+            raise ValueError("auth.login: set form or json, not both")
+        netguard.require_http(login["url"], "auth.login.url")
+        self.login_cfg = login
+        self.client = client
+        expired = auth.get("expired_if")
+        self.expired_if = re.compile(expired) if expired else None
+        status = auth.get("expired_status", [401])
+        self.expired_status = {int(x) for x in ([status] if isinstance(status, (int, str)) else status)}
+        self.ttl = parse_duration(auth.get("token_cache_ttl", "30m"))
+        self.shared = bool(auth.get("shared", False))
+        stamp = json.dumps(login, sort_keys=True, default=str)
+        self.key = "http-login:" + hashlib.sha256(stamp.encode()).hexdigest()[:24]
+        with _TOKEN_LOCKS_LOCK:
+            self.lock = _TOKEN_LOCKS.setdefault(self.key, threading.Lock())
+
+    def _store(self) -> Any:
+        return self.client.store if self.shared else None
+
+    def _login(self) -> dict:
+        """POST the login and return the headers that carry the session."""
+        import http.cookiejar
+
+        cfg = self.login_cfg
+        headers = {"Accept": "application/json, text/html;q=0.9", **(cfg.get("headers") or {})}
+        data = None
+        if cfg.get("json") is not None:
+            data = json.dumps(cfg["json"]).encode()
+            headers.setdefault("Content-Type", "application/json")
+        elif cfg.get("form") is not None:
+            data = urllib.parse.urlencode(cfg["form"]).encode()
+            headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        method = cfg.get("method", "POST")
+        jar = http.cookiejar.CookieJar()
+        req = urllib.request.Request(cfg["url"], data=data, headers=headers, method=method)
+        _, _, raw = self.client._send(req, cookies=jar)
+        log.info("auth: logged in at %s", cfg["url"])
+        out: dict = {}
+        cookies = "; ".join(f"{c.name}={c.value}" for c in jar)
+        if cookies:
+            out["Cookie"] = cookies
+        if cfg.get("token_key"):
+            token = _dig(_parse(raw), cfg["token_key"])
+            if not token:
+                raise RuntimeError(f"auth.login: no {cfg['token_key']!r} in the login answer")
+            out[cfg.get("header", "Authorization")] = f"{cfg.get('prefix', 'Bearer ')}{token}"
+        if not out:
+            raise RuntimeError("auth.login: the login answer set no cookie (set token_key for a token)")
+        return out
+
+    def credentials(self, stale: dict | None = None) -> dict:
+        """The cached session headers, logging in when there are none or when they are `stale`
+        (the ones a request just found expired). Under the lock, so only one caller logs in."""
+        store = self._store()
+        with self.lock:
+            if store is not None:
+                current = store.cache_get(self.key)
+                if current is not None and current == stale:
+                    store.cache_clear(self.key)
+                return store.cache_compute(self.key, self._login, ttl=self.ttl)
+            hit = _TOKENS.get(self.key)
+            if hit and hit[0] > time.time() and hit[1] != stale:
+                return hit[1]
+            fresh = self._login()
+            _TOKENS[self.key] = (time.time() + self.ttl, fresh)
+            return fresh
+
+    def _expired(self, status: int, body: bytes) -> bool:
+        if status in self.expired_status:
+            return True
+        return bool(self.expired_if and self.expired_if.search(body.decode(errors="replace")))
+
+    def _try(self, req: urllib.request.Request, creds: dict) -> tuple[int, Any, bytes]:
+        one = urllib.request.Request(
+            req.full_url,
+            data=req.data,
+            headers={**dict(req.header_items()), **creds},
+            method=req.get_method(),
+        )
+        try:
+            return self.client._send(one)
+        except urllib.error.HTTPError as e:
+            if e.code in self.expired_status:
+                return e.code, e.headers, b""
+            raise
+
+    def open(self, req: urllib.request.Request) -> tuple[int, Any, bytes]:
+        creds = self.credentials()
+        status, headers, body = self._try(req, creds)
+        if not self._expired(status, body):
+            return status, headers, body
+        log.info("auth: session expired on %s, logging in again", req.full_url)
+        status, headers, body = self._try(req, self.credentials(stale=creds))
+        if self._expired(status, body):
+            raise SessionExpired(f"auth: {req.full_url} still answers as logged out right after a new login")
+        return status, headers, body
 
 
 def _tls_context(tls: dict) -> Any:
@@ -335,6 +482,25 @@ def _with_query(url: str, params: dict | None) -> str:
     return f"{url}{'&' if '?' in url else '?'}{query}" if query else url
 
 
+_STYLES = ("page", "offset", "cursor", "link")
+_PAGINATE_KEYS = {
+    "page": {"param", "start", "next", "total_key", "concurrency"},
+    "offset": {"param", "start", "limit", "limit_param", "total_key"},
+    "cursor": {"param", "cursor_key"},
+    "link": set(),
+}
+
+
+def _next_link(headers: Any) -> str | None:
+    """The `rel="next"` target of an RFC 8288 (RFC 5988) `Link` header."""
+    value = headers.get("Link") if headers is not None else None
+    for part in re.split(r",\s*(?=<)", value or ""):
+        m = re.match(r"\s*<([^>]*)>(.*)", part)
+        if m and re.search(r';\s*rel\s*=\s*"?([^";]*\s)?next(\s[^";]*)?"?\s*(;|$)', m.group(2)):
+            return m.group(1)
+    return None
+
+
 def _pages(
     method: str,
     url: str,
@@ -345,22 +511,78 @@ def _pages(
     items: str | None,
     client: Client,
 ) -> list[dict]:
-    """One request, or every page: `paginate: {param: page, start: 1, next: next_page, max_pages: 1000}`.
-    Stops when the `next` field of the response is empty, or when a page has no items."""
+    """One request, or every page. `paginate.style` picks how the next page is asked for:
+    `page` (default: a page number in `param`), `offset` (`offset` and `limit` params),
+    `cursor` (the token at `cursor_key` of each answer goes in `param`) or `link` (the
+    `rel="next"` URL of the `Link` header). Every style stops on a page with no items and
+    after `max_pages`; `total_key` (page: the page count, offset: the item count) stops it
+    when that total is reached."""
     if not paginate:
         return _as_records(client.request(method, _with_query(url, params), headers, body), items)
-    param = paginate.get("param", "page")
-    page = paginate.get("start", 1)
+    style = paginate.get("style", "page")
+    if style not in _STYLES:
+        raise ValueError(f"paginate.style must be one of {', '.join(_STYLES)}")
+    unknown = set(paginate) - _PAGINATE_KEYS[style] - {"style", "max_pages"}
+    if unknown:
+        raise ValueError(f"paginate: {sorted(unknown)[0]!r} does not apply to style {style}")
+    if style == "cursor" and not paginate.get("cursor_key"):
+        raise ValueError("paginate style cursor needs cursor_key (the path of the next token)")
+    max_pages = int(paginate.get("max_pages", 1000))
+    total_key = paginate.get("total_key")
+    base = dict(params or {})
     out: list[dict] = []
-    for _ in range(int(paginate.get("max_pages", 1000))):
-        data = client.request(method, _with_query(url, {**(params or {}), param: page}), headers, body)
-        rows = _as_records(data, items) if data else []
-        out.extend(rows)
+
+    def get(query: dict, target: str = url) -> tuple[Any, Any, list[dict]]:
+        resp_headers, data = client.fetch(method, _with_query(target, query), headers, body)
+        return resp_headers, data, _as_records(data, items) if data else []
+
+    if style == "page":
+        param, page = paginate.get("param", "page"), int(paginate.get("start", 1))
         nxt = paginate.get("next")
-        if not rows or (nxt and not _dig(data, nxt)):
-            return out
-        page += 1
-    raise RuntimeError(f"pagination stopped after max_pages={paginate.get('max_pages', 1000)}")
+        for i in range(max_pages):
+            _, data, rows = get({**base, param: page + i})
+            out.extend(rows)
+            total = _dig(data, total_key) if total_key and i == 0 else None
+            if total is not None:
+                if int(total) > max_pages:
+                    raise RuntimeError(f"pagination: {total} pages is more than max_pages={max_pages}")
+                rest = range(page + 1, page + int(total))  # the total counts pages from `start`
+                with ThreadPoolExecutor(max_workers=int(paginate.get("concurrency", 1))) as pool:
+                    for batch in pool.map(lambda p: get({**base, param: p})[2], rest):
+                        out.extend(batch)
+                return out
+            if not rows or (nxt and not _dig(data, nxt)):
+                return out
+    elif style == "offset":
+        param, limit_param = paginate.get("param", "offset"), paginate.get("limit_param", "limit")
+        limit = int(paginate.get("limit", 100))
+        offset = int(paginate.get("start", 0))
+        for _ in range(max_pages):
+            _, data, rows = get({**base, param: offset, limit_param: limit})
+            out.extend(rows)
+            offset += limit
+            total = _dig(data, total_key) if total_key else None
+            if len(rows) < limit or (total is not None and offset >= int(total)):
+                return out
+    elif style == "cursor":
+        param, token, seen = paginate.get("param", "cursor"), None, set()
+        for _ in range(max_pages):
+            _, data, rows = get(base if token is None else {**base, param: token})
+            out.extend(rows)
+            token = _dig(data, paginate["cursor_key"])
+            if not rows or token in (None, "") or str(token) in seen:
+                return out
+            seen.add(str(token))
+    else:  # link
+        target = _with_query(url, base)
+        for _ in range(max_pages):
+            resp_headers, _, rows = get({}, target)
+            out.extend(rows)
+            link = _next_link(resp_headers)
+            if not rows or not link:
+                return out
+            target = urllib.parse.urljoin(target, link)
+    raise RuntimeError(f"pagination stopped after max_pages={max_pages}")
 
 
 def _http(
@@ -413,6 +635,7 @@ def http_get(
     rate_limit: dict | None = None,
     mirrors: list[str] | None = None,
     tls: dict | None = None,
+    auth: dict | None = None,
 ) -> list[dict]:
     """GET a JSON API. `items: data` picks the list inside each response. Every page:
     `paginate: { param: page, next: next_page }` (the page number goes in `param`, starting at
@@ -429,8 +652,16 @@ def http_get(
     `rate_limit: {per_hour: 1000}` pauses when the budget of the host is spent, shared with
     other steps and runs through the run store; `mirrors: [https://b.example.org]` tries the
     same path on other hosts once the URL keeps failing; `tls: {ca_bundle: corp.pem}` trusts
-    a private CA (`verify: false` turns checks off, with a warning)."""
-    client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls)
+    a private CA (`verify: false` turns checks off, with a warning).
+
+    `paginate.style`: `page` (above), `offset` (`limit`, `limit_param`), `cursor` (`cursor_key`:
+    the path of the next token, sent in `param`) or `link` (the `Link: rel="next"` header);
+    `total_key` stops at the page count (page) or item count (offset) found in the first answer.
+    `auth: {login: {url, form | json, token_key}, expired_if: "Please sign in"}` logs in once
+    (cookies, or the token at `token_key` sent as `Authorization: Bearer`), caches the session for
+    `token_cache_ttl` (30m) under a lock and logs in again when an answer matches `expired_if` or
+    has status 401 (`expired_status`); `shared: true` shares it through the run store."""
+    client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls, auth=auth)
     if if_changed is not None:
         if single(input) or paginate:
             raise ValueError("if_changed works on a single URL: no input step and no paginate")
@@ -454,7 +685,8 @@ def http_post(
     rate_limit: dict | None = None,
     mirrors: list[str] | None = None,
     tls: dict | None = None,
+    auth: dict | None = None,
 ) -> list[dict]:
     """POST a JSON body (`json`, `{field}` filled per record); the other options are `http.get`'s."""
-    client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls)
+    client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls, auth=auth)
     return _http("POST", input, url, headers, json, items, concurrency, client, params, paginate)
