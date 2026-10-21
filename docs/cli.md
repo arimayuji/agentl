@@ -3,7 +3,7 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
-agentl replay PIPELINE --from-raw RUN_ID [--no-cache] [--param KEY=VALUE ...]   # reprocess kept originals
+agentl replay PIPELINE --from-raw [RUN_ID] [--prefix P] [--since D] [--until D] [--sha H] [--since-step STEP] [--no-cache] [--param KEY=VALUE ...]   # reprocess kept originals
 agentl raw ls|prune [PIPELINE] [--dir DIR] [--run RUN_ID] [--keep-days N] [--json]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]

@@ -10,7 +10,12 @@ run, and then every object no manifest references.
 `agentl replay <pipeline> --from-raw <run_id>` runs the current pipeline code with each
 `persist: raw` step's output read back from that run's originals: the raw steps and the steps
 upstream of them (the source fetch) do not run, everything downstream does. Agent steps hit the
-per-record cache, so a replay costs nothing new unless the prompt or the input changed."""
+per-record cache, so a replay costs nothing new unless the prompt or the input changed.
+
+Instead of one run, a `Selection` picks originals across runs by run id prefix, stored-at date
+range and hash prefix (`--prefix`, `--since`/`--until`, `--sha`); each raw step then reads the
+matching originals of every selected run, oldest first, one copy per hash. `since_step` replays
+only that step and what depends on it: side branches are skipped."""
 
 from __future__ import annotations
 
@@ -22,6 +27,8 @@ import re
 import tempfile
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -177,26 +184,109 @@ def _upstream(spec: PipelineSpec, ids: Iterable[str]) -> set[str]:
     return seen
 
 
-def plan(spec: PipelineSpec, store: Store, run_id: str) -> resume.Plan:
-    """What a replay of run `run_id`'s originals restores and skips, or ReplayRefused."""
-    if not resume.RUN_ID.match(run_id):
-        raise ReplayRefused(f"{run_id!r} is not a run id")
+def parse_when(value: str, end: bool = False) -> float:
+    """`2026-06-01` or an ISO date-time (UTC when no offset) as a timestamp. With `end`, a bare
+    date means the end of that day, so `--until 2026-06-30` includes the 30th."""
+    try:
+        if len(value) == 10:
+            d = date.fromisoformat(value)
+            t = datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp()
+            return t + 86400 if end else t
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise ReplayRefused(f"{value!r} is not a date (YYYY-MM-DD or ISO date-time)") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+@dataclass
+class Selection:
+    """Which originals a replay reads: every filter set must match (#208)."""
+
+    run_id: str | None = None  # exactly this run
+    prefix: str | None = None  # run id prefix; run ids start with the date, e.g. 202606
+    since: float | None = None  # stored at or after (timestamp)
+    until: float | None = None  # stored before (timestamp)
+    sha: str | None = None  # hash prefix of the original
+
+    def empty(self) -> bool:
+        return not any(v is not None for v in vars(self).values())
+
+    def matches(self, m: dict) -> bool:
+        run_id, at = str(m.get("run_id", "")), m.get("stored_at") or 0
+        return (
+            (self.run_id is None or run_id == self.run_id)
+            and (self.prefix is None or run_id.startswith(self.prefix))
+            and (self.since is None or at >= self.since)
+            and (self.until is None or at < self.until)
+            and (self.sha is None or str(m["sha256"]).startswith(self.sha))
+        )
+
+    def describe(self) -> str:
+        if self.run_id is not None and len([v for v in vars(self).values() if v is not None]) == 1:
+            return self.run_id
+        return " ".join(f"{k}={v}" for k, v in vars(self).items() if v is not None)
+
+
+def _downstream(spec: PipelineSpec, step_id: str) -> set[str]:
+    seen = {step_id}
+    changed = True
+    while changed:
+        changed = False
+        for s in spec.steps:
+            if s.id not in seen and seen & set(s.depends):
+                seen.add(s.id)
+                changed = True
+    return seen
+
+
+def plan(
+    spec: PipelineSpec, store: Store, select: str | Selection, since_step: str | None = None
+) -> resume.Plan:
+    """What a replay of the selected originals restores and skips, or ReplayRefused.
+
+    `select` is a run id or a Selection across runs. With `since_step`, only that step and the
+    steps depending on it run (plus the steps they read from, again); the rest is skipped."""
+    sel = Selection(run_id=select) if isinstance(select, str) else select
+    if sel.empty():
+        raise ReplayRefused("pick the originals: a run id, --prefix, --since/--until or --sha")
+    if sel.run_id is not None and not resume.RUN_ID.match(sel.run_id):
+        raise ReplayRefused(f"{sel.run_id!r} is not a run id")
+    if sel.sha is not None and not re.fullmatch(r"[0-9a-f]{1,64}", sel.sha):
+        raise ReplayRefused(f"{sel.sha!r} is not a sha256 prefix")
+    if since_step is not None and since_step not in {s.id for s in spec.steps}:
+        raise ReplayRefused(f"--since-step: no step '{since_step}' in pipeline {spec.name!r}")
     raw_steps = [s.id for s in spec.steps if s.persist == "raw"]
     if not raw_steps:
         raise ReplayRefused(f"pipeline {spec.name!r} has no step with `persist: raw`")
     base = root(spec, store)
-    found = {m["step"]: m for m in manifests(base) if m.get("run_id") == run_id}
-    if not found:
-        raise ReplayRefused(f"no originals of run {run_id} under {base} (see `agentl raw ls`)")
-    out = resume.Plan(resumed_from=run_id)
+    what = f"run {sel.run_id}" if sel.describe() == sel.run_id else f"selection {sel.describe()}"
+    chosen = [m for m in manifests(base) if sel.matches(m)]
+    if not chosen:
+        raise ReplayRefused(f"no originals of {what} under {base} (see `agentl raw ls`)")
+    out = resume.Plan(resumed_from=sel.describe())
     for step_id in raw_steps:
-        m = found.get(step_id)
-        if m is None:
-            raise ReplayRefused(f"run {run_id} has no original for step '{step_id}'")
-        if m.get("pipeline") != spec.name:
-            raise ReplayRefused(f"run {run_id} is of pipeline {m.get('pipeline')!r}, not {spec.name!r}")
-        out.restored[step_id] = load(base, m["sha256"])
-        out.checkpoints[step_id] = {"sha256": m["sha256"], "records": m.get("records")}
+        ms = [m for m in chosen if m["step"] == step_id]
+        if not ms:
+            raise ReplayRefused(f"{what} has no original for step '{step_id}'")
+        records: list = []
+        hashes: list[str] = []
+        for m in ms:
+            if m.get("pipeline") != spec.name:
+                raise ReplayRefused(
+                    f"run {m.get('run_id')} is of pipeline {m.get('pipeline')!r}, not {spec.name!r}"
+                )
+            if m["sha256"] in hashes:  # the same payload kept by several runs: read it once
+                continue
+            hashes.append(m["sha256"])
+            records.extend(load(base, m["sha256"]))
+        out.restored[step_id] = records
+        out.checkpoints[step_id] = (
+            {"sha256": hashes[0], "records": len(records)}
+            if len(hashes) == 1
+            else {"sha256": hashes, "runs": sorted({m["run_id"] for m in ms}), "records": len(records)}
+        )
     above = _upstream(spec, raw_steps) - set(raw_steps)
     skipped = above | set(raw_steps)
     for step in spec.steps:
@@ -209,4 +299,20 @@ def plan(spec: PipelineSpec, store: Store, run_id: str) -> resume.Plan:
                     f"not fetch sources again, so read the `persist: raw` step instead"
                 )
     out.done = above
+    if since_step is not None:
+        if since_step in above:
+            raise ReplayRefused(
+                f"--since-step '{since_step}' runs before the raw zone; a replay starts at or after "
+                f"a `persist: raw` step"
+            )
+        keep = _downstream(spec, since_step)
+        feeds = _upstream(spec, keep) - keep - skipped  # what they read, between the raw zone and them
+        for step in spec.steps:
+            if step.id in feeds and resume._writes(step):
+                raise ReplayRefused(
+                    f"--since-step '{since_step}' reads '{step.id}', which writes to a sink; "
+                    f"start the replay at or before '{step.id}'"
+                )
+        side = {s.id for s in spec.steps} - keep - feeds - skipped
+        out.done |= side
     return out

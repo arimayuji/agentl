@@ -958,7 +958,19 @@ def main(argv: list[str] | None = None) -> int:
 
     rp = cmd("replay", "reprocess the originals a run kept with `persist: raw`, with the current code")
     rp.add_argument("pipeline")
-    rp.add_argument("--from-raw", required=True, metavar="RUN_ID", help="the run whose originals to replay")
+    rp.add_argument(
+        "--from-raw",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="RUN_ID",
+        help="replay kept originals: this run's, or with no value those the filters below select",
+    )
+    rp.add_argument("--prefix", help="only runs whose id starts with this (ids start with the date: 202606)")
+    rp.add_argument("--since", help="only originals stored on or after this date (YYYY-MM-DD or ISO, UTC)")
+    rp.add_argument("--until", help="only originals stored up to this date, inclusive")
+    rp.add_argument("--sha", help="only the original whose sha256 starts with this")
+    rp.add_argument("--since-step", metavar="STEP", help="run only STEP and the steps depending on it")
     rp.add_argument("--no-cache", action="store_true")
     _param_arg(rp)
     rp.add_argument(
@@ -1094,14 +1106,29 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "snapshot":
             return _snapshot(a)
         if a.cmd == "replay":
-            from .raw import ReplayRefused
+            from .raw import ReplayRefused, Selection, parse_when
 
+            if a.from_raw is None:
+                print("replay needs --from-raw [RUN_ID]", file=sys.stderr)
+                return 2
             spec = load(a.pipeline, params=_params(a.param))
             with open_store(a.db) as store:
-                runner = Runner(
-                    spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a), raw_from=a.from_raw
-                )
                 try:
+                    select = Selection(
+                        run_id=a.from_raw or None,
+                        prefix=a.prefix,
+                        since=parse_when(a.since) if a.since else None,
+                        until=parse_when(a.until, end=True) if a.until else None,
+                        sha=a.sha.lower() if a.sha else None,
+                    )
+                    runner = Runner(
+                        spec,
+                        store=store,
+                        use_cache=not a.no_cache,
+                        listeners=_listeners(a),
+                        raw_from=select,
+                        since_step=a.since_step,
+                    )
                     result = runner.run()
                 except ReplayRefused as e:
                     print(f"cannot replay: {e}", file=sys.stderr)
