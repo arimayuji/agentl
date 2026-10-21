@@ -369,6 +369,43 @@ def _gaps_notify(spec: Any, found: Any, names: list[str]) -> None:
             print(f"notify {name} failed: {e}", file=sys.stderr)
 
 
+def _raw(a: argparse.Namespace) -> int:
+    from . import raw
+
+    spec = load(a.pipeline) if a.pipeline else None
+    if a.dir:
+        base = Path(a.dir)
+    else:
+        with open_store(a.db) as store:
+            base = raw.root(spec, store)
+    if a.action == "prune":
+        keep = a.keep_days if a.keep_days is not None else (spec.raw.keep_days if spec and spec.raw else None)
+        if keep is None:
+            print("raw prune: give --keep-days or a pipeline with raw.keep_days", file=sys.stderr)
+            return 2
+        manifests, objects = raw.prune(base, keep)
+        print(f"dropped {manifests} manifest(s) and {objects} original(s) older than {keep:g} day(s)")
+        return 0
+    rows = [
+        {k: v for k, v in m.items() if k != "_file"}
+        for m in raw.manifests(base)
+        if (not a.run or m.get("run_id") == a.run) and (spec is None or m.get("pipeline") == spec.name)
+    ]
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print(f"no originals under {base}")
+        return 0
+    for m in rows:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m.get("stored_at") or 0))
+        print(
+            f"{when}  {m['run_id']}  {m['pipeline']}/{m['step']}  {m['sha256'][:12]}  "
+            f"{m['records']} records  {m['bytes']} bytes"
+        )
+    return 0
+
+
 def _snapshot(a: argparse.Namespace) -> int:
     from . import snapshots
 
@@ -859,6 +896,25 @@ def main(argv: list[str] | None = None) -> int:
         help="--http: env var holding the bearer token clients must send (default AGENTL_MCP_TOKEN)",
     )
 
+    rp = cmd("replay", "reprocess the originals a run kept with `persist: raw`, with the current code")
+    rp.add_argument("pipeline")
+    rp.add_argument("--from-raw", required=True, metavar="RUN_ID", help="the run whose originals to replay")
+    rp.add_argument("--no-cache", action="store_true")
+    _param_arg(rp)
+    rp.add_argument(
+        "--log-format", choices=["text", "json"], default=os.environ.get("AGENTL_LOG_FORMAT", "text")
+    )
+    rp.add_argument("--otel", action="store_true", help=argparse.SUPPRESS)
+    rp.add_argument("--sentry", action="store_true", help=argparse.SUPPRESS)
+
+    rw = cmd("raw", "originals kept by `persist: raw` steps: list them, or apply the retention")
+    rw.add_argument("action", choices=["ls", "prune"])
+    rw.add_argument("pipeline", nargs="?", help="pipeline file: its raw.path, keep_days and name")
+    rw.add_argument("--dir", help="raw zone folder (default: raw.path, $AGENTL_RAW_DIR or next to the store)")
+    rw.add_argument("--run", help="ls: only this run id")
+    rw.add_argument("--keep-days", type=float, help="prune: drop originals older than this")
+    rw.add_argument("--json", action="store_true", help="ls: print JSON")
+
     sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
     sn.add_argument("pipeline")
     sn.add_argument("--dir", default="snapshots", help="snapshot folder (default: snapshots/<pipeline name>)")
@@ -975,6 +1031,22 @@ def main(argv: list[str] | None = None) -> int:
             return _exit_code(spec, result)
         if a.cmd == "snapshot":
             return _snapshot(a)
+        if a.cmd == "replay":
+            from .raw import ReplayRefused
+
+            spec = load(a.pipeline, params=_params(a.param))
+            with open_store(a.db) as store:
+                runner = Runner(
+                    spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a), raw_from=a.from_raw
+                )
+                try:
+                    result = runner.run()
+                except ReplayRefused as e:
+                    print(f"cannot replay: {e}", file=sys.stderr)
+                    return 2
+            return _exit_code(spec, result)
+        if a.cmd == "raw":
+            return _raw(a)
         if a.cmd in ("validate", "lint"):
             from . import lint
 
