@@ -7,6 +7,7 @@ a throwaway store. The records each writer would have written are compared with 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import tempfile
 from dataclasses import dataclass, field
@@ -133,8 +134,11 @@ def compare(step: str, expected: list[dict], actual: list[dict], key: str | None
     return d
 
 
-def prepare(spec: PipelineSpec, fixtures: dict[str | None, str]) -> tuple[PipelineSpec, list[str]]:
-    """The spec a test runs, and the ids of the steps whose records are compared (the writers)."""
+def prepare(
+    spec: PipelineSpec, fixtures: dict[str | None, str], replay: bool = False
+) -> tuple[PipelineSpec, list[str]]:
+    """The spec a test runs, and the ids of the steps whose records are compared (the writers).
+    With `replay`, sources without a fixture run as they are: their HTTP comes from a cassette."""
     sources = [s for s in spec.steps if not s.inputs and s.kind == "use" and s.use != "trigger"]
     ids = {s.id for s in spec.steps}
     if None in fixtures:
@@ -154,7 +158,7 @@ def prepare(spec: PipelineSpec, fixtures: dict[str | None, str]) -> tuple[Pipeli
             s = StepSpec.model_validate(
                 {"id": s.id, "use": "file.read", "with": {"path": str(fixtures[s.id])}}
             )
-        elif s in sources and s.use not in LOCAL_READERS:
+        elif s in sources and s.use not in LOCAL_READERS and not replay:
             raise SpecError(f"source step '{s.id}' ({s.use}) needs a fixture: --fixture {s.id}=PATH")
         elif s.kind == "use" and s.inputs and s.use not in PURE:
             writers.append(s.id)
@@ -178,14 +182,19 @@ def run_test(
     key: str | None = None,
     ignore: tuple[str, ...] = IGNORED,
     update: bool = False,
+    replay: str | Path | None = None,
 ) -> TestResult:
     """Run `spec` on `fixtures` and compare with the JSON file `expect`: `{step: [records]}`, or a
-    list of records when the pipeline has one writer. `update=True` writes the file instead."""
+    list of records when the pipeline has one writer. `update=True` writes the file instead.
+    `replay` is a cassette folder (`agentl run --record`): HTTP responses and LLM answers come
+    from it instead of the network and the echo provider."""
+    from . import cassettes
     from .runner import Runner
     from .store import open_store
 
-    test_spec, compared = prepare(spec, dict(fixtures))
-    with tempfile.TemporaryDirectory() as tmp:
+    test_spec, compared = prepare(spec, dict(fixtures), replay=replay is not None)
+    tape = cassettes.replaying(replay) if replay is not None else contextlib.nullcontext()
+    with tempfile.TemporaryDirectory() as tmp, tape:
         store = open_store(Path(tmp) / "test.db")
         try:
             result = Runner(test_spec, store=store, use_cache=False).run()

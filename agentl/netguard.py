@@ -180,7 +180,17 @@ def urlopen(
     (an operator-configured http(s) proxy URL) is used for both schemes instead of the
     environment's; the target URL is still checked. `context` is the TLS context for HTTPS (a
     custom CA bundle), instead of `ssl_context()`. `cookies` (an `http.cookiejar.CookieJar`) keeps
-    the cookies set along the way, redirects included."""
+    the cookies set along the way, redirects included. Inside `cassettes.recording()` the
+    response is kept; inside `cassettes.replaying()` it comes from the cassette and nothing is sent."""
+    from . import cassettes
+
+    tape = cassettes.active()
+    if tape is not None:
+        return tape.urlopen(req, lambda: _urlopen(req, timeout, check, proxy, context, cookies))
+    return _urlopen(req, timeout, check, proxy, context, cookies)
+
+
+def _urlopen(req: Any, timeout: float, check: Any, proxy: str | None, context: Any, cookies: Any) -> Any:
     check_url(req.full_url)
     opener = _opener()
     if check is not None or proxy or context is not None or cookies is not None:

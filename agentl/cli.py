@@ -592,6 +592,18 @@ def _fixtures(args: list[str]) -> dict[str | None, str]:
     return fixtures
 
 
+def _run(a: argparse.Namespace, spec: Any) -> int:
+    if spec.window is not None:
+        return _windowed(a, spec)
+    with open_store(a.db) as store:
+        runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
+        result = runner.run()
+        _bug_hint(store, spec, result)
+    if a.show:
+        print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
+    return _exit_code(spec, result)
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import __version__
 
@@ -626,6 +638,11 @@ def main(argv: list[str] | None = None) -> int:
         "--otel", action="store_true", help="emit OpenTelemetry traces and metrics (agentl-etl[otel])"
     )
     r.add_argument("--sentry", action="store_true", help="report failed runs to Sentry using $SENTRY_DSN")
+    r.add_argument(
+        "--record",
+        metavar="DIR",
+        help="keep HTTP responses and LLM answers in DIR/cassette.json, secrets hidden (no agent cache)",
+    )
 
     rs = cmd("resume", "resume a failed run: skip the steps that completed, sinks included")
     rs.add_argument("run_id")
@@ -680,6 +697,11 @@ def main(argv: list[str] | None = None) -> int:
         help="leave this field out of the comparison",
     )
     te.add_argument("--update", action="store_true", help="write the golden file from this run")
+    te.add_argument(
+        "--replay",
+        metavar="DIR",
+        help="serve HTTP responses and LLM answers from a cassette (agentl run --record): offline",
+    )
 
     df = cmd("diff", "what a run would insert, update and delete in each database writer, without writing")
     df.add_argument("pipeline")
@@ -722,6 +744,11 @@ def main(argv: list[str] | None = None) -> int:
         "--from-run",
         metavar="RUN_ID",
         help="add: append the step's records of this run, with the answers it gave, to its golden file",
+    )
+    ev.add_argument(
+        "--from-cassette",
+        metavar="DIR",
+        help="add: append the answers the step got in a recording (agentl run --record) to its golden file",
     )
     ev.add_argument("--json", action="store_true", help="print the reports as JSON")
 
@@ -1009,15 +1036,17 @@ def main(argv: list[str] | None = None) -> int:
             if not a.no_check and not _checked(a.pipeline):
                 return 2
             spec = load(a.pipeline, params=_params(a.param))
-            if spec.window is not None:
-                return _windowed(a, spec)
-            with open_store(a.db) as store:
-                runner = Runner(spec, store=store, use_cache=not a.no_cache, listeners=_listeners(a))
-                result = runner.run()
-                _bug_hint(store, spec, result)
-            if a.show:
-                print(json.dumps(result.outputs.get(a.show, []), ensure_ascii=False, indent=2, default=str))
-            return _exit_code(spec, result)
+            if a.record:
+                from . import cassettes
+
+                a.no_cache = True  # a cached answer would not be recorded
+                with cassettes.recording(a.record) as tape:
+                    code = _run(a, spec)
+                print(
+                    f"recorded {len(tape.http)} HTTP response(s), {len(tape.llm)} LLM answer(s) in {a.record}"
+                )
+                return code
+            return _run(a, spec)
         if a.cmd == "resume":
             from .resume import ResumeRefused
 
@@ -1109,6 +1138,7 @@ def main(argv: list[str] | None = None) -> int:
                 key=a.key,
                 ignore=testing.IGNORED + tuple(a.ignore),
                 update=a.update,
+                replay=a.replay,
             )
             if a.update:
                 print(f"wrote {a.expect} ({tested.status})")
@@ -1147,22 +1177,34 @@ def main(argv: list[str] | None = None) -> int:
             from . import golden
 
             if a.pipeline == "add":
-                if not (a.step and a.add_step and a.from_run):
-                    print("usage: agentl eval add PIPELINE STEP --from-run RUN_ID", file=sys.stderr)
+                if not (a.step and a.add_step) or bool(a.from_run) == bool(a.from_cassette):
+                    print(
+                        "usage: agentl eval add PIPELINE STEP (--from-run RUN_ID | --from-cassette DIR)",
+                        file=sys.stderr,
+                    )
                     return 2
                 spec = load(a.step)
                 step = spec.step(a.add_step)
                 target = golden.golden_path(spec, step)
-                with open_store(a.db) as store:
-                    lines, origin = golden.run_records(store, a.from_run, step)
+                if a.from_cassette:
+                    from . import cassettes
+
+                    lines = cassettes.golden_lines(a.from_cassette, step.id, list(step.output or {}))
+                    origin = f"cassette {a.from_cassette}"
+                else:
+                    with open_store(a.db) as store:
+                        lines, origin = golden.run_records(store, a.from_run, step)
+                    origin = f"run {a.from_run} ({origin})"
                 added = golden.append_lines(target, lines, list(step.output or {}))
                 print(
-                    f"added {added} golden record(s) to {target} from run {a.from_run} ({origin}); "
+                    f"added {added} golden record(s) to {target} from {origin}; "
                     "check and correct the answers by hand"
                 )
                 return 0
-            if a.add_step or a.from_run:
-                print("--from-run goes with `agentl eval add PIPELINE STEP`", file=sys.stderr)
+            if a.add_step or a.from_run or a.from_cassette:
+                print(
+                    "--from-run and --from-cassette go with `agentl eval add PIPELINE STEP`", file=sys.stderr
+                )
                 return 2
             spec = load(a.pipeline)
             variants = [golden.Variant("default")] + [golden.parse_compare(c) for c in a.compare]
