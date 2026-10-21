@@ -154,6 +154,7 @@ must be within `tolerance` (default 0). The path is relative to the pipeline fil
 ```bash
 agentl eval pipeline.yaml                         # every step with a golden set
 agentl eval pipeline.yaml classify --compare model=claude-haiku-5-5   # side by side
+agentl eval pipeline.yaml classify --compare prompt@HEAD~1   # the prompt as it was one commit ago
 agentl eval pipeline.yaml --json
 ```
 
@@ -164,7 +165,19 @@ right answer is the number to compare models with: a cheaper model that gets few
 can cost more per right answer. A record without a valid
 answer counts as wrong in every field. When `min_accuracy` is set and any run (the
 `--compare` ones included) is below it, the command exits 1, so CI can block a bad prompt.
-`--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step.
+`--compare` takes `model=NAME` or `provider=NAME` and changes every llm of the step, or
+`prompt@REF` to run the step with its `agent:` instruction as it was in the pipeline file at
+that git ref (`HEAD~1`, a branch, a tag; the file must be in a git repository). The text report
+shows each field's change against the first run of the step (`category: 91.0%  (vs default: -2.1%)`).
+
+`agentl lint` warns (AL014) when a field the golden set gives as input is never named in the
+step's `agent:` instruction: often a placeholder that was renamed or a field nobody uses.
+
+Seed a golden set from a real run: `agentl eval add pipeline.yaml classify --from-run RUN_ID`
+appends the step's records of that run, with the answers the model gave, to the golden file
+(inputs it already has are skipped), so you correct the wrong answers by hand. It reads the
+step's checkpoint when the run still keeps one (failed runs), else the stored sample of the
+step's first 5 records (records with a value cut at 200 characters are left out).
 
 Answers a person corrected in the [review queue](review.md) can be appended to the golden file
 with `agentl review export --golden golden/classify.jsonl`.

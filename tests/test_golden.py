@@ -117,3 +117,81 @@ def test_eval_scores_hybrid_steps(project, capsys):
     report = json.loads(capsys.readouterr().out)
     report = report[0]
     assert report["fields"]["category"] == pytest.approx(2 / 3)
+
+
+def git(cwd, *args):
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True
+    )
+
+
+class Prompted:
+    """Fake model that only knows taxis are travel when the prompt says so."""
+
+    def __init__(self, spec):
+        self.spec = spec
+
+    def structured(self, instruction, record, schema):
+        text = record["text"].lower()
+        travel = "flight" in text or ("taxi" in instruction.lower() and "taxi" in text)
+        value = {"category": "travel" if travel else "food", "amount": record["price"]}
+        return llm.Result(schema.model_validate(value), input_tokens=10, output_tokens=5)
+
+
+def test_compare_prompt_at_a_git_ref(project, capsys, tmp_path):
+    llm.register_provider("keyword", Prompted)
+    path = project("golden/classify.jsonl")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "pipeline.yaml")
+    git(tmp_path, "commit", "-qm", "old prompt")
+    text = (tmp_path / "pipeline.yaml").read_text(encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(
+        text.replace("Classify the expense.", "Classify the expense text by price; a taxi is travel."),
+        encoding="utf-8",
+    )
+    assert main(["eval", path, "--compare", "prompt@HEAD"]) == 0
+    out = capsys.readouterr().out
+    assert "classify [default]: 100.0% of 3 records right" in out
+    assert "classify [prompt@HEAD]: 66.7% of 3 records right" in out
+    assert "category: 66.7%  (vs default: -33.3%)" in out
+    assert main(["eval", path, "--compare", "prompt@--output=x"]) != 0
+    assert "needs a git ref" in capsys.readouterr().err
+    assert main(["eval", path, "--compare", "prompt@nope"]) != 0
+    assert "prompt@nope" in capsys.readouterr().err
+
+
+def test_eval_add_from_run_appends_the_answers(project, capsys, tmp_path):
+    from agentl import run
+
+    path = project("golden/classify.jsonl")
+    (tmp_path / "data.json").write_text(
+        json.dumps([{"text": "Taxi home", "price": 20}, {"text": "Flight to Lisbon", "price": 300}]),
+        encoding="utf-8",
+    )
+    db = str(tmp_path / "runs.db")
+    result = run(path, db=db)
+    assert result.status == "succeeded"
+    argv = ["eval", "add", path, "classify", "--from-run", result.run_id, "--db", db]
+    assert main(argv) == 0
+    assert "added 1 golden record(s)" in capsys.readouterr().out  # the flight is already in the file
+    lines = (tmp_path / "golden" / "classify.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[-1]) == {"text": "Taxi home", "price": 20, "category": "food", "amount": 20.004}
+    assert main(argv) == 0
+    assert "added 0 golden record(s)" in capsys.readouterr().out
+    assert main(["eval", "add", path, "classify"]) == 2
+
+
+def test_lint_flags_golden_fields_the_prompt_never_names(project, tmp_path):
+    from agentl import lint
+
+    path = project("golden/classify.jsonl")
+    codes = [f for f in lint.check_file(path).findings if f.code == "AL014"]
+    assert len(codes) == 1 and "text, price" in codes[0].message
+    text = (tmp_path / "pipeline.yaml").read_text(encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(
+        text.replace("Classify the expense.", "Classify the expense from its text and price."),
+        encoding="utf-8",
+    )
+    assert not [f for f in lint.check_file(path).findings if f.code == "AL014"]
