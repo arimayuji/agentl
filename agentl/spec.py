@@ -488,6 +488,9 @@ class StepSpec(BaseModel):
     # `condition` holds, for at most `timeout`. See WaitSpec.
     wait_until: WaitSpec | None = None
     cursor: CursorSpec | None = None
+    # Raw zone (#208): `persist: raw` keeps this step's output, the original payload, as an
+    # immutable content-addressed file, so `agentl replay --from-raw` can reprocess it later.
+    persist: Literal["raw"] | None = None
     input: str | list[str] | None = None
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     output: dict[str, str] | None = None
@@ -506,6 +509,9 @@ class StepSpec(BaseModel):
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
     # Personal data before the llm call (#337): warn (default), mask, block or off. See PiiSpec.
     pii: PiiSpec | None = None
+    # On a writer step (#239): `sensitive: false` says this destination may receive the personal
+    # data that lint finds in sample records (a private store, a vault); silences AL014.
+    sensitive: bool | None = None
     # Router (#299): an agent step that labels each record with one of these keys and sends it
     # only to the mapped step (`drop` discards it). Each target reads the router as its input and
     # receives just its branch. `rules:` items here are {when: expr, route: label}.
@@ -704,6 +710,8 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.pii is not None and not self.agent:
             raise ValueError(f"step '{self.id}': pii belongs to agent steps (what is sent to the llm)")
+        if self.sensitive is not None and not is_sink(self.use):
+            raise ValueError(f"step '{self.id}': sensitive belongs to writer steps (a destination)")
         if self.pii is not None and self.pii.before_llm == "mask" and self.output_mode == "rows":
             raise ValueError(
                 f"step '{self.id}': pii mask does not support output_mode rows yet; use block, "
@@ -1356,6 +1364,15 @@ def substitute_params(value: Any, params: Mapping[str, Any]) -> Any:
     return value
 
 
+class RawSpec(BaseModel):
+    """Where `persist: raw` keeps originals and for how long (#208). See agentl/raw.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str | None = None  # default: $AGENTL_RAW_DIR, else `raw/` next to the run store
+    keep_days: float | None = Field(default=None, gt=0)  # default: keep forever
+
+
 class PipelineSpec(BaseModel):
     name: str
     # Free-form str -> str tags (team, domain, ...) recorded with each run; see agentl.labels.
@@ -1389,6 +1406,7 @@ class PipelineSpec(BaseModel):
     mcp: dict[str, MCPServerSpec] = Field(default_factory=dict)
     # Partitions the destination should hold; `agentl gaps` lists the missing ones.
     expect: ExpectSpec | None = None
+    raw: RawSpec | None = None
     # Folder of the YAML file; `fn:` modules are looked up there first. Set by `load`.
     base_dir: str | None = Field(default=None, exclude=True)
 

@@ -407,6 +407,51 @@ sinks idempotent so either is harmless:
 Recommendation: load with `upsert` or `changeset` on a stable key. `fn:` steps with side effects
 are not recognized as writers by name; keep them idempotent too.
 
+## Keep originals and replay them
+
+Sources rarely keep history, so reprocessing last month with fixed code means fetching data that
+is gone. Mark the step whose output is the original payload with `persist: raw`:
+
+```yaml
+raw:
+  path: data/raw          # default: $AGENTL_RAW_DIR, else raw/ next to the run store
+  keep_days: 90           # default: keep forever
+steps:
+  - id: download
+    use: http.get
+    with: { url: "https://example.com/orders.json" }
+    persist: raw
+  - id: rows
+    agent: Extract the order fields.
+    input: download
+```
+
+- Each run stores the step's output as JSON in `objects/<aa>/<sha256>.json`: addressed by its
+  content hash, written once and read-only, never overwritten. The same payload in two runs is
+  one file. A manifest in `runs/<run_id>/` catalogues it (pipeline, step, hash, size, records,
+  time) and the run gets a `raw.stored` event.
+- Outputs JSON cannot hold, outputs holding a secret value, `unprotect` steps and outputs over
+  `AGENTL_RAW_MAX_BYTES` (256 MB by default) are not stored: the run gets `raw.skipped` with the
+  reason. A `persist: raw` step is never streamed in a chunked chain.
+- `raw.keep_days` drops manifests older than that after each run, then every original no
+  manifest references (`raw.pruned` event). `agentl raw prune [PIPELINE] --keep-days N` does the
+  same by hand.
+
+```bash
+agentl raw ls orders.yaml                                 # what is stored, oldest first
+agentl replay orders.yaml --from-raw 20261019-101500-a1b2c3
+```
+
+`agentl replay --from-raw RUN_ID` runs the **current** pipeline with each `persist: raw` step's
+output read back from that run's originals, checked against the hash. The raw steps and the steps
+upstream of them do not run, so no source is fetched; everything downstream, sinks included,
+runs. Agent steps use the per-record cache, so a replay costs nothing new unless the prompt or
+the input changed. The run's `run.started` event carries `replayed_from_raw`. It stops with
+`cannot replay` (exit code 2) when the run has no original for a raw step, an original is
+missing or changed, or a step downstream reads a step upstream of the raw zone directly.
+
+From Python: `agentl.runner.replay_raw("orders.yaml", run_id)`, or `Runner(spec, raw_from=run_id)`.
+
 ## Celery
 
 `pip install 'agentl-etl[celery]'`

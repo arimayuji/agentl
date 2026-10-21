@@ -3,6 +3,8 @@
 ```text
 agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE ...]
 agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
+agentl replay PIPELINE --from-raw RUN_ID [--no-cache] [--param KEY=VALUE ...]   # reprocess kept originals
+agentl raw ls|prune [PIPELINE] [--dir DIR] [--run RUN_ID] [--keep-days N] [--json]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -37,6 +39,8 @@ Every command accepts `--db` to choose the run store: a SQLite path or a `postgr
 Run parameters and `agentl backfill` are described in
 [Scheduling and orchestration](orchestration.md#run-parameters).
 `agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
+`agentl replay --from-raw` and `agentl raw` are described in
+[Keep originals and replay them](orchestration.md#keep-originals-and-replay-them).
 
 ## Run ledger and LLM cost
 
@@ -123,6 +127,7 @@ set. Exit code 2 when there are errors.
 | AL011 | an `http.*` source has a `fallback` but no `retries`, so it switches on the first transient error |
 | AL012 | a field of a local CSV source looks like personal data in its sample and reaches an agent step with no `pii:` setting and no `protect` step for it |
 | AL013 | an `http.*` step sets `tls: {verify: false}`, so HTTPS certificates are not checked |
+| AL014 | a field of a local CSV source looks like personal data in its sample and reaches a writer step with no `protect` step for it and no `pii` check before it; `sensitive: false` on the writer silences it |
 | AL015 | a field the golden set of an agent step gives as input is never named in its `agent:` instruction |
 
 Turn rules off for a pipeline with `lint: { disable: [AL004] }`, or for one line with a

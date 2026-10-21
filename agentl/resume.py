@@ -62,8 +62,12 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def encode(out: Any) -> tuple[str | None, str | None]:
-    """(JSON text, None) for an output that reads back unchanged, else (None, reason)."""
+def encode(
+    out: Any, limit: int | None = None, env: str = "AGENTL_CHECKPOINT_MAX_BYTES"
+) -> tuple[str | None, str | None]:
+    """(JSON text, None) for an output that reads back unchanged, else (None, reason). `limit`
+    defaults to the checkpoint size limit; `env` names the setting the message points to."""
+    limit = max_bytes() if limit is None else limit
     if isinstance(out, registry.Changes):
         payload: dict[str, Any] = {"changes": list(out), "summary": out.summary}
     elif isinstance(out, list):
@@ -74,8 +78,8 @@ def encode(out: Any) -> tuple[str | None, str | None]:
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     except (TypeError, ValueError):
         return None, "output has values JSON cannot hold"
-    if len(text.encode()) > max_bytes():
-        return None, f"output is over the {max_bytes()} byte limit (AGENTL_CHECKPOINT_MAX_BYTES)"
+    if len(text.encode()) > limit:
+        return None, f"output is over the {limit} byte limit ({env})"
     if json.loads(text) != payload:  # tuples, non-string keys: would not read back the same
         return None, "output does not read back unchanged from JSON"
     from . import secrets

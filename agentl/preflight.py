@@ -493,4 +493,22 @@ def preview(spec: PipelineSpec, store: Any, step_id: str, n: int = 5) -> dict:
     else:
         out["output"] = None
         out["why"] = sp.detail or f"{step.kind} steps do not run in a preview"
+    out.update(_pii(inputs, known.get(step_id) if out["output"] is not None else None))
     return out
+
+
+def _pii(inputs: dict[str, Any], output: list[dict] | None) -> dict:
+    """Suspected personal-data fields (#239) in a preview, with masked examples only, and the
+    `protect` step that would cover them."""
+    from .pii import scan, suggest_protect
+
+    found: list[dict] = []
+    for ref, rows in inputs.items():
+        found += [{"in": ref, **f} for f in scan(rows or [])]
+    if output is not None:
+        found += [{"in": "output", **f} for f in scan(output)]
+    shown: dict[str, Any] = {"pii": found}
+    if found:
+        fields = suggest_protect(found)
+        shown["suggest"] = {"use": "protect", "with": {"fields": fields, "key": "${AGENTL_DATA_KEY}"}}
+    return shown

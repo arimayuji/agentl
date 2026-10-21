@@ -68,6 +68,7 @@ RULES = {
     "AL011": "http source with a fallback but no retries",
     "AL012": "personal data in sample records reaches an agent step without protect or pii",
     "AL013": "an http step turns off TLS certificate checks",
+    "AL014": "personal data in sample records reaches a writer step without protect",
     "AL015": "a golden input field the agent prompt never mentions",
 }
 
@@ -696,52 +697,82 @@ def _golden_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
     return out
 
 
-def _pii_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
-    """AL012 (#337): an agent step with no `pii:` setting whose input comes from a local CSV
-    where `pii.scan` flags a field that no `protect` step before it covers. Only local CSV
-    sources are sampled (no network, no secrets); the message never carries a value."""
+def _pii_reaching(spec: PipelineSpec, step_id: str, samples: dict[str, list[dict]]) -> dict[str, str]:
+    """Fields (-> kind) that `pii.scan` flags in the local CSV sources before `step_id` and that
+    no `protect` step before it covers. Only local CSV files are sampled (no network, no
+    secrets); `samples` caches them by source step."""
     from .pii import scan
 
-    out: list[Finding] = []
     by_id = {s.id: s for s in spec.steps}
     base = Path(spec.base_dir or ".")
+    ancestors = _ancestors(spec, step_id)
+    covered: set[str] = set()
+    for a in ancestors:
+        fields = by_id[a].with_.get("fields") if by_id[a].use == "protect" else None
+        if isinstance(fields, dict | list):
+            covered |= {str(f) for f in fields}
+    hits: dict[str, str] = {}
+    for a in sorted(ancestors):
+        src = by_id[a]
+        path = src.with_.get("path")
+        if src.use != "csv.read" or not isinstance(path, str) or "$" in path or "*" in path:
+            continue
+        if a not in samples:
+            p = Path(path) if Path(path).is_absolute() else base / path
+            samples[a] = _sample_csv(p) if p.is_file() else []
+        for f in scan(samples[a]):
+            if f["field"] not in covered:
+                hits.setdefault(f["field"], f["kind"])
+    return hits
+
+
+def _pii_checked(spec: PipelineSpec, step_id: str) -> bool:
+    """A `check` step with `expect: pii` runs before `step_id` (the run fails before the data
+    gets there)."""
+    by_id = {s.id: s for s in spec.steps}
+    return any(by_id[a].check and by_id[a].expect.get("pii") for a in _ancestors(spec, step_id))
+
+
+def _pii_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
+    """AL012 (#337): an agent step with no `pii:` setting that gets a field flagged as personal
+    data in a local CSV sample. AL014 (#239): the same for a writer step, unless it says
+    `sensitive: false` or a `pii` check runs before it. Messages never carry a value."""
+    from .pii import ACTIONS
+
+    out: list[Finding] = []
     samples: dict[str, list[dict]] = {}
     for s in spec.steps:
-        if s.kind != "agent" or s.pii is not None:
-            continue
-        ancestors = _ancestors(spec, s.id)
-        covered: set[str] = set()
-        for a in ancestors:
-            fields = by_id[a].with_.get("fields") if by_id[a].use == "protect" else None
-            if isinstance(fields, dict | list):
-                covered |= {str(f) for f in fields}
-        hits: dict[str, str] = {}
-        for a in sorted(ancestors):
-            src = by_id[a]
-            path = src.with_.get("path")
-            if src.use != "csv.read" or not isinstance(path, str) or "$" in path or "*" in path:
-                continue
-            if a not in samples:
-                p = Path(path) if Path(path).is_absolute() else base / path
-                samples[a] = _sample_csv(p) if p.is_file() else []
-            for f in scan(samples[a]):
-                if f["field"] not in covered:
-                    hits.setdefault(f["field"], f["kind"])
-        if hits:
-            pairs = [f"{f} ({k})" for f, k in hits.items()]
-            line, col = pos.step(s.id)
-            out.append(
-                Finding(
-                    "AL012",
-                    "warning",
-                    f"agent step '{s.id}' sends {', '.join(pairs)} to the llm provider; sample "
-                    "records look like personal data",
-                    line,
-                    col,
-                    "set `pii: {before_llm: mask}` (or block) on the step, or `protect` or drop "
-                    "those fields before it",
+        if s.kind == "agent" and s.pii is None:
+            hits = _pii_reaching(spec, s.id, samples)
+            if hits:
+                pairs = [f"{f} ({k})" for f, k in hits.items()]
+                out.append(
+                    Finding(
+                        "AL012",
+                        "warning",
+                        f"agent step '{s.id}' sends {', '.join(pairs)} to the llm provider; sample "
+                        "records look like personal data",
+                        *pos.step(s.id),
+                        "set `pii: {before_llm: mask}` (or block) on the step, or `protect` or drop "
+                        "those fields before it",
+                    )
                 )
-            )
+        elif s.kind == "use" and spec_is_sink(s.use) and s.sensitive is not False:
+            hits = _pii_reaching(spec, s.id, samples) if not _pii_checked(spec, s.id) else {}
+            if hits:
+                pairs = [f"{f} ({k})" for f, k in hits.items()]
+                fields = ", ".join(f"{f}: {ACTIONS[k]}" for f, k in hits.items())
+                out.append(
+                    Finding(
+                        "AL014",
+                        "warning",
+                        f"writer step '{s.id}' ({s.use}) sends {', '.join(pairs)} to its "
+                        "destination unprotected; sample records look like personal data",
+                        *pos.step(s.id),
+                        f"add a `protect` step before it (`fields: {{{fields}}}`), or set "
+                        "`sensitive: false` on the step if this destination may hold them",
+                    )
+                )
     return out
 
 

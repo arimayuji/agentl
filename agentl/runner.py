@@ -413,10 +413,13 @@ class Runner:
         trigger: list[dict] | None = None,
         replay: dict[str, Records] | None = None,
         resume_from: str | None = None,
+        raw_from: str | None = None,
     ):
         self.spec = spec
         # a failed run to resume (#339): its completed steps are skipped and their outputs read back
         self.resume_from = resume_from
+        # a run whose `persist: raw` originals to reprocess with this code (#208); no source fetch
+        self.raw_from = raw_from
         self._plan: Any = None
         # step id -> records that step runs on instead of its inputs (retry of rejected records)
         self.replay = dict(replay or {})
@@ -2163,8 +2166,49 @@ class Runner:
             **self._step_spend(step, result),
         )
         self._checkpoint(run_id, step, out, hooks_after > hooks_before)
+        if step.persist == "raw":
+            self._persist_raw(run_id, step, out)
         if len(out) == 0 and not step.inputs:
             self._emit(run_id, "source.empty", step_id)
+
+    def _prune_raw(self, run_id: str) -> None:
+        """Apply `raw.keep_days` after a run that keeps originals (#208)."""
+        keep = self.spec.raw.keep_days if self.spec.raw else None
+        if keep is None or not any(s.persist == "raw" for s in self.spec.steps):
+            return
+        from . import raw
+
+        try:
+            manifests, objects = raw.prune(raw.root(self.spec, self.store), keep)
+        except OSError as e:
+            log.warning("raw zone: retention failed: %s", e)
+            return
+        if manifests or objects:
+            self._emit(run_id, "raw.pruned", manifests=manifests, objects=objects, keep_days=keep)
+
+    def _persist_raw(self, run_id: str, step: StepSpec, out: Any) -> None:
+        """Keep the output of a `persist: raw` step as an immutable original (#208)."""
+        from . import raw
+
+        reason = "decrypted values are never stored" if step.use == "unprotect" else None
+        manifest = None
+        if reason is None:
+            try:
+                manifest, reason = raw.store_output(self.spec, self.store, run_id, step.id, out)
+            except OSError as e:
+                reason = f"could not write the original: {e}"
+        if manifest is None:
+            log.warning("raw zone: step %s not stored: %s", step.id, reason)
+            self._emit(run_id, "raw.skipped", step.id, reason=reason)
+            return
+        self._emit(
+            run_id,
+            "raw.stored",
+            step.id,
+            sha256=manifest["sha256"],
+            bytes=manifest["bytes"],
+            records=manifest["records"],
+        )
 
     def _checkpoint(self, run_id: str, step: StepSpec, out: Any, acked: bool = False) -> None:
         """Record that `step` completed, keeping its output when that is cheap and safe (#339)."""
@@ -2306,12 +2350,20 @@ class Runner:
         chains = {}
         gates = self._gates()
         for head in self.spec.steps:
-            if not head.use or head.depends or head.cursor or registry.streaming(head.use)[0] is None:
+            if not head.use or head.depends or head.cursor or head.persist:
+                continue  # a `persist: raw` step keeps its whole output, so it is a boundary
+            if registry.streaming(head.use)[0] is None:
                 continue
             chain, cur = [head], head
             while len(consumers[cur.id]) == 1:
                 nxt = consumers[cur.id][0]
-                if nxt.depends != [cur.id] or not nxt.required or nxt.routes is not None or nxt.id in gates:
+                if (
+                    nxt.depends != [cur.id]
+                    or not nxt.required
+                    or nxt.routes is not None
+                    or nxt.id in gates
+                    or nxt.persist
+                ):
                     break
                 if nxt.kind == "agent":
                     if nxt.mode == "batch":
@@ -2568,9 +2620,15 @@ class Runner:
         self._plan = None
         if self.resume_from:  # refused before anything is recorded
             self._plan = resume.plan(self.spec, self.store, self.resume_from, self._chains())
+        elif self.raw_from:
+            from . import raw
+
+            self._plan = raw.plan(self.spec, self.store, self.raw_from)
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
         resumed: dict[str, Any] = {}
-        if self._plan is not None:
+        if self.raw_from and self._plan is not None:
+            resumed = {"replayed_from_raw": self.raw_from}
+        elif self._plan is not None:
             resumed = {"resumed_from": self._plan.resumed_from, "resumed_chain": self._plan.ancestors}
         self._emit(
             run_id,
@@ -2579,7 +2637,15 @@ class Runner:
             spec_hash=resume.spec_hash(self.spec),
             **resumed,
         )
-        if self._plan is not None:
+        if self.raw_from and self._plan is not None:
+            self._emit(
+                run_id,
+                "run.replayed",
+                from_raw=self.raw_from,
+                originals=self._plan.checkpoints,
+                skipped=sorted(self._plan.done),
+            )
+        elif self._plan is not None:
             for step_id, data in self._plan.checkpoints.items():  # so this run can be resumed too
                 self.store.event(run_id, "checkpoint", step_id, data)
             self._emit(
@@ -2614,6 +2680,7 @@ class Runner:
         self._save_cursors(run_id, result)
         if result.status in ("succeeded", "no_change"):  # nothing left to resume
             resume.remove(self.store, [run_id, *(self._plan.ancestors if self._plan else [])])
+        self._prune_raw(run_id)
         partial: dict[str, Any] = {}
         if result.partial:
             partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
@@ -3061,5 +3128,29 @@ def resume(
         db=db,
         raise_on_failure=raise_on_failure,
         resume_from=run_id,
+        **kwargs,
+    )
+
+
+def replay_raw(
+    pipeline: PipelineSpec | str | os.PathLike,
+    run_id: str,
+    *,
+    vars: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    db: str | os.PathLike | None = None,
+    raise_on_failure: bool = False,
+    **kwargs: Any,
+) -> RunResult:
+    """Reprocess the `persist: raw` originals of run `run_id` with the current pipeline (#208):
+    the raw steps and everything upstream of them are skipped, so no source is fetched. Raises
+    `agentl.raw.ReplayRefused` when the run has no originals for every raw step."""
+    return run(
+        pipeline,
+        vars=vars,
+        params=params,
+        db=db,
+        raise_on_failure=raise_on_failure,
+        raw_from=run_id,
         **kwargs,
     )
