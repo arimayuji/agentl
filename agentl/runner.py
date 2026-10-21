@@ -558,6 +558,13 @@ class Runner:
                     ]
                     prov = llm.FallbackProvider(chain)
                     prov.on_fallback = self._on_fallback
+                from . import cassettes  # here: it loads urllib, which `import agentl` must not
+
+                tape = cassettes.active()
+                if tape is not None:  # record or replay the answers (#211)
+                    prov = cassettes.CassetteProvider(
+                        tape, name, prov, lambda: getattr(self._calling, "step", None) or None
+                    )
                 self._providers[name] = prov
             return self._providers[name]
 

@@ -224,6 +224,28 @@ clean: - {"id": 7, "total": 1}
 Without `--key` a record is either identical or added/removed. Snapshots are written sorted by key
 so their diffs in git stay small. Without a terminal, `-u` needs `--yes`.
 
+## Cassettes: record a run, replay it offline
+
+`agentl run --record DIR` keeps every HTTP response the run gets (sources, tools, notifications)
+and every answer its agent steps get in `DIR/cassette.json`. `agentl test --replay DIR` serves them
+back: no request leaves the machine and no LLM is called, so tests of LLM steps use real answers
+instead of hand-written mocks.
+
+```bash
+agentl run pipeline.yaml --record cassettes/2026-10-16     # real sources, real model
+agentl test pipeline.yaml --replay cassettes/2026-10-16 --expect expected.json --update
+agentl test pipeline.yaml --replay cassettes/2026-10-16 --expect expected.json   # offline
+agentl eval add pipeline.yaml classify --from-cassette cassettes/2026-10-16      # golden lines
+```
+
+Secrets are hidden before the file is written: authorization, cookie and API key headers, the
+password and token-like query parameters of URLs, and token, password, secret and key fields in
+JSON and form bodies all become `***`. Requests are matched on the redacted method, URL and body,
+so a replay works without the secrets; a request or record the cassette does not have fails the
+test. Record data itself is kept as it came: look at the cassette before committing it, and run
+`protect` or `pii` steps when records hold personal data. Recording skips the agent cache, so every
+answer is asked and kept. Batch mode (`batch: true`) is not recorded.
+
 ## Test against a golden file
 
 `agentl test` runs a pipeline on fixture files and compares what each writer would write with an
@@ -583,7 +605,7 @@ their events and show up as model `unknown`.
 `agentl eval pipeline.yaml [STEP] [--compare model=NAME|provider=NAME|prompt@GIT_REF] [--json]`
 scores agent steps on their golden sets, reports the cost per right answer and exits 1 below
 `min_accuracy`. `agentl eval add pipeline.yaml STEP --from-run RUN_ID` appends the answers of a
-past run to the step's golden file for correction by hand. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
+past run (or, with `--from-cassette DIR`, of a recording) to the step's golden file for correction by hand. See [golden sets](agents.md#golden-sets-test-a-prompt-or-model-change).
 
 ## Digest
 
