@@ -11,6 +11,175 @@ They are always listed under **Changed** or **Removed**.
 
 Unreleased changes live as fragments in [`changes/`](https://github.com/arimayuji/agentl/tree/main/changes) until the next release.
 
+## [0.13.0] - 2026-10-21
+
+Pipelines you can trust in production and measure: `agentl diff` before a write, a raw zone with
+`agentl replay --from-raw`, `agentl resume`, gaps with `--fill`, chaining with `foreach`,
+`after_all` and `depends_on`, per-series isolation and SQL conflict retries, HTTP pagination
+styles and login sessions, an error digest, eval prompt comparison across git refs, column-level
+lineage and personal-data checks in `preview` and lint. Upgrading re-asks every cached agent
+answer once, because cache keys now include the built-in prompt version.
+
+### Added
+
+- `agentl diff pipeline.yaml`: runs the pipeline without writing and shows, for each keyed `sqlite.write`, `postgres.write` and `sql.write`, the rows it would insert, update and delete (a dry `mode: changeset` with `emit: changes`). Other writers only show their record count. `--fixture`, `--echo`, `--json`, `--limit` and `--exit-code` for CI (#181).
+- Pipeline chaining under `agentl serve`: `foreach` on a `trigger` action starts one child run per record and `after_all` runs actions once every child has finished, with `when` over their combined metrics; `depends_on` holds a run until the named pipelines last succeeded; `emit` can send to a queue connector (`use: sqs.send`, `kafka.produce`, ...); actions can call a connector with `use`; the dashboard shows a Chain card linking parent and child runs (#203).
+- `checksums: true` with `partition_by` on the three changeset writers (#205): a checksum per
+  partition, stored in `_agentl_checksums`, skips partitions equal to the last run without
+  comparing their rows. The result reports `partitions_skipped`.
+- `mode: changeset` on `postgres.write` and `sql.write` (#205), with the semantics of
+  `sqlite.write`: inserted, updated, deleted and unchanged counts, `deletes: missing` or
+  `partition_replaced`, `dry_run` and `outcome: no_change`. `postgres.write` diffs set-based in a
+  temp table typed like the destination; `sql.write` compares in Python.
+- `vs_runs` and `vs_last_run` checks take `nulls: { column: 5% }`, which fails when a column's
+  null rate moves more than that many percentage points from the median of the last runs (or from
+  the last run). It works with `severity`, so `vs_runs: warn` only reports the drift (#185).
+- Checks: each rule's result (`passed`, `warn`, `reject`, `failed`) is shown per run in a
+  Checks card on the dashboard, and `agentl stats` counts the results per check step and rule
+  with the latest one (`checks` in `--json`) (#185).
+- `chunk: {by: page, size: N}` on agent steps with `output_mode: rows` (#215): each input record
+  is split into groups of `size` pages (the items of `field`, default `text`, when it is a list,
+  or its text split on form feeds) and asked once per group, so a long document does not hit the
+  output limit in one answer. Rejected rows carry `_pages`.
+- `check` steps support composite unique keys: `unique: [[date, currency]]` checks the pair as one
+  key, and mixes with plain columns (`unique: [id, [date, currency]]`). A flat list still checks each
+  column on its own. The failure shows the duplicate count and a few duplicated keys, hiding values
+  of fields that a `protect` step marks (#348).
+- `console.send` and `log.write` steps print or log one line per record and pass the records
+  through (#290).
+- `agentl eval` reports the cost per right answer on a golden set (`right` and `cost_per_right` in
+  `--json`); `agentl stats` reports, on agent steps with human review, the approved answers and their
+  cost, counting what people accepted, fixed and rejected; and `agentl plan` estimates agent steps
+  from the tokens per record that past runs of the step and model really took, falling back to the
+  character-based guess when there is no history (#156).
+- Run errors are grouped by fingerprint (error class, step and normalised message) in the store. Notify rules take `dedupe: true` to alert once per fingerprint and `remind_every` to remind with the count, the first successful run after a failure emits `run.resolved`, and `notify.digest` gains an `errors` section, with `agentl digest --errors` for cron (#356).
+- `agentl eval --compare prompt@REF` scores an agent step with its prompt as it was at a git ref, side by side, with per-field changes against the first run; `agentl eval add PIPELINE STEP --from-run RUN_ID` appends a past run's answers to the golden file for correction by hand; new lint warning AL015 for a golden input field the agent prompt never names (#216).
+- `agentl gaps --fill` backfills only the missing partitions through the `agentl backfill` path
+  (resumable, `--max` run budget, `--concurrency`, composite keys passed as params), and
+  `agentl gaps --notify CHANNEL` sends the gaps to a `notify:` channel for periodic checks (#219).
+- `http.get` and `http.post`: `paginate.style` adds `offset`, `cursor` (token from a JSON path) and
+  `link` (`Link: rel="next"`) pagination, and `total_key` stops at the page or item count, fetching
+  known pages `concurrency` at a time. `auth.login` logs in with a form or JSON body (cookies or a
+  token), logs in again when an answer matches `expired_if` or is a 401, and caches the session for
+  `token_cache_ttl` under a lock so concurrent requests log in once (`shared: true`: across runs
+  through the run store) (#212).
+- `http.get` and `http.post` honour `Retry-After` (`retry_after: respect`), take a request budget per host shared across steps and runs through the run store (`rate_limit: {per_hour: 1000}`, pausing instead of failing), fall back to `mirrors`, and trust a private CA with `tls: {ca_bundle: ...}`; `agentl lint` warns (AL013) on `tls: {verify: false}` (#212).
+- Human review queue for agent steps: `review: {below, when, always, hold}` holds uncertain answers
+  in the run store, `agentl review list|show|accept|fix|reject` handles them, later runs reuse the
+  person's answer with no llm call, and `agentl review export --golden FILE` appends the
+  corrections to a golden set. `agentl stats` and the dashboard count the queue (#153).
+- `if_changed` and `on_unchanged` on the file readers that take a `url` (`file.read`,
+  `archive.read`, `csv.read`, `json.read`, `txt.read`, `excel.read`, `parquet.read`) (#279): the
+  same ETag / Last-Modified / Content-Length / page stamp / hash check as `http.get`, so an
+  unchanged file ends the run as `no_change` (or gives no records) instead of being downloaded
+  and read again.
+- `isolate: per_series` with `series:` runs a step once per group of key values, so a failure writing one series is recorded (`step.series_failed`, `RunResult.series_failed`, outcome `partial`) without failing the others; SQL writers (`sqlite.write`, `postgres.write`, `sql.write`) retry deadlocks and lock timeouts by default, and unique-key races in upsert, scd2 and changeset modes, with new `retries.on` values `deadlock` and `unique_violation` (#206).
+- OpenLineage events carry the `columnLineage` dataset facet, traced through select, cast, compute, aggregate, agent and simple sql steps (#238).
+- Client-side rate limits for llms: `llm.<name>.rate_limit: {rpm, tpm}` is a token bucket shared by
+  every step and thread of a run, with an `llm.throttled` event per wait and the total in
+  `throttled_s` (run result, step spend, run events, `agentl stats`). The OpenAI-compatible providers
+  now honour `Retry-After` (seconds or HTTP date, capped at 60 s), and `budget.max_calls` caps the
+  number of llm calls per run (#336).
+- `agentl mcp` serves MCP resources (docs, the pipeline schema, templates, connectors, pipeline
+  files under `--root` and run summaries) and prompts (build a pipeline, explain the last failed
+  run, estimate the cost), and a streamable HTTP transport with `agentl mcp --http :7072`: localhost
+  by default, with an optional bearer token from `AGENTL_MCP_TOKEN` (#165).
+- `nfe-to-excel` template (`agentl new --template nfe-to-excel`): a folder of NF-e XML files to a
+  spreadsheet of items, with an optional agent step for the expense category. The performance
+  comparison gains an NF-e case, 10,000 synthetic files against a plain `xml.etree` script (#161).
+- Notify rules `on: records` with `step:` send the records a step produced, only when it produced
+  any, one line per record (`template`, or JSON) up to `max_rows` (20) (#290).
+- Agent steps look for personal data in the records they send: `pii: {before_llm: warn|mask|block|off}`
+  emits a `pii.detected` event (the default), replaces detected values with placeholders like
+  `[EMAIL_1]` and restores them in the answer, or rejects the record to the quarantine. The cache
+  keeps masked answers. `agentl lint` warns (AL012) when sampled CSV fields that look like personal
+  data reach an agent step without `protect` or `pii`, and the docs say what is sent to providers
+  (#337).
+- `agentl preview` lists fields that look like personal data in a step's input and output (masked
+  examples only) and suggests the `protect` step for them. `agentl lint` warns (AL014) when such a
+  field of a local CSV sample reaches a writer step without `protect` or a `pii` check before it;
+  `sensitive: false` on the writer step silences it on purpose (#239).
+- `persist: raw` keeps a step's output as an immutable, content-addressed original (sha256) next to
+  the run store or under `raw.path`, with `raw.keep_days` retention. `agentl replay PIPELINE
+  --from-raw RUN_ID` reprocesses those originals with the current code without fetching the source,
+  and `agentl raw ls` / `agentl raw prune` list and prune them (#208).
+- `agentl report --submit` files the report with your logged-in `gh` after asking, falling back to
+  the prefilled URL without `gh`. Reports carry a fingerprint (error class, top agentl frame,
+  version), and `--submit` shows existing issues with it instead of filing a duplicate. New pipeline
+  setting `report: {on_bug: prompt|open|off}` (default `prompt`) for the bug hint after a failed run.
+  (#286)
+- `agentl resume <run_id> <pipeline>` resumes a failed run: completed steps, sinks included, are
+  skipped and their outputs read back from checkpoints under `.agentl/checkpoints/`, and the run
+  goes on from the first failed step. It refuses when the spec changed or a completed writer would
+  have to write again; the new run carries `resumed_from` (#339).
+- `{run_id}` in writer paths (`json.write`, `csv.write`, ...) gives each run its own file (#290).
+- Schedules: a cycle whose window closes with no successful run now emits a `schedule.late`
+  event (`cycle`, `expected_at`) that `notify:` rules can route, besides the log warning. (#201)
+- Schedules: `expect.nth` and `expect.months` for month rules such as "every second month,
+  first Sunday", and three more holiday calendars: `uk_england`, `de_national` and `ca_federal`
+  (#201).
+- `notify.digest`: a scheduled digest of the check rules' findings (new, resolved, ongoing) sent once
+  per period at a set time and time zone, with a "sent today" guard per channel, an "all clear"
+  heartbeat, `agentl digest` for cron and sending from `agentl serve`. Row rules take
+  `notify: digest | none` (#218).
+- `emit: changes` on changeset writes (`sqlite.write`, `postgres.write`, `sql.write`, #289): the
+  step outputs the inserted, updated and deleted rows, each with `_change` and, for updates,
+  `_before` (the stored values of the changed columns), so a downstream step consumes the diff.
+  Works with `dry_run` as a preview; the counts stay in events and the run summary.
+
+### Changed
+
+- The agent cache key includes the version of the built-in prompts, so an upgrade that changes them asks the model again instead of serving answers made under the old prompts (#338). Upgrading to this release re-asks every cached agent answer once; reviewed answers from the human review queue are kept. New step option `cache_version` to invalidate a step's cached results by hand.
+- `on_drift: remap` on a check (#178) no longer stops the run: it hands the new layout to the
+  `map_schema` steps that read the check, which reuse a stored or pinned mapping or infer a new
+  one, and stop for review when they have `review: required`. The new layout is recorded only
+  once it has been mapped. A check with `on_drift: remap` now needs such a step.
+- The `google` extra no longer installs `requests`: the service account token refresh uses a
+  standard-library transport. Fuzzy matching in `resolve` is tested on both backends (`rapidfuzz`
+  and the `difflib` fallback), and CI runs the test suite with only the core dependencies (#294).
+- `nfe.read` is about 1.8x faster and holds less memory on large folders: one element lookup instead
+  of two, and each parsed file is freed once its items are read (#161).
+- `pdf.read` joins the text of its pages with a form feed (`\f`) instead of a newline, so
+  `chunk: {by: page}` can split it again.
+- The run store records a schema version and applies ordered migrations on open, on SQLite and
+  Postgres, replacing the ad hoc column checks; stores from older releases upgrade in place and keep
+  their cache, state, seen keys and runs. CI gains a `lowest` job that tests the core at its lowest
+  declared dependency versions on Python 3.10 (#340).
+
+### Fixed
+
+- Fixed: `agentl eval` scored every record of a step with `rules:` as having no answer, because the `_path` tag that hybrid steps add to their answers hid them from the scorer.
+- HTML parsing keeps the partial tree instead of failing with AssertionError on badly broken markup such as `<![` followed by junk, which older Python releases raise from `html.parser`. Found by the fuzzer.
+- `json.read` on a JSON Lines file wraps scalar lines as `{"value": ...}`, as it already did for JSON
+  arrays, instead of returning non-record rows (and failing with `encoding: auto`). Found by fuzzing (#167).
+- `notify.digest` on a Postgres store no longer fails reading its sent-today guard: string values in the cache are returned as stored instead of being parsed again.
+- Fixed: the raw zone (`persist: raw`) could not store or prune originals on Windows, which refuses to delete a read-only file.
+- Release workflow: when a draft release for the tag already exists (Release Drafter), it now
+  publishes the draft on the built commit instead of only attaching files to it.
+- Schedules: a poll that comes due after its cycle's window closed (the service slept) is
+  skipped, so the cycle is not reopened and reported late twice. (#201)
+- `sql` step: an input with no records keeps its columns when they are known (a `sqlite.read` of an
+  empty table, or the step's `schema:` or `output:`), so a `left join` against it returns every left
+  row instead of nothing. When the columns are unknown and other inputs have records, a query that
+  names them now fails with a clear error instead of returning no records (#288).
+- A failing check with `on_fail: stop` now stops sibling writers: every final step waits for the
+  pipeline's required stop checks, so `typed -> save` no longer writes while
+  `typed -> production -> check` fails (#278).
+
+### Security
+
+- Supply chain hardening for the OpenSSF Scorecard: Atheris fuzz targets for the YAML loader, the CSV,
+  JSON and XML readers and the template parsers, run by ClusterFuzzLite on pull requests and weekly;
+  CI installs its tools from hash-locked `requirements/*.txt`; releases attach the signed SLSA
+  provenance as `.intoto.jsonl` next to the Sigstore bundle (#167).
+
+### Docs
+
+- Docs search: hint and empty-state text that name real connectors and commands, matches inside
+  dotted names (`html.select`, `on_drift`), a share link, and a brand-styled panel with a blue focus
+  ring and highlighted matches.
+- The docs home page plays the animated agentl logo instead of the 30 second launch video.
+
 ## [0.12.0] - 2026-10-18
 
 Agents that check each other and a project that is easy to join: critic, router and jury
@@ -816,7 +985,8 @@ Kinesis and Event Hubs sources with time windows.
 - Notifications to Slack, generic webhooks and the console.
 - CLI (`run`, `validate`, `diagram`, `runs`, `connectors`, `dashboard`) and a local dashboard.
 
-[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/arimayuji/agentl/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/arimayuji/agentl/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/arimayuji/agentl/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/arimayuji/agentl/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/arimayuji/agentl/compare/v0.9.0...v0.10.0
