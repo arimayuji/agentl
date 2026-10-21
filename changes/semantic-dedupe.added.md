@@ -1,0 +1,1 @@
+`dedupe` with `semantic:` drops rewritten copies of the same text: offline MinHash over shingles by default, or embeddings from an `llm` entry (Ollama for a local model), cached by text hash and counted in the step's spend; dropped records carry `_duplicate_of` and the `dedupe.semantic` event says which record survived and why (#200).

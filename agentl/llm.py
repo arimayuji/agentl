@@ -45,6 +45,16 @@ class Result:
     cost_usd: float | None = None  # set when known exactly (provider report or fallback); else from price
 
 
+@dataclass
+class Embeddings:
+    """`embed` result: one vector per text, in order, and the tokens it used."""
+
+    vectors: list[list[float]]
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = None
+
+
 class InvalidOutput(ValueError):
     """The model answered, but not in the requested shape. Carries the tokens the call used, so
     budgets and cost still count them."""
@@ -404,6 +414,19 @@ class EchoProvider:
     def text(self, instruction: str, content: str) -> str:
         return content[:500]
 
+    def embed(self, texts: list[str]) -> Embeddings:
+        """Offline vectors: hashed word counts (256 dimensions). Same words, same vector; for tests
+        and dry runs, not a model of meaning."""
+        from .semantic import normalise
+
+        out = []
+        for t in texts:
+            v = [0.0] * 256
+            for w in normalise(t):
+                v[int(hashlib.sha256(w.encode()).hexdigest()[:8], 16) % 256] += 1.0
+            out.append(v)
+        return Embeddings(out)
+
 
 def _strict_schema(schema: type[BaseModel]) -> dict:
     """JSON schema in the shape strict structured outputs expect: every field
@@ -586,6 +609,7 @@ class OpenAICompatibleProvider:
         self.timeout = float(opts.pop("timeout", 120))
         self.retries = int(opts.pop("retries", 2))
         self.sleep: Callable[[float], None] = time.sleep  # replaced in tests
+        self.embedding_model = opts.pop("embedding_model", None)  # for `embed`, never sent on chat
         self.extra = opts
         self.spec = spec
 
@@ -629,6 +653,20 @@ class OpenAICompatibleProvider:
 
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+    def embed(self, texts: list[str]) -> Embeddings:
+        """Vectors from the OpenAI-style `/embeddings` endpoint (OpenAI, Ollama, vLLM). The model
+        is `options.embedding_model`, else `model`."""
+        model = self.embedding_model or self.spec.model
+        resp = json.loads(self._http("POST", "/embeddings", json.dumps({"model": model, "input": texts})))
+        data = sorted(resp.get("data") or [], key=lambda d: d.get("index", 0))
+        usage = resp.get("usage") or {}
+        cost = usage.get("cost")
+        return Embeddings(
+            [list(d["embedding"]) for d in data],
+            int(usage.get("prompt_tokens") or 0),
+            cost_usd=None if cost is None else float(cost),
+        )
 
     def _structured_body(self, instruction: str, record: dict, schema: type[BaseModel]) -> dict:
         msg = user_message(instruction, record)
