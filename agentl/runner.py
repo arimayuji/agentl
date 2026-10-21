@@ -936,6 +936,74 @@ class Runner:
         self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
         return self._agent_finish(run_id, step, slots, len(records), result)
 
+    def _run_first_valid(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
+        """`first_valid` (#195): each alternative in order with the whole input; the first that
+        runs without error and whose output passes `validate` wins. A failing alternative is an
+        event (`first_valid.fallthrough`), not a failed step; the step fails only when all do."""
+        fv = step.first_valid
+        assert fv is not None
+        failures: list[str] = []
+        for i, alt in enumerate(fv.try_):
+            body = step.model_copy(
+                update={
+                    "first_valid": None,
+                    "fn": alt.fn,
+                    "use": alt.use,
+                    "agent": alt.agent,
+                    "with_": dict(alt.with_),
+                    "output": alt.output,
+                    "llm": alt.llm or step.llm,
+                }
+            )
+            try:
+                got: Any = self._run_step(run_id, body, result.outputs, result, data)
+                out = got.to_pylist() if _is_table(got) else list(got)
+                problem = _first_valid_problem(out, fv.validate_)
+            except (BudgetExceeded, registry.NoChange):
+                raise
+            except Exception as e:
+                problem = _describe(e)
+            if problem is not None:
+                failures.append(f"{alt.label}: {problem}")
+                self._emit(run_id, "first_valid.fallthrough", step.id, path=alt.label, index=i, error=problem)
+                continue
+            if fv.report_path:
+                out = [{**r, "_path": alt.label} if isinstance(r, dict) else r for r in out]
+            with self._spend:
+                result.spend[step.id]["paths"] = {alt.label: len(out)}
+            self._emit(
+                run_id,
+                "first_valid.path",
+                step.id,
+                path=alt.label,
+                index=i,
+                agent=bool(alt.agent),
+                records=len(out),
+                failed=len(failures),
+            )
+            if alt.agent and fv.alert_agent_share is not None:
+                self._first_valid_alert(run_id, step, fv.alert_agent_share, fv.alert_window)
+            return out
+        raise ValueError(f"step '{step.id}': no first_valid alternative passed ({'; '.join(failures)})")
+
+    def _first_valid_alert(self, run_id: str, step: StepSpec, limit: float, window: int) -> None:
+        """`first_valid.alert` when the agent path ran in more than `limit` of the last `window`
+        runs of this pipeline that ran the step (this one included)."""
+        runs = [r["id"] for r in self.store.recent_runs(self.spec.name, window + 1) if r["id"] != run_id]
+        agent, seen = 1, 1
+        for rid in runs[: window - 1]:
+            picked = [
+                e for e in self.store.events(rid) if e["type"] == "first_valid.path" and e["step"] == step.id
+            ]
+            if picked:
+                seen += 1
+                agent += bool(picked[-1]["data"].get("agent"))
+        share = agent / seen
+        if share > limit:
+            self._emit(
+                run_id, "first_valid.alert", step.id, agent_share=round(share, 3), runs=seen, limit=limit
+            )
+
     def _run_route(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """A router (#299): `rules:` pick a label first; the llm labels the other records, with
         the answer constrained to the route labels (cached per record, budgeted like any agent
@@ -1695,6 +1763,9 @@ class Runner:
             # A source agent step (no input) runs once; an empty upstream means nothing to do.
             return self._run_agent(run_id, step, [{}] if data is None else data, result)
 
+        if step.kind == "first_valid":
+            return self._run_first_valid(run_id, step, data, result)
+
         if step.use == "trigger":
             return [dict(r) for r in self.trigger]
 
@@ -2156,7 +2227,7 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind == "agent" or step.review or step.use in ("map_schema", "resolve"):
+        if step.kind in ("agent", "first_valid") or step.review or step.use in ("map_schema", "resolve"):
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
@@ -3048,6 +3119,23 @@ def _apply_rules(
             continue
         found[r[tag]] = value.model_dump()
     return found
+
+
+def _first_valid_problem(out: list, check: Any) -> str | None:
+    """Why an alternative's output fails `first_valid.validate`, or None when it passes."""
+    if len(out) < check.rows_min:
+        return f"{len(out)} records, rows_min is {check.rows_min}"
+    for n, r in enumerate(out):
+        if not isinstance(r, dict):
+            return f"record {n} is not a mapping"
+        missing = [f for f in check.required if r.get(f) is None or r.get(f) == ""]
+        if missing:
+            return f"record {n} misses {', '.join(missing)}"
+    if check.types:
+        _, bad = contracts.validate(out, check.types, on_bad="reject")
+        if bad:
+            return f"type check failed: {bad[0].get('_error', 'bad value')}"
+    return None
 
 
 def _route_instruction(question: str, labels: list[str]) -> str:

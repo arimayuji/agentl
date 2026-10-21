@@ -1,0 +1,1 @@
+`first_valid` steps: try deterministic parsers in order and an agent last, falling through on an error or on output that fails `validate`; each record carries `_path`, the dashboard shows the share per path and `alert_agent_share` alerts when the agent wins too often (#195).
