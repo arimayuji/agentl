@@ -77,10 +77,11 @@ def _write_new(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        os.chmod(tmp, 0o400)
         # fails if another writer got there first: same content anyway
         with contextlib.suppress(FileExistsError):
             os.link(tmp, path)
+            # read-only only once linked: Windows refuses to unlink a read-only temp file
+            os.chmod(path, 0o400)
     finally:
         os.unlink(tmp)
 
@@ -154,6 +155,8 @@ def prune(base: Path, keep_days: float, now: float | None = None) -> tuple[int, 
     objects = 0
     for p in (base / "objects").glob("*/*.json"):
         if p.stem not in live:
+            with contextlib.suppress(FileNotFoundError):
+                os.chmod(p, 0o600)  # objects are read-only; Windows will not delete them as such
             p.unlink(missing_ok=True)
             objects += 1
     return dropped, objects
