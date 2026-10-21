@@ -85,3 +85,20 @@ def test_one_visit_per_upstream_record(site):
 def test_bad_extract():
     with pytest.raises(ValueError, match="extract"):
         get("browser.scrape")(None, url="http://x", extract="pdf")
+
+
+def test_evidence_store_keeps_html_and_screenshot(site, tmp_path):
+    rows = get("browser.scrape")(
+        None,
+        url=f"{site}/item1.html",
+        selector="p.name",
+        extract="text",
+        evidence={"raw": True, "screenshot": True, "path": str(tmp_path)},
+    )
+    from agentl import evidence
+
+    shot = rows[0]["_evidence_screenshot"]
+    png = evidence.Backend(str(tmp_path)).get(shot, ".png")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    html = evidence.Backend(str(tmp_path)).get(rows[0]["_evidence"], ".body")
+    assert b"item 1" in html

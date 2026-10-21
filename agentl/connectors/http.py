@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import evidence as _evidence
 from .. import llm, netguard
 from ..registry import NoChange, after_run, connector, run_store, step_state
 from ._util import single
@@ -56,6 +57,7 @@ class Client:
     context: Any = None
     auth: dict | None = None
     session: Session | None = None
+    evidence: Any = None  # agentl.evidence.Recorder
 
     def __post_init__(self) -> None:
         if self.retry_after not in ("respect", "ignore"):
@@ -171,15 +173,47 @@ class Client:
 
     def fetch(self, method: str, url: str, headers: dict, body: Any) -> tuple[Any, Any]:
         """(response headers, parsed JSON body)."""
+        return self.fetch_tagged(method, url, headers, body)[:2]
+
+    def fetch_tagged(self, method: str, url: str, headers: dict, body: Any) -> tuple[Any, Any, dict]:
+        """(response headers, parsed JSON body, `_evidence*` fields of the capture)."""
         data = None
         headers = {"Accept": "application/json", **headers}
         if body is not None:
             data = json.dumps(body).encode()
             headers.setdefault("Content-Type", "application/json")
-        _, resp_headers, raw = self.open(
-            urllib.request.Request(url, data=data, headers=headers, method=method)
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        started = time.monotonic()
+        try:
+            status, resp_headers, raw = self.open(req)
+        except urllib.error.HTTPError as e:
+            if self.evidence is not None:
+                err = e.read() if e.fp is not None else b""
+                self._capture(method, url, headers, e.code, e.headers, err, started, failed=True)
+            raise
+        fields = (
+            self._capture(method, url, headers, status, resp_headers, raw, started, status >= 400)
+            if self.evidence is not None
+            else {}
         )
-        return resp_headers, _parse(raw)
+        return resp_headers, _parse(raw), fields
+
+    def _capture(
+        self,
+        method: str,
+        url: str,
+        headers: dict,
+        status: int,
+        resp_headers: Any,
+        raw: bytes,
+        started: float,
+        failed: bool,
+    ) -> dict:
+        from ..evidence import request_metadata
+
+        ctype = resp_headers.get("Content-Type") if resp_headers is not None else None
+        meta = request_metadata(method, url, status, headers, resp_headers, time.monotonic() - started)
+        return dict(self.evidence.capture(url, body=raw, request=meta, failed=failed, content_type=ctype))
 
 
 _TOKENS: dict[str, tuple[float, dict]] = {}  # login key -> (expires, headers), for this process
@@ -366,7 +400,15 @@ def _changed_get(
         on_unchanged,
         client=client,
     )
-    return [] if body is None else _as_records(_parse(body), items)
+    if body is None:
+        return []
+    fields = {}
+    if client.evidence is not None:
+        from ..evidence import request_metadata
+
+        meta = request_metadata("GET", url, 200, headers)
+        fields = dict(client.evidence.capture(url, body=body, request=meta))
+    return _evidence.tag(_as_records(_parse(body), items), fields)
 
 
 def conditional_get(
@@ -518,7 +560,8 @@ def _pages(
     after `max_pages`; `total_key` (page: the page count, offset: the item count) stops it
     when that total is reached."""
     if not paginate:
-        return _as_records(client.request(method, _with_query(url, params), headers, body), items)
+        _, data, fields = client.fetch_tagged(method, _with_query(url, params), headers, body)
+        return _evidence.tag(_as_records(data, items), fields)
     style = paginate.get("style", "page")
     if style not in _STYLES:
         raise ValueError(f"paginate.style must be one of {', '.join(_STYLES)}")
@@ -533,8 +576,8 @@ def _pages(
     out: list[dict] = []
 
     def get(query: dict, target: str = url) -> tuple[Any, Any, list[dict]]:
-        resp_headers, data = client.fetch(method, _with_query(target, query), headers, body)
-        return resp_headers, data, _as_records(data, items) if data else []
+        resp_headers, data, fields = client.fetch_tagged(method, _with_query(target, query), headers, body)
+        return resp_headers, data, _evidence.tag(_as_records(data, items), fields) if data else []
 
     if style == "page":
         param, page = paginate.get("param", "page"), int(paginate.get("start", 1))
@@ -636,6 +679,7 @@ def http_get(
     mirrors: list[str] | None = None,
     tls: dict | None = None,
     auth: dict | None = None,
+    evidence: bool | dict | None = None,
 ) -> list[dict]:
     """GET a JSON API. `items: data` picks the list inside each response. Every page:
     `paginate: { param: page, next: next_page }` (the page number goes in `param`, starting at
@@ -660,8 +704,12 @@ def http_get(
     `auth: {login: {url, form | json, token_key}, expired_if: "Please sign in"}` logs in once
     (cookies, or the token at `token_key` sent as `Authorization: Bearer`), caches the session for
     `token_cache_ttl` (30m) under a lock and logs in again when an answer matches `expired_if` or
-    has status 401 (`expired_status`); `shared: true` shares it through the run store."""
+    has status 401 (`expired_status`); `shared: true` shares it through the run store.
+
+    `evidence: {raw: true, request: true, when: changed}` keeps every answer body and its request
+    metadata, content-addressed, and tags the records with `_evidence` (see agentl/evidence.py)."""
     client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls, auth=auth)
+    client.evidence = _evidence.recorder(evidence, "http.get")
     if if_changed is not None:
         if single(input) or paginate:
             raise ValueError("if_changed works on a single URL: no input step and no paginate")
@@ -686,7 +734,9 @@ def http_post(
     mirrors: list[str] | None = None,
     tls: dict | None = None,
     auth: dict | None = None,
+    evidence: bool | dict | None = None,
 ) -> list[dict]:
     """POST a JSON body (`json`, `{field}` filled per record); the other options are `http.get`'s."""
     client = Client(timeout, retries, retry_after, rate_limit, list(mirrors or []), tls, auth=auth)
+    client.evidence = _evidence.recorder(evidence, "http.post")
     return _http("POST", input, url, headers, json, items, concurrency, client, params, paginate)

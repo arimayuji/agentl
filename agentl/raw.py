@@ -71,11 +71,11 @@ def _safe(step_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", step_id) + "-" + hashlib.sha256(step_id.encode()).hexdigest()[:8]
 
 
-def object_path(base: Path, sha: str) -> Path:
-    return base / "objects" / sha[:2] / f"{sha}.json"
+def object_path(base: Path, sha: str, suffix: str = ".json") -> Path:
+    return base / "objects" / sha[:2] / f"{sha}{suffix}"
 
 
-def _write_new(path: Path, data: bytes) -> None:
+def write_new(path: Path, data: bytes) -> None:
     """Write `data` to `path` atomically, only if it does not exist yet (never overwrite)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -107,7 +107,7 @@ def store_output(
     data = text.encode()
     sha = hashlib.sha256(data).hexdigest()
     base = root(spec, store)
-    _write_new(object_path(base, sha), data)
+    write_new(object_path(base, sha), data)
     manifest = {
         "run_id": run_id,
         "pipeline": spec.name,

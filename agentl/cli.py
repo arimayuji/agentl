@@ -406,6 +406,56 @@ def _raw(a: argparse.Namespace) -> int:
     return 0
 
 
+def _evidence(a: argparse.Namespace) -> int:
+    from . import evidence
+
+    with open_store(a.db) as store:
+        if a.action == "show":
+            if not a.target:
+                print("evidence show: give the sha256 (or a prefix) of an artifact", file=sys.stderr)
+                return 2
+            rows = store.evidence_list(sha256=a.target, limit=2)
+            if len({r["sha256"] for r in rows}) > 1:
+                print(f"evidence show: {a.target!r} matches several artifacts", file=sys.stderr)
+                return 2
+            if not rows:
+                print(f"evidence show: no artifact {a.target!r} in the index", file=sys.stderr)
+                return 1
+            try:
+                data = evidence.read(rows[0])
+            except (OSError, ValueError) as e:
+                print(f"evidence show: {e}", file=sys.stderr)
+                return 1
+            if a.out:
+                Path(a.out).write_bytes(data)
+                print(f"wrote {len(data)} bytes to {a.out}")
+            else:
+                sys.stdout.buffer.write(data)
+                sys.stdout.flush()
+            return 0
+        rows = store.evidence_list(run_id=a.target, limit=a.limit)
+    if a.action == "verify":
+        bad = evidence.verify(rows)
+        for row, problem in bad:
+            print(f"{row['sha256'][:12]}  {row['kind']}  {row['url']}  {problem}")
+        checked = len({(r["location"], r["sha256"], r["kind"]) for r in rows})
+        print(f"verified {checked} artifact(s): {len(bad)} problem(s)")
+        return 1 if bad else 0
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no evidence in the index" + (f" for run {a.target}" if a.target else ""))
+        return 0
+    for r in rows:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.get("captured_at") or 0))
+        print(
+            f"{when}  {r['run_id']}  {r['pipeline']}/{r['step']}  {r['kind']:<10}  "
+            f"{r['sha256'][:12]}  {r['bytes']} bytes  {r['url']}"
+        )
+    return 0
+
+
 def _snapshot(a: argparse.Namespace) -> int:
     from . import snapshots
 
@@ -987,6 +1037,13 @@ def main(argv: list[str] | None = None) -> int:
     rw.add_argument("--keep-days", type=float, help="prune: drop originals older than this")
     rw.add_argument("--json", action="store_true", help="ls: print JSON")
 
+    ev = cmd("evidence", "artifacts kept by `evidence:` steps: list, print one, or re-hash them all")
+    ev.add_argument("action", choices=["ls", "show", "verify"])
+    ev.add_argument("target", nargs="?", help="ls, verify: a run id (default: all); show: a sha256 or prefix")
+    ev.add_argument("--out", help="show: write the artifact to this file instead of stdout")
+    ev.add_argument("--limit", type=int, default=1000, help="ls, verify: at most this many index rows")
+    ev.add_argument("--json", action="store_true", help="ls: print JSON")
+
     sn = cmd("snapshot", "run a pipeline and compare step outputs with saved snapshots, by key")
     sn.add_argument("pipeline")
     sn.add_argument("--dir", default="snapshots", help="snapshot folder (default: snapshots/<pipeline name>)")
@@ -1136,6 +1193,8 @@ def main(argv: list[str] | None = None) -> int:
             return _exit_code(spec, result)
         if a.cmd == "raw":
             return _raw(a)
+        if a.cmd == "evidence":
+            return _evidence(a)
         if a.cmd in ("validate", "lint"):
             from . import lint
 

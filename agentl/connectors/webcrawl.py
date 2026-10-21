@@ -210,6 +210,7 @@ def web_crawl(
     incremental: bool = False,
     timeout: float = 30,
     retries: int = 2,
+    evidence: bool | dict | None = None,
 ) -> Records:
     """Crawl breadth first from `start` (URLs, or the `url` field of upstream records) and the
     pages listed in `sitemap`, following links up to `max_depth` (0: only the start pages) and
@@ -217,7 +218,9 @@ def web_crawl(
     subdomains included) and URLs matching an `include` regex (if any) and no `exclude` regex are
     followed. One record per page: url, status, depth, referrer, links, and html and/or markdown
     (`format`). `obey_robots: false` skips robots.txt and logs a warning. `proxy` is one proxy URL
-    or a mapping of host to proxy URL (`"*"` for the rest); pass it from a secret."""
+    or a mapping of host to proxy URL (`"*"` for the rest); pass it from a secret. `evidence: {raw:
+    true, request: true, when: changed}` keeps each page as received, content-addressed, and
+    tags its record with `_evidence` (see agentl/evidence.py)."""
     if format not in FORMATS:
         raise ValueError(f"web.crawl: format must be one of {', '.join(FORMATS)}, not {format!r}")
     starts = _as_list(start) or [str(r["url"]) for r in single(input) if r.get("url")]
@@ -226,6 +229,9 @@ def web_crawl(
         raise ValueError("web.crawl: set 'start' and/or 'sitemap', or feed records with a 'url' field")
     for u in starts + sitemaps:
         netguard.require_http(u, "web.crawl")
+    from .. import evidence as _evidence
+
+    recorder = _evidence.recorder(evidence, "web.crawl")
     agent = user_agent or default_agent()
     client = _Client(headers, delay, timeout, retries, agent, proxy)
     if not obey_robots:
@@ -281,7 +287,9 @@ def web_crawl(
             cond["If-None-Match"] = prev["etag"]
         if incremental and prev.get("last_modified"):
             cond["If-Modified-Since"] = prev["last_modified"]
+        started = time.monotonic()
         resp = client.get(url, cond)
+        elapsed = time.monotonic() - started
         read += 1
         if resp.status == 304 and prev:
             new[url] = prev
@@ -324,6 +332,13 @@ def web_crawl(
                     from .web import to_markdown
 
                     rec["markdown"] = to_markdown(html, resp.url)["markdown"] if html else ""
+                if recorder is not None:
+                    meta = _evidence.request_metadata(
+                        "GET", resp.url, resp.status, {**client.headers, **cond}, resp.headers, elapsed
+                    )
+                    ctype = resp.headers.get("Content-Type") if resp.headers else None
+                    failed = resp.status >= 400
+                    rec.update(recorder.capture(resp.url, resp.body, meta, failed=failed, content_type=ctype))
                 out.append(rec)
         if depth < max_depth:
             for link in links:

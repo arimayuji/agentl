@@ -1921,9 +1921,11 @@ class Runner:
         state = registry._STEP_STATE.set(self._step_state(step.id))
         seen = registry._SEEN.set(self._seen_keys())
         store = registry._RUN_STORE.set(self.store)
+        current = registry._STEP.set((self.spec.name, step.id))
         try:
             out = fn(data, **step.with_)
         finally:
+            registry._STEP.reset(current)
             registry._RUN_STORE.reset(store)
             registry._SEEN.reset(seen)
             registry._STEP_STATE.reset(state)

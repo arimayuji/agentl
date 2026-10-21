@@ -560,6 +560,50 @@ From Python: `agentl.runner.replay_raw("orders.yaml", run_id)`, or `Runner(spec,
 `agentl.raw.parse_when("2026-06-30", end=True)` converts a date), and `since_step="rows"` works
 with both.
 
+## Evidence of what a source returned
+
+`persist: raw` keeps a step's parsed output. `evidence:` on `http.get`, `http.post`, `web.crawl`
+and `browser.scrape` keeps what the source itself returned, for audits, disputes ("the site said
+X at 14:03") and debugging an extraction:
+
+```yaml
+steps:
+  - id: pages
+    use: web.crawl
+    with:
+      start: https://example.com/prices
+      evidence:
+        raw: true          # the response body as received (default when nothing else is set)
+        request: true      # method, URL, status, headers (credentials redacted), timing, ETag
+        when: changed      # changed (default) | always | on_failure
+        storage: s3://audit-bucket/evidence   # or path: data/evidence; default next to the run store
+```
+
+- Artifacts are stored by content hash, like the raw zone: `objects/<aa>/<sha256>.body` (`.json`
+  for `request`, `.png` for `screenshot`), written once and never overwritten, so a page seen by
+  many runs is one file. `storage` takes any fsspec URL (`pip install 'agentl-etl[remote]'`,
+  `storage_options` for credentials); the default is `$AGENTL_EVIDENCE_DIR`, else `evidence/`
+  next to the SQLite run store, else `.agentl/evidence`.
+- Every record gets `_evidence`, the sha256 of its main artifact (raw, else screenshot, else
+  request), and `_evidence_<kind>` for the others.
+- The run store indexes each stored artifact: run id, pipeline, step, URL (secrets redacted),
+  kind, sha256, size, content type, time and storage location.
+- `when: changed` stores and indexes a capture only when its hash differs from the last one
+  indexed for the same pipeline, step and URL; an unchanged page stores nothing new and its
+  records point to the earlier artifact. `always` indexes every capture; `on_failure` only answers
+  with HTTP 4xx/5xx (and, in the browser, pages that gave no records).
+- `screenshot: true` (a full-page PNG) needs a browser, so only `browser.scrape` takes it. There,
+  a mapping turns on this store; `evidence: true` or a folder keeps the older dated files.
+- `max_bytes` (50 MB by default) skips larger artifacts with a warning. Header and URL secrets
+  are redacted in the request metadata, but bodies are kept as received: do not turn evidence on
+  for answers that carry credentials.
+
+```bash
+agentl evidence ls 20261019-101500-a1b2c3     # what a run stored (no run id: every run)
+agentl evidence show 3f9a2c1b > page.html     # the exact bytes, by sha256 or a unique prefix
+agentl evidence verify                        # re-hash every indexed artifact; exit 1 on a problem
+```
+
 ## Celery
 
 `pip install 'agentl-etl[celery]'`
