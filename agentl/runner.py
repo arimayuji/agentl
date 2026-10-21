@@ -905,6 +905,8 @@ class Runner:
         records they cannot handle are sent to the llm; the output keeps the input order and each
         record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
         (one record in, many rows out), which spec validation keeps apart from `rules:`."""
+        if step.views:
+            records = self._views(run_id, step, records, result)
         records = self._pii_gate(run_id, step, records, result)
         if step.routes is not None:
             return self._run_route(run_id, step, records, result)
@@ -935,6 +937,30 @@ class Runner:
             result.spend[step.id]["paths"] = paths
         self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
         return self._agent_finish(run_id, step, slots, len(records), result)
+
+    def _views(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """`views:` (#214): each record as the llm will receive it, with its derived views (some
+        pages, PDF text or tables, compact HTML) in place of their source fields. Views are cached
+        by the source's hash; a record whose view cannot be built goes to the quarantine."""
+        from . import views
+
+        cacheable = self.use_cache and step.cached
+        get = self.store.cache_get if cacheable else None
+        put = self.store.cache_set if cacheable else None
+        stats = dict.fromkeys(("pages_total", "pages_sent", "source_chars", "view_chars", "cache_hits"), 0)
+        out: Records = []
+        bad: Records = []
+        for rec in records:
+            try:
+                out.append(views.apply(step, rec, get, put, stats))
+            except (ValueError, OSError) as e:
+                bad.append({**rec, "_error": str(e)})
+        with self._spend:
+            result.spend[step.id]["views"] = dict(stats)
+        self._emit(run_id, "agent.views", step.id, records=len(out), rejected=len(bad), **stats)
+        if bad:
+            self._rejects(run_id, step.id, bad, len(bad), result)
+        return out
 
     def _run_route(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """A router (#299): `rules:` pick a label first; the llm labels the other records, with

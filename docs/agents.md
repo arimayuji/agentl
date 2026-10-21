@@ -380,6 +380,49 @@ A very long document can also be split before it is sent, with `chunk:`:
 - A record without the field, or with no more than `size` pages, goes whole. Rejected rows and
   failed groups carry `_pages`, the first and last page of the group (1-based).
 
+### Views: send only what the model needs
+
+`views:` builds derived views of a record before the call and sends them in place of their
+source field, so a table-heavy PDF does not go whole (`input:` stays the upstream step):
+
+```yaml
+- id: prices
+  input: pdfs                     # records with a `path` to each PDF
+  agent: Extract the rows of the price table.
+  output_mode: rows
+  output: {item: str, price: float}
+  views:
+    document: {use: pdf.text, pages: [1, "3-"]}
+    tables: {use: pdf.tables, pages: [2]}
+    page: {use: html.compact, from: html, drop: [script, style], keep_attrs: [colspan, rowspan]}
+```
+
+| `use` | Source (`from`, default) | Sends |
+|---|---|---|
+| `pages` (default) | `text` | Only `pages` of a form-feed text (as `pdf.read` gives) or of a list |
+| `pdf.text` | `path` | The text of the selected pages, separated by form feeds |
+| `pdf.tables` | `path` | `[{page, rows}]`: tables found in the layout text of the selected pages |
+| `html.compact` | `html` | The HTML without the `drop` tags, comments and attributes not in `keep_attrs` |
+
+- `pages` takes 1-based numbers and `"first-last"` ranges (`"3-"` is page 3 to the end; a
+  negative number counts from the end). Pages outside the document are skipped. Only these
+  pages are read and sent; the step's spend reports `views` with `pages_total`, `pages_sent`,
+  `source_chars`, `view_chars` and `cache_hits`, next to the usual token counts.
+- `from` may also hold the PDF's bytes. The source field is not sent, unless a view on it says
+  `keep_source: true`. A view runs before `pii:` and `chunk:`, so `chunk: {by: page, field: document}`
+  splits the pages a view kept.
+- Each view is cached by its settings and the SHA-256 of its source (the file's bytes), so a
+  second run, or another step with the same view of the same document, does not read it again.
+  A changed file is a new hash. `cache: false` on the step turns this off too.
+- PDF views run with pypdf's module settings reset to the values they had when agentl first
+  used them, and put back afterwards: a global set by one step's code does not change how a view
+  in another step reads its pages or tables.
+- `pdf.tables` is a heuristic on the text layer of digital PDFs: lines whose cells are separated
+  by wide gaps. Merged cells and tables without gaps between columns may come out split. OCR
+  (`engine: ocr`, for scanned PDFs) is not supported yet and fails at load time; see #160.
+- A record whose view cannot be built (missing field, file not found, not a PDF) goes to the
+  quarantine with `_error`; the others are asked.
+
 ### Batch mode
 
 For jobs that can wait, send the whole step through the provider's batch API. It answers within
