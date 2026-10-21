@@ -1,5 +1,6 @@
-"""Every recipe in examples/recipes runs offline: a local server stands in for the APIs and sites,
-and a stand-in model answers for the LLMs (#128). Each recipe must also lint without errors."""
+"""Every recipe in examples/recipes and every ETL pattern in examples/patterns (#307) runs offline:
+a local server stands in for the APIs and sites, and a stand-in model answers for the LLMs (#128).
+Each one must also lint without errors."""
 
 import http.server
 import json
@@ -15,7 +16,9 @@ from agentl.llm import Result
 from agentl.runner import Runner
 from agentl.store import Store
 
-RECIPES = sorted(p for p in (Path(__file__).parent.parent / "examples" / "recipes").iterdir() if p.is_dir())
+ROOT = Path(__file__).parent.parent
+RECIPES = sorted(p for p in (ROOT / "examples" / "recipes").iterdir() if p.is_dir())
+PATTERNS = sorted(p for p in (ROOT / "examples" / "patterns").iterdir() if p.is_dir())
 NEEDS = {
     "03-pdf-invoices-to-excel": ["pypdf", "openpyxl"],
     "04-contracts-summary": ["docx"],
@@ -112,7 +115,7 @@ def _stand_in(spec):
     return spec
 
 
-@pytest.mark.parametrize("recipe", RECIPES, ids=[r.name for r in RECIPES])
+@pytest.mark.parametrize("recipe", RECIPES + PATTERNS, ids=[r.name for r in RECIPES + PATTERNS])
 def test_recipe_runs_offline(recipe, tmp_path, server, monkeypatch):
     for module in NEEDS.get(recipe.name, []):
         pytest.importorskip(module)
@@ -139,9 +142,63 @@ def test_recipe_runs_offline(recipe, tmp_path, server, monkeypatch):
         if recipe.name == "06-incremental-api-load":
             again = Runner(_stand_in(load(work / "pipeline.yaml")), store=store).run()
             assert again.status == "succeeded" and len(again.outputs["customers"]) == 0
+        _pattern_holds(recipe.name, work, spec, result, store)
+
+
+def _pattern_holds(name, work, spec, result, store):
+    """What each pattern promises, checked on a second run where it matters."""
+
+    def again(**kw):
+        return Runner(_stand_in(load(work / "pipeline.yaml")), store=store, **kw).run()
+
+    if name == "incremental-cursor":
+        assert len(result.outputs["orders"]) == 3
+        assert again().outputs["orders"] == []
+    elif name == "idempotent-rerun":
+        assert again().outputs["new_payments"] == []
+    elif name == "changeset-write":
+        assert result.outputs["save"][0]["inserted"] == 4
+        (work / "facts.csv").write_text("month,product,units\n2026-10,shoes,140\n")
+        out = again().outputs["save"][0]
+        assert (out["updated"], out["deleted"]) == (1, 1)  # 2026-09 untouched
+    elif name == "scd2-history":
+        (work / "customers.csv").write_text("customer_id,name,city,segment\nc1,Acme,Chicago,enterprise\n")
+        out = again().outputs["dim_customer"][0]
+        assert (out["versioned"], out["closed"]) == (1, 2)
+    elif name == "fan-out-fan-in":
+        assert len(result.outputs["all_sales"]) == 4
+    elif name == "quarantine-dead-letter":
+        assert result.outcome == "partial"
+        assert sorted(r["id"] for r in result.outputs["verify"]) == [1, 4]
+    elif name == "raw-zone-replay":
+        replay = again(raw_from=result.run_id)
+        assert replay.status == "succeeded" and replay.outputs["save"]
+    elif name == "parsers-first":
+        assert {r["_path"] for r in result.outputs["rates"]} == {"json_api"}
+    elif name == "fallback-source":
+        assert {r["_source"] for r in result.outputs["prices"]} == {"fallback[0]"}
+    elif name == "rules-before-model":
+        assert [r["_path"] for r in result.outputs["parse_address"]] == ["rules", "rules", "agent"]
+    elif name == "router":
+        assert [r["_route"] for r in result.outputs["invoices"]] == ["invoice"]
+    elif name == "data-contract":
+        assert "notes" not in result.outputs["verify"][0]
 
 
 def test_every_recipe_is_listed_in_the_docs():
-    page = (Path(__file__).parent.parent / "docs" / "recipes.md").read_text()
+    page = (ROOT / "docs" / "recipes.md").read_text()
     for recipe in RECIPES:
         assert f"recipes/{recipe.name}/" in page, recipe.name
+
+
+def test_every_pattern_has_a_page():
+    index = (ROOT / "docs" / "patterns" / "index.md").read_text()
+    nav = (ROOT / "mkdocs.yml").read_text()
+    for pattern in PATTERNS:
+        page = ROOT / "docs" / "patterns" / f"{pattern.name}.md"
+        assert page.is_file(), pattern.name
+        text = page.read_text()
+        assert f'--8<-- "examples/patterns/{pattern.name}/pipeline.yaml"' in text, pattern.name
+        for part in ("## When to use", "## When not to", "## Diagram"):
+            assert part in text, (pattern.name, part)
+        assert f"({pattern.name}.md)" in index and f"patterns/{pattern.name}.md" in nav, pattern.name

@@ -1,0 +1,23 @@
+# Confidence cascade: a cheap model answers first; records it is unsure about, or whose answer
+# stays invalid, go to a stronger model.
+name: confidence-cascade
+llm:
+  cheap: { provider: openrouter, model: openai/gpt-4o-mini }
+  strong: { provider: openrouter, model: anthropic/claude-sonnet-4.5 }
+budget: { max_usd: 2 }
+steps:
+  - id: reviews
+    use: csv.read
+    with: { path: reviews.csv }
+  - id: sentiment
+    input: reviews
+    agent: >
+      Label the review as positive, neutral or negative.
+      confidence: how sure you are, from 0 to 1.
+    llm: [cheap, strong]
+    escalate_below: 0.8
+    output: { label: str, confidence: float }
+  - id: save
+    use: csv.write
+    input: sentiment
+    with: { path: out/reviews.csv }

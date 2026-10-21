@@ -1,0 +1,4 @@
+[
+  {"station": "north", "fahrenheit": 68.0, "read_at": "2026-10-20T06:00:00"},
+  {"station": "south", "fahrenheit": 75.2, "read_at": "2026-10-20T06:00:00"}
+]

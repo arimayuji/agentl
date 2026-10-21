@@ -1,0 +1,20 @@
+# Parsers first, the agent last: try deterministic readers in order and keep the first output
+# that passes validation; the LLM only runs when every parser fails.
+name: parsers-first
+steps:
+  - id: rates
+    first_valid:
+      validate: { rows_min: 1, required: [day, rate], types: { rate: float } }
+      try:
+        - name: csv_export
+          use: csv.read
+          with: { path: rates.csv }
+        - name: json_api
+          use: json.read
+          with: { path: rates.json }
+        - agent: Extract each day and its rate from the file.
+          output: { day: str, rate: float }
+  - id: save
+    use: csv.write
+    input: rates
+    with: { path: out/rates.csv }

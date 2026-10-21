@@ -308,3 +308,10 @@
 [data-md-color-scheme="slate"] .agt-grad {
   background: linear-gradient(transparent 62%, rgba(255, 212, 0, .45) 62%, rgba(255, 212, 0, .45) 92%, transparent 92%);
 }
+
+/* ETL patterns catalog (#307): one card per pattern, grouped by category */
+.md-typeset .pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: .8rem; margin: .8rem 0 1.6rem; }
+.md-typeset .pattern-card { padding: .9rem 1rem; border-radius: 12px; border: 1px solid var(--md-default-fg-color--lightest);
+  border-top: 3px solid #0070c9; background: var(--md-default-bg-color); }
+.md-typeset .pattern-card p { margin: 0 0 .4rem; font-size: .7rem; line-height: 1.5; color: var(--md-default-fg-color--light); }
+.md-typeset .pattern-card p:first-child { font-size: .8rem; font-weight: 700; }

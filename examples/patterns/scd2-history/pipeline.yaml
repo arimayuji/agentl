@@ -1,0 +1,17 @@
+# Slowly changing dimension (SCD type 2): keep every version of a customer instead of
+# overwriting it, with valid_from, valid_to and is_current.
+name: scd2-history
+steps:
+  - id: customers
+    use: csv.read
+    with: { path: customers.csv }
+  - id: dim_customer
+    use: sqlite.write
+    input: customers
+    with:
+      db: out/warehouse.db
+      table: dim_customer
+      mode: scd2
+      key: customer_id
+      track: [city, segment]
+      on_missing: close

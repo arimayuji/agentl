@@ -1,0 +1,4 @@
+customer_id,name,city,segment
+c1,Acme,Boston,enterprise
+c2,Globex,Denver,smb
+c3,Initech,Austin,smb

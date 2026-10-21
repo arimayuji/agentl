@@ -76,6 +76,22 @@ nav:
       - Migrate from pandas: migrate-from-pandas.md
       - Use with AI agents: ai-agents.md
       - API reference: reference.md
+  - Patterns:
+      - Overview: patterns/index.md
+      - Incremental load with a cursor: patterns/incremental-cursor.md
+      - Idempotent re-run: patterns/idempotent-rerun.md
+      - Changeset write: patterns/changeset-write.md
+      - Change history with SCD type 2: patterns/scd2-history.md
+      - Fan-out and fan-in: patterns/fan-out-fan-in.md
+      - Quarantine and dead letter: patterns/quarantine-dead-letter.md
+      - Raw zone and replay: patterns/raw-zone-replay.md
+      - Retries with backoff, then a fallback source: patterns/fallback-source.md
+      - Best-effort side outputs: patterns/best-effort-side-output.md
+      - Data contract at the boundary: patterns/data-contract.md
+      - Parsers first, the agent last: patterns/parsers-first.md
+      - Rules before the model: patterns/rules-before-model.md
+      - Confidence cascade: patterns/confidence-cascade.md
+      - Router: patterns/router.md
   - Community:
       - Roadmap: roadmap.md
       - Contributing: community.md

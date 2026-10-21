@@ -18,7 +18,7 @@ agentl diagram PIPELINE
 agentl runs [show RUN_ID [--json]]
 agentl cost [--since 30d] [--by pipeline,model] [--usd-per-hour X | --lambda-memory-mb MB | --bill-usd X] [--json]
 agentl connectors [NAME]
-agentl new --list | --template NAME [-o FILE]   # tested recipes, no LLM
+agentl new --list | --template NAME [-o FILE]   # tested recipes and ETL patterns, no LLM
 agentl new "DESCRIPTION" [-o FILE] [--provider P] [--model M]
 agentl doctor [RUN_ID] [--suggest] [--pipeline FILE]
 agentl stats [PIPELINE] [--since 30d] [--label KEY=VALUE ...] [--json]

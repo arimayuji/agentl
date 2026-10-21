@@ -1,0 +1,17 @@
+# Raw zone and replay: keep the original payload as an immutable file, so fixed code can
+# reprocess an old run with agentl replay --from-raw RUN_ID, without fetching the source again.
+name: raw-zone-replay
+raw: { keep_days: 90 }
+steps:
+  - id: download
+    use: http.get
+    with: { url: "${API_URL:-https://api.example.com}/readings" }
+    persist: raw
+  - id: celsius
+    use: compute
+    input: download
+    with: { fields: { celsius: "round((fahrenheit - 32) * 5 / 9, 1)" } }
+  - id: save
+    use: json.write
+    input: celsius
+    with: { path: out/readings.json }

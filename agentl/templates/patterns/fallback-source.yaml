@@ -1,0 +1,16 @@
+# Retries with backoff, then a fallback source: transient errors are retried, and when the main
+# source is still down the step reads a backup with the same shape.
+name: fallback-source
+steps:
+  - id: prices
+    use: http.get
+    with: { url: "${API_URL:-https://api.example.com}/prices" }
+    retries: { attempts: 3, backoff: 1s, max_backoff: 10s, on: [transport, http_5xx, http_429] }
+    fallback:
+      - use: csv.read
+        with: { path: backup/prices.csv }
+    fallback_tag: true
+  - id: save
+    use: json.write
+    input: prices
+    with: { path: out/prices.json }

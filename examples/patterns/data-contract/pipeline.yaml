@@ -1,0 +1,24 @@
+# Data contract at the boundary: a per-record schema on the source and a dataset check before
+# the write, so bad data stops at the door instead of reaching the warehouse.
+name: data-contract
+steps:
+  - id: orders
+    use: csv.read
+    with: { path: orders.csv }
+    schema:
+      id: int
+      total: float
+      status: { enum: [paid, pending, refunded] }
+      coupon: text?
+    on_bad: coerce
+    extra: drop
+  - id: verify
+    check: orders
+    expect:
+      rows: { min: 1 }
+      unique: id
+      rejected_rate: "< 50%"
+  - id: load
+    use: sqlite.write
+    input: verify
+    with: { db: out/orders.db, table: orders, mode: upsert, key: id }

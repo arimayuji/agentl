@@ -20,11 +20,18 @@ def _sync():
     return mod
 
 
-def test_templates_match_the_recipes():
-    want = _sync().expected()
-    assert templates.names() == sorted(want), "run: python tools/sync_templates.py"
+@pytest.mark.parametrize("group", ["recipes", "patterns"])
+def test_templates_match_the_recipes(group):
+    want = _sync().expected(group)
+    assert templates.names(group) == sorted(want), "run: python tools/sync_templates.py"
     for name, text in want.items():
+        assert templates.group(name) == group
         assert templates.text(name) == text, f"template {name} is stale: run python tools/sync_templates.py"
+
+
+def test_template_names_are_unique_across_groups():
+    assert not set(templates.names("recipes")) & set(templates.names("patterns"))
+    assert len(templates.names()) == len(templates.names("recipes")) + len(templates.names("patterns"))
 
 
 @pytest.mark.parametrize("name", templates.names())
@@ -40,6 +47,12 @@ def test_new_list_and_template(tmp_path, capsys, monkeypatch):
     listed = capsys.readouterr().out
     line = next(x for x in listed.splitlines() if x.startswith("incremental-api-load "))
     assert "Load only what changed" in line
+    lines = listed.splitlines()
+    assert lines[0] == "recipes:" and "patterns:" in lines
+    scd2 = next(i for i, x in enumerate(lines) if x.startswith("scd2-history "))
+    assert scd2 > lines.index("patterns:")
+    assert main(["new", "-t", "scd2-history"]) == 0
+    assert "mode: scd2" in capsys.readouterr().out
     assert main(["new", "-t", "incremental-api-load", "-o", "pipeline.yaml"]) == 0
     assert (tmp_path / "pipeline.yaml").read_text() == templates.text("incremental-api-load")
     capsys.readouterr()
