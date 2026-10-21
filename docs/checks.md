@@ -75,6 +75,20 @@ action. From Python, `agentl.pii.scan(records)` returns the findings and
 `agentl.pii.suggest_protect(findings)` the `fields` for a `protect` step. Detection is heuristic:
 expect misses (free-text fields, unformatted phones) and some false positives.
 
+`agentl preview PIPELINE STEP` adds `pii`, the suspected fields in the step's input and output
+(masked examples only), and, when there are any, `suggest`: the `protect` step that covers them.
+`agentl lint` warns (AL014) when such a field of a local CSV sample reaches a writer step with no
+`protect` for it and no `pii` check before it. When a destination may hold that data on purpose (a
+private database, a vault), say so on the writer step and the warning goes away:
+
+```yaml
+- id: save
+  use: postgres.write
+  input: clean
+  sensitive: false   # this destination may receive personal data; silences AL014
+  with: { table: customers }
+```
+
 `unique` takes a column or a list. A flat list checks each column on its own: `[date, currency]`
 fails as soon as two rows share a date, even with different currencies. A nested list is one
 composite key, unique as a whole: `[[date, currency]]` allows many currencies per date and many
