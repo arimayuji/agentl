@@ -157,7 +157,8 @@ def dedupe(
     """Kept records (input order), dropped records and a report. A dropped record carries
     `_duplicate_of` (the kept record's `id` field, or its input position), `_similarity` and
     `_kept_because`; with `mark: true` dropped records stay in the output instead of being left
-    out, and kept ones get `_duplicate_of: null`. Dropped records are never in `rejected`: a duplicate is not an error."""
+    out, and kept ones get `_duplicate_of: null`. Dropped records are never in `rejected`: a
+    duplicate is not an error."""
     o = options(semantic)
     if o["backend"] == "embeddings" and embed is None:
         raise ValueError("dedupe semantic with `llm` runs inside a pipeline (it needs the llm provider)")
