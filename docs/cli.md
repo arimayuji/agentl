@@ -359,6 +359,16 @@ agentl seen list [--scope weekly-reports]
 agentl seen forget --scope weekly-reports [KEY]  # reprocess one key, or the whole scope
 ```
 
+## Gather groups
+
+Parts that `gather.add` marked for a `gather:` trigger (see
+[Fan in](orchestration.md#fan-in-gather-parts-from-independent-runs)):
+
+```bash
+agentl gather ls                       # each group: parts, first and last arrival, firings
+agentl gather forget batch-2026-10-01  # drop its parts and firings; it gathers and fires again
+```
+
 ## Column mappings
 
 `map_schema` steps keep one column mapping per input layout in the run store
