@@ -509,6 +509,9 @@ class StepSpec(BaseModel):
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
     # Personal data before the llm call (#337): warn (default), mask, block or off. See PiiSpec.
     pii: PiiSpec | None = None
+    # On a writer step (#239): `sensitive: false` says this destination may receive the personal
+    # data that lint finds in sample records (a private store, a vault); silences AL014.
+    sensitive: bool | None = None
     # Router (#299): an agent step that labels each record with one of these keys and sends it
     # only to the mapped step (`drop` discards it). Each target reads the router as its input and
     # receives just its branch. `rules:` items here are {when: expr, route: label}.
@@ -707,6 +710,8 @@ class StepSpec(BaseModel):
             raise ValueError(f"step '{self.id}': expect and review belong to check steps")
         if self.pii is not None and not self.agent:
             raise ValueError(f"step '{self.id}': pii belongs to agent steps (what is sent to the llm)")
+        if self.sensitive is not None and not is_sink(self.use):
+            raise ValueError(f"step '{self.id}': sensitive belongs to writer steps (a destination)")
         if self.pii is not None and self.pii.before_llm == "mask" and self.output_mode == "rows":
             raise ValueError(
                 f"step '{self.id}': pii mask does not support output_mode rows yet; use block, "
