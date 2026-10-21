@@ -242,3 +242,23 @@ def apply(
     for f in sources - kept_sources - set(step.views):
         sent.pop(f, None)
     return sent
+
+
+def build(
+    step: StepSpec,
+    records: list[dict],
+    cache_get: Callable[[str], Any] | None,
+    cache_set: Callable[[str, Any], None] | None,
+) -> tuple[list[dict | None], list[dict], dict[str, int]]:
+    """`apply` on each record: the sent records (None where a view failed), the failed records
+    with `_error`, and the stats."""
+    stats = dict.fromkeys(("pages_total", "pages_sent", "source_chars", "view_chars", "cache_hits"), 0)
+    sent: list[dict | None] = []
+    bad: list[dict] = []
+    for rec in records:
+        try:
+            sent.append(apply(step, rec, cache_get, cache_set, stats))
+        except (ValueError, OSError) as e:
+            sent.append(None)
+            bad.append({**rec, "_error": str(e)})
+    return sent, bad, stats

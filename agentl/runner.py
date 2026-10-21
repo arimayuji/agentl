@@ -905,7 +905,7 @@ class Runner:
         records they cannot handle are sent to the llm; the output keeps the input order and each
         record says which path produced it in `_path`. `output_mode: rows` (#215) has its own path
         (one record in, many rows out), which spec validation keeps apart from `rules:`."""
-        if step.views:
+        if step.views and step.output_mode == "rows":  # rows mode outputs rows, not the record
             records = self._views(run_id, step, records, result)
         records = self._pii_gate(run_id, step, records, result)
         if step.routes is not None:
@@ -913,14 +913,14 @@ class Runner:
         if step.output_mode == "rows":
             return self._run_rows(run_id, step, records, result)
         if not step.rules:
-            answered = self._pii_masked(run_id, step, list(records), result, self._agent_reviewed)
+            answered = self._viewed(run_id, step, list(records), result, self._agent_reviewed)
             return self._agent_finish(run_id, step, answered, len(records), result)
         records = list(records)
         schema = llm.schema_model(f"{step.id}_output", step.output or {})
         by_rules = _apply_rules(step, records, schema, self.spec.base_dir)
         rest = [i for i, out in enumerate(by_rules) if out is None]
         asked = (
-            self._pii_masked(run_id, step, [records[i] for i in rest], result, self._agent_reviewed)
+            self._viewed(run_id, step, [records[i] for i in rest], result, self._agent_reviewed)
             if rest
             else []
         )
@@ -938,29 +938,70 @@ class Runner:
         self._emit(run_id, "hybrid.paths", step.id, **paths, total=len(records))
         return self._agent_finish(run_id, step, slots, len(records), result)
 
-    def _views(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
-        """`views:` (#214): each record as the llm will receive it, with its derived views (some
-        pages, PDF text or tables, compact HTML) in place of their source fields. Views are cached
-        by the source's hash; a record whose view cannot be built goes to the quarantine."""
+    def _view_records(
+        self, run_id: str, step: StepSpec, records: Records, result: RunResult
+    ) -> tuple[list[dict | None], Records]:
+        """`views:` (#214): each record as the llm will receive it (None when a view cannot be
+        built) and the rejects of those, with the stats on the step's spend and an event."""
         from . import views
 
         cacheable = self.use_cache and step.cached
-        get = self.store.cache_get if cacheable else None
-        put = self.store.cache_set if cacheable else None
-        stats = dict.fromkeys(("pages_total", "pages_sent", "source_chars", "view_chars", "cache_hits"), 0)
-        out: Records = []
-        bad: Records = []
-        for rec in records:
-            try:
-                out.append(views.apply(step, rec, get, put, stats))
-            except (ValueError, OSError) as e:
-                bad.append({**rec, "_error": str(e)})
+        sent, bad, stats = views.build(
+            step,
+            records,
+            self.store.cache_get if cacheable else None,
+            self.store.cache_set if cacheable else None,
+        )
         with self._spend:
             result.spend[step.id]["views"] = dict(stats)
-        self._emit(run_id, "agent.views", step.id, records=len(out), rejected=len(bad), **stats)
+        self._emit(
+            run_id, "agent.views", step.id, records=len(records) - len(bad), rejected=len(bad), **stats
+        )
+        return sent, bad
+
+    def _views(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
+        """Rows mode with `views:`: the records the llm receives; a record whose view cannot be
+        built goes to the quarantine."""
+        sent, bad = self._view_records(run_id, step, records, result)
         if bad:
             self._rejects(run_id, step.id, bad, len(bad), result)
-        return out
+        return [r for r in sent if r is not None]
+
+    def _viewed(
+        self,
+        run_id: str,
+        step: StepSpec,
+        records: Records,
+        result: RunResult,
+        ask: Callable[[str, StepSpec, Records, RunResult], list[tuple[dict | None, dict | None]]],
+    ) -> list[tuple[dict | None, dict | None]]:
+        """`_pii_masked(ask)` on the records as the views make them (#214), with slots aligned
+        with `records`. The answer is merged into the original record: the source fields stay
+        and the view fields are not passed on, so the steps after see the data they gave."""
+        if not step.views or not records:
+            return self._pii_masked(run_id, step, records, result, ask)
+        sent, bad = self._view_records(run_id, step, records, result)
+        errors = iter(bad)
+        idx = [i for i, r in enumerate(sent) if r is not None]
+        asked = self._pii_masked(run_id, step, [r for r in sent if r is not None], result, ask) if idx else []
+        answers = dict(zip(idx, asked, strict=True))
+        answer_fields = set(step.output or {})
+        slots: list[tuple[dict | None, dict | None]] = []
+        for i, rec in enumerate(records):
+            if i not in answers:
+                slots.append((None, next(errors)))
+                continue
+            good, rejected = answers[i]
+
+            def back(r: dict | None, rec: dict = rec, view: dict = sent[i] or {}) -> dict | None:
+                if r is None:
+                    return None
+                # the answer and the step's own marks (`_path`, `_review`...); not the views
+                added = {k: v for k, v in r.items() if k in answer_fields or k not in view}
+                return {**rec, **added}
+
+            slots.append((back(good), back(rejected)))
+        return slots
 
     def _run_route(self, run_id: str, step: StepSpec, records: Records, result: RunResult) -> Records:
         """A router (#299): `rules:` pick a label first; the llm labels the other records, with
@@ -986,7 +1027,7 @@ class Runner:
         schema = create_model(f"{step.id}_route", route=(Literal[tuple(labels)], ...))  # type: ignore[arg-type]
         bad: Records = []
         slots = (
-            self._pii_masked(
+            self._viewed(
                 run_id,
                 step,
                 [records[i] for i in rest],

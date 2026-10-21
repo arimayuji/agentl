@@ -420,6 +420,11 @@ source field, so a table-heavy PDF does not go whole (`input:` stays the upstrea
 - `pdf.tables` is a heuristic on the text layer of digital PDFs: lines whose cells are separated
   by wide gaps. Merged cells and tables without gaps between columns may come out split. OCR
   (`engine: ocr`, for scanned PDFs) is not supported yet and fails at load time; see #160.
+- Views change only what is sent. The step's output is the original record (source fields as
+  they were, no view fields) with the answer added, so the steps after it get the data they gave.
+  In `output_mode: rows` the output is the rows, as usual.
+- `agentl plan` applies the views (reading the cached ones) before it counts cache hits and
+  estimates tokens, so its numbers match what the run sends.
 - A record whose view cannot be built (missing field, file not found, not a PDF) goes to the
   quarantine with `_error`; the others are asked.
 

@@ -384,6 +384,11 @@ def plan(spec: PipelineSpec, store: Any, records: dict | None = None) -> Plan:
                 continue
             if s.kind == "agent":
                 recs = (inputs[0] if inputs else [{}]) or []
+                if s.views:  # what the llm receives, as the run builds it (#214)
+                    from . import views
+
+                    built, _, _ = views.build(s, recs, store.cache_get if s.cached else None, None)
+                    recs = [r for r in built if r is not None]
                 hits = (
                     sum(store.cache_get(agent_cache_key(spec, s, r)) is not None for r in recs)
                     if s.cached

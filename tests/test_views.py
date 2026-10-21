@@ -236,3 +236,67 @@ def test_spec_errors():
         pipeline({"t": {"use": "html.compact", "pages": [1]}})
     with pytest.raises(SpecError, match="views belongs to agent steps"):
         parse({"name": "x", "steps": [{"id": "a", "fn": "tests.test_views:src", "views": {"t": {}}}]})
+
+
+def test_downstream_steps_see_the_original_record_not_the_views(tmp_path):
+    SEEN.clear()
+    DOCS[:] = [{"id": 1, "text": "p1\fp2\fp3"}]
+    spec = parse(
+        {
+            "name": "views",
+            "llm": {"default": {"provider": "views-fake", "model": "m"}},
+            "steps": [
+                {"id": "src", "fn": "tests.test_views:src"},
+                {
+                    "id": "ask",
+                    "input": "src",
+                    "agent": "summarise",
+                    "output": {"summary": "str"},
+                    "views": {"document": {"pages": [2]}},
+                },
+                {"id": "after", "input": "ask", "fn": "tests.test_views:passthrough"},
+            ],
+        }
+    )
+    res = Runner(spec, store=Store(tmp_path / "s.db")).run()
+    assert res.status == "succeeded", res.error
+    assert SEEN == [{"id": 1, "document": "p2"}]
+    assert AFTER == [{"id": 1, "text": "p1\fp2\fp3", "summary": "ok"}]
+
+
+AFTER: list[dict] = []
+
+
+def passthrough(input):
+    AFTER[:] = [dict(r) for r in input]
+    return input
+
+
+def test_plan_counts_cache_hits_on_the_viewed_records(pdf, tmp_path):
+    import json
+
+    from agentl.preflight import plan
+
+    data = tmp_path / "docs.json"
+    data.write_text(json.dumps(DOCS))
+    store = Store(tmp_path / "s.db")
+    spec = parse(
+        {
+            "name": "views",
+            "llm": {"default": {"provider": "views-fake", "model": "m"}},
+            "steps": [
+                {"id": "src", "use": "json.read", "with": {"path": str(data)}},
+                {
+                    "id": "ask",
+                    "input": "src",
+                    "agent": "summarise",
+                    "output": {"summary": "str"},
+                    "views": {"document": {"use": "pdf.text", "pages": [1]}},
+                },
+            ],
+        }
+    )
+    (before,) = [s for s in plan(spec, store).steps if s.step == "ask"]
+    Runner(spec, store=store).run()
+    (after,) = [s for s in plan(spec, store).steps if s.step == "ask"]
+    assert (before.cache_hits, after.cache_hits) == (0, 1)
