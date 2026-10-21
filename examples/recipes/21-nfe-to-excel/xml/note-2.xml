@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic invoice for the recipe: made-up companies and keys, not a real document. -->
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe>
+   <infNFe Id="NFe35261011222333000181550010000000021000000026" versao="4.00">
+    <ide><mod>55</mod><serie>1</serie><nNF>2</nNF><dhEmi>2026-10-02T10:00:00-03:00</dhEmi></ide>
+    <emit><CNPJ>11222333000181</CNPJ><xNome>Sample Supplier Ltd</xNome><enderEmit><UF>SP</UF></enderEmit></emit>
+    <dest><CNPJ>44555666000181</CNPJ><xNome>Sample Buyer Inc</xNome><enderDest><UF>RJ</UF></enderDest></dest>
+    <det nItem="1">
+      <prod><cProd>P201</cProd><xProd>Printer paper A4, box of 10 reams</xProd><NCM>48025610</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>3.0000</qCom><vUnCom>210.00</vUnCom><vProd>630.00</vProd></prod>
+      <imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>630.00</vBC><pICMS>18.00</pICMS><vICMS>113.40</vICMS></ICMS00></ICMS></imposto>
+    </det>
+    <det nItem="2">
+      <prod><cProd>P202</cProd><xProd>Black ink cartridge</xProd><NCM>84439933</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>4.0000</qCom><vUnCom>89.90</vUnCom><vProd>359.60</vProd></prod>
+      <imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>359.60</vBC><pICMS>18.00</pICMS><vICMS>64.73</vICMS></ICMS00></ICMS></imposto>
+    </det>
+    <total><ICMSTot><vICMS>178.13</vICMS><vProd>989.60</vProd><vNF>989.60</vNF></ICMSTot></total>
+   </infNFe>
+  </NFe>
+  <protNFe><infProt><chNFe>35261011222333000181550010000000021000000026</chNFe><dhRecbto>2026-10-02T10:00:05-03:00</dhRecbto><nProt>135260000000002</nProt><cStat>100</cStat></infProt></protNFe>
+</nfeProc>

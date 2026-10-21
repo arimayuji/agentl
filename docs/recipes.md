@@ -231,3 +231,17 @@ Query a database and publish the result as JSON. Same shape for Postgres (postgr
 ```yaml
 --8<-- "examples/recipes/20-database-report/pipeline.yaml"
 ```
+
+## NF-e to Excel
+
+Read a folder of NF-e XML files and deliver a spreadsheet with one row per item, the expense
+category picked by an LLM. The XML is read with no LLM (see [NF-e and NFC-e invoices](nfe.md)); drop
+the `classify` step to run without one.
+
+Needs `pip install "agentl-etl[excel]"`. Start from it with `agentl new --template nfe-to-excel`.
+
+[Folder](https://github.com/arimayuji/agentl/tree/main/examples/recipes/21-nfe-to-excel/)
+
+```yaml
+--8<-- "examples/recipes/21-nfe-to-excel/pipeline.yaml"
+```

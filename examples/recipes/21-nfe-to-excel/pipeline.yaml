@@ -1,0 +1,28 @@
+# Read a folder of NF-e XML files and deliver a spreadsheet with one row per item, the expense category picked by an LLM.
+# Needs: pip install "agentl-etl[excel]"
+# The files are read with no LLM; drop the classify step (and set keep to read items) to run without one.
+name: nfe-to-excel
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: items
+    use: nfe.read
+    with: { path: "xml/*.xml", level: item, validate: true }
+  - id: classify
+    input: items
+    agent: >-
+      Pick the expense category of this invoice item from its description and NCM code:
+      equipment, supplies, services or other.
+    output:
+      category: str
+  - id: keep
+    use: select
+    input: classify
+    with:
+      fields: [chave, number, issued_at, issuer_name, item, description, ncm, cfop,
+               quantity, unit_value, item_total, icms, category, cancelled]
+  - id: report
+    use: excel.write
+    input: keep
+    with: { path: out/nfe-items.xlsx, sheet: items }

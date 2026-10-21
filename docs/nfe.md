@@ -40,3 +40,19 @@ A file that cannot be parsed, or is not an NF-e document, goes to the step's rej
 ## Not here
 
 No SEFAZ access (downloads or status queries), no signing or issuing of invoices.
+
+## From a folder to a spreadsheet
+
+The `nfe-to-excel` template reads `xml/*.xml` at item level, has an optional agent step that picks
+an expense category per item, and writes `out/nfe-items.xlsx`:
+
+```bash
+agentl new --template nfe-to-excel -o pipeline.yaml   # then put the XML files in xml/
+```
+
+See the [recipe](recipes.md#nf-e-to-excel) for the full pipeline.
+
+## Speed
+
+On 10,000 synthetic files (3 items each), `nfe.read` to CSV takes about 3.5x a hand-written
+`xml.etree` script; see [Performance](performance.md#nf-e-xml-against-xmletree).

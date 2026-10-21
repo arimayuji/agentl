@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic invoice for the recipe: made-up companies and keys, not a real document. -->
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe>
+   <infNFe Id="NFe35261011222333000181550010000000011000000010" versao="4.00">
+    <ide><mod>55</mod><serie>1</serie><nNF>1</nNF><dhEmi>2026-10-01T10:00:00-03:00</dhEmi></ide>
+    <emit><CNPJ>11222333000181</CNPJ><xNome>Sample Supplier Ltd</xNome><enderEmit><UF>SP</UF></enderEmit></emit>
+    <dest><CNPJ>44555666000181</CNPJ><xNome>Sample Buyer Inc</xNome><enderDest><UF>RJ</UF></enderDest></dest>
+    <det nItem="1">
+      <prod><cProd>P101</cProd><xProd>Laptop 14 inch</xProd><NCM>84713012</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>1.0000</qCom><vUnCom>3500.00</vUnCom><vProd>3500.00</vProd></prod>
+      <imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>3500.00</vBC><pICMS>18.00</pICMS><vICMS>630.00</vICMS></ICMS00></ICMS></imposto>
+    </det>
+    <det nItem="2">
+      <prod><cProd>P102</cProd><xProd>USB-C dock</xProd><NCM>84717012</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>2.0000</qCom><vUnCom>450.00</vUnCom><vProd>900.00</vProd></prod>
+      <imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>900.00</vBC><pICMS>18.00</pICMS><vICMS>162.00</vICMS></ICMS00></ICMS></imposto>
+    </det>
+    <total><ICMSTot><vICMS>792.00</vICMS><vProd>4400.00</vProd><vNF>4400.00</vNF></ICMSTot></total>
+   </infNFe>
+  </NFe>
+  <protNFe><infProt><chNFe>35261011222333000181550010000000011000000010</chNFe><dhRecbto>2026-10-01T10:00:05-03:00</dhRecbto><nProt>135260000000001</nProt><cStat>100</cStat></infProt></protNFe>
+</nfeProc>

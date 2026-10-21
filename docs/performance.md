@@ -124,6 +124,31 @@ How to read it:
 - The test server sets `TCP_NODELAY`. Without it, Nagle plus delayed ACKs added ~40 ms per request
   to keep-alive clients (requests, httpx) and not to urllib, which would have measured the server.
 
+## NF-e XML against xml.etree
+
+10,000 synthetic authorised NF-e files (`nfeProc`, layout 4.00, 3 items each, 30,000 item rows),
+generated in the benchmark's temp directory with made-up CNPJs and keys. Both variants write the
+key, item number, description, quantity and item total of every item to CSV, and must write the
+same rows. agentl 0.12.0 (with #161), Python 3.13, x86_64, 4 CPUs, median of 3.
+
+| Variant | Seconds | CPU s | Peak MB | Read MB | Written MB |
+| --- | --- | --- | --- | --- | --- |
+| agentl, `nfe.read` (`level: item`) → `select` → `csv.write` | 4.56 | 3.70 | 168 | 22.8 | 6.6 |
+| plain Python, `xml.etree` with the namespace, a loop and `csv` | 1.32 | 1.25 | 8 | 20.9 | 2.0 |
+
+- agentl takes about 3.5x the hand-written script and far more memory. `nfe.read` alone takes
+  about 2.1 s here: it reads every note and item field (about 40 per row, with the taxes) where
+  the script reads five, and each item record carries the note fields. The rest is `select`,
+  `csv.write` and the run state over 30,000 records held in memory at once.
+- What the script does not do: NFC-e, documents without the namespace, zip files, remote storage,
+  cancellation events, check-digit validation, and a broken file going to the rejected records
+  instead of stopping the run.
+- The first version of `nfe.read` took 6.8 s and peaked at 282 MB on this job: it looked every
+  missing element up twice (with and without the namespace) and kept every parsed tree until the
+  end. Both are fixed.
+
+The case is in the regression gate (25% time tolerance against `xml.etree`).
+
 ## Regression gate
 
 Every pull request that touches `agentl/` or `benchmarks/` runs the comparison at full size twice
@@ -134,9 +159,10 @@ git worktree add ../agentl-base origin/main
 python -m benchmarks --compare --against ../agentl-base
 ```
 
-For each gated job (CSV to SQLite, LLM per record, Parquet, one request per record, HTML table)
+For each gated job (CSV to SQLite, LLM per record, Parquet, one request per record, HTML table,
+NF-e XML)
 the run alternates the two agentls run by run, so drift on a shared machine hits both. It fails
-when this agentl takes more than 20% longer than the base (25% for the HTTP and HTML jobs, 75%
+when this agentl takes more than 20% longer than the base (25% for the HTTP, HTML and NF-e jobs, 75%
 for the sub-second Parquet job, whose time swings), or peaks more than 25% plus 10 MB above it.
 
 An earlier version compared against a committed ratio to plain Python. That ratio did not hold
