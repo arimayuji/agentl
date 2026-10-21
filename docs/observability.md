@@ -112,5 +112,24 @@ OPENLINEAGE_URL=http://localhost:5000 agentl run orders.yaml
 Open http://localhost:3000, pick the namespace (`agentl` or yours) and the `orders` job shows the
 graph `data/orders.csv -> orders -> out/orders.json`, with one run per `agentl run`.
 
-Not yet: column-level lineage (for `select`, `compute`, `cast`, `aggregate`) and per-record
-provenance (#209).
+### Column-level lineage
+
+Each output dataset carries the OpenLineage `columnLineage` facet (ColumnLineageDatasetFacet
+1-2-0) when agentl can trace its fields back to the source datasets. It follows the steps between
+the reader and the writer:
+
+| Step | What the facet says |
+| --- | --- |
+| `select` | each kept field comes from its input field (renames included), `IDENTITY` |
+| `cast` | the cast fields are a `TRANSFORMATION` of the same field |
+| `compute` | each new field comes from the fields its expression reads, `TRANSFORMATION` |
+| `aggregate` | `group_by` keys are `IDENTITY`, metrics an `AGGREGATION` of their argument |
+| agent step | each `output:` field depends on every known input field, `TRANSFORMATION` |
+| `sql` | only a plain `select ... from <one input> [where / group by ...]`; joins, subqueries, `*` and CTEs are left out |
+| `filter`, `dedupe`, `sort`, `limit`, `fill`, `cache`, `concat`, check steps | fields pass through unchanged |
+
+Only fields whose names agentl knows are listed: after a reader with no `select`, a field the
+pipeline never names has no entry. A `fn` step or any other connector between reader and writer
+stops the trace, and that writer's dataset gets no facet rather than a guess.
+
+Not yet: per-record provenance (#209).
