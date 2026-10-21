@@ -401,3 +401,96 @@ def test_review_queue_on_postgres():
             {"pipeline": pipeline, "step": "s", "status": "fixed", "count": 1}
         ]
         store.cache_clear("k1")
+
+
+def test_postgres_errors_are_classified_as_conflicts(table):
+    import threading
+
+    psycopg = pytest.importorskip("psycopg")
+    from agentl.runner import sql_conflict
+
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(f'CREATE TABLE "{table}" (id int primary key, v int)')
+        conn.execute(f'INSERT INTO "{table}" VALUES (1, 0), (2, 0)')
+        with pytest.raises(psycopg.Error) as dup:
+            conn.execute(f'INSERT INTO "{table}" VALUES (1, 0)')
+    assert sql_conflict(dup.value) == "unique_violation"
+
+    a, b = psycopg.connect(DSN), psycopg.connect(DSN)
+    errors: list[BaseException] = []
+    try:
+        for c in (a, b):
+            c.execute("SET deadlock_timeout = '50ms'")
+        a.execute(f'UPDATE "{table}" SET v = 1 WHERE id = 1')
+        b.execute(f'UPDATE "{table}" SET v = 1 WHERE id = 2')
+
+        def cross(conn, row):
+            try:
+                conn.execute(f'UPDATE "{table}" SET v = 2 WHERE id = {row}')
+            except psycopg.Error as e:
+                errors.append(e)
+                conn.rollback()
+
+        t = threading.Thread(target=cross, args=(a, 2))
+        t.start()
+        cross(b, 1)
+        t.join(10)
+    finally:
+        a.close()
+        b.close()
+    assert len(errors) == 1 and sql_conflict(errors[0]) == "deadlock"
+
+
+def two_rows(input=None):
+    return [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]
+
+
+def test_postgres_write_retries_a_lock_conflict(table, tmp_path, monkeypatch):
+    psycopg = pytest.importorskip("psycopg")
+    from agentl import parse
+    from agentl import runner as runner_mod
+    from agentl.runner import Runner
+    from agentl.store import Store
+
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute(f'CREATE TABLE "{table}" (id int primary key, v text)')
+    locker = psycopg.connect(DSN)
+    locker.execute(f'LOCK TABLE "{table}" IN ACCESS EXCLUSIVE MODE')
+    waits: list[float] = []
+
+    def release(seconds):
+        waits.append(seconds)
+        locker.rollback()
+
+    monkeypatch.setattr(runner_mod, "_sleep", release)
+    monkeypatch.setattr(runner_mod, "_jitter", lambda: 1.0)
+    sep = "&" if "?" in DSN else "?"
+    spec = parse(
+        {
+            "name": "pg_lock",
+            "steps": [
+                {"id": "rows", "fn": "tests.test_postgres:two_rows"},
+                {
+                    "id": "save",
+                    "use": "postgres.write",
+                    "input": "rows",
+                    "with": {
+                        "dsn": DSN + sep + "options=-c%20lock_timeout%3D100ms",
+                        "table": table,
+                        "mode": "upsert",
+                        "key": "id",
+                    },
+                },
+            ],
+        }
+    )
+    try:
+        with Store(tmp_path / "a.db") as store:
+            result = Runner(spec, store=store).run()
+            events = store.events(result.run_id)
+    finally:
+        locker.close()
+    assert result.status == "succeeded", result.error
+    assert waits == [0.2]
+    assert any(e["type"] == "step.retry" for e in events)
+    assert [r["v"] for r in read(table)] == ["a", "b"]
