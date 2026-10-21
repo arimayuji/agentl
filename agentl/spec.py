@@ -456,6 +456,49 @@ class ChunkSpec(BaseModel):
     field: str = "text"
 
 
+class ViewSpec(BaseModel):
+    """One entry of `views:` on an agent step (#214): a derived view of a record field, sent to
+    the llm in place of that field. `use: pages` (default) keeps only `pages` of a form-feed text
+    or a list; `pdf.text` and `pdf.tables` read the PDF at the path in `from`; `html.compact`
+    strips an HTML string down to its content. See agentl/views.py."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    use: Literal["pages", "pdf.text", "pdf.tables", "html.compact"] = "pages"
+    from_: str | None = Field(default=None, alias="from")  # default: text, path or html
+    # 1-based page numbers or "first-last" ranges; a negative number counts from the end.
+    pages: list[int | str] | None = None
+    engine: Literal["text", "ocr"] = "text"  # pdf.tables
+    drop: list[str] = Field(default_factory=lambda: ["script", "style"])  # html.compact: tags
+    keep_attrs: list[str] = Field(default_factory=list)  # html.compact: attributes kept
+    keep_source: bool = False  # also send the `from` field as it was
+
+    @field_validator("pages")
+    @classmethod
+    def _pages(cls, v: list[int | str] | None) -> list[int | str] | None:
+        for item in v or []:
+            if item == 0 or (isinstance(item, str) and not re.fullmatch(r"-?\d+-(-?\d+)?", item)):
+                raise ValueError(f"pages: {item!r} is not a 1-based page number or a 'first-last' range")
+        return v
+
+    @model_validator(mode="after")
+    def _check(self) -> ViewSpec:
+        if self.engine == "ocr":
+            raise ValueError(
+                "engine: ocr is not supported yet (scanned PDFs, #160); pdf.tables reads the text "
+                "layer with engine: text"
+            )
+        if self.engine != "text" and self.use != "pdf.tables":
+            raise ValueError("engine belongs to pdf.tables views")
+        if self.pages is not None and self.use == "html.compact":
+            raise ValueError("pages belongs to pages, pdf.text and pdf.tables views")
+        return self
+
+    @property
+    def source(self) -> str:
+        return self.from_ or {"pages": "text", "html.compact": "html"}.get(self.use, "path")
+
+
 class DriftSpec(BaseModel):
     """Answer drift of an agent step (#155): after each run its answers (reject and review rates,
     the share of each `str`/`bool` output value, numeric means, cost per record) are compared with
@@ -623,6 +666,8 @@ class StepSpec(BaseModel):
     on_truncated: Literal["continue", "fail"] = "continue"  # rows mode: answer cut by max_tokens
     max_continuations: int = Field(default=4, ge=0, le=50)
     chunk: ChunkSpec | None = None  # rows mode: split each record by page, one call per group
+    # Derived views sent to the llm in place of their source field (#214). See ViewSpec.
+    views: dict[str, ViewSpec] = Field(default_factory=dict)
     mode: Literal["sync", "batch"] = "sync"
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
@@ -846,6 +891,8 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.views and not self.agent:
+            raise ValueError(f"step '{self.id}': views belongs to agent steps (what is sent to the llm)")
         if self.chunk is not None and self.output_mode != "rows":
             raise ValueError(f"step '{self.id}': chunk belongs to agent steps with output_mode rows")
         if self.output_mode == "rows":
