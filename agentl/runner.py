@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from . import checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
-from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, ReviewSpec, StepSpec, load
+from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, RetrySpec, ReviewSpec, StepSpec, load
 from .store import Store, open_store
 from .tools import ToolBox, api_name
 
@@ -61,11 +61,13 @@ class RunResult:
     best_effort_failed: dict[str, str] = field(default_factory=dict)
     # steps whose output came from a fallback body (#296): {step_id: "fallback[i]"}
     fallbacks: dict[str, str] = field(default_factory=dict)
+    # isolated steps (`isolate: per_series`, #206) with series that failed: {step_id: {series: error}}
+    series_failed: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def partial(self) -> bool:
-        """Succeeded, but at least one best-effort step failed."""
-        return self.status == "succeeded" and bool(self.best_effort_failed)
+        """Succeeded, but at least one best-effort step (or isolated series) failed."""
+        return self.status == "succeeded" and bool(self.best_effort_failed or self.series_failed)
 
     def summary(self, outputs: bool = False) -> dict[str, Any]:
         """JSON-serializable view for task results and logs. Record data only with `outputs=True`."""
@@ -355,6 +357,21 @@ def is_transport_error(e: BaseException) -> bool:
     return False
 
 
+_ALL: Any = object()  # sentinel: the step reads its whole input
+
+
+def default_retries(step: StepSpec) -> RetrySpec | None:
+    """Retries of a SQL writer that sets none: deadlocks and lock timeouts, plus unique-key races
+    for the modes that read before they write (upsert, scd2, changeset). `retries: {attempts: 1}`
+    turns them off."""
+    if step.use not in SQL_WRITERS or step.retries is not None:
+        return None
+    on: list[Any] = ["deadlock"]
+    if step.with_.get("mode", "append") in ("upsert", "scd2", "changeset"):
+        on.append("unique_violation")
+    return RetrySpec(attempts=3, backoff="0.2s", max_backoff="2s", on=on)
+
+
 def _sleep(seconds: float) -> None:
     """Waits between step retries; tests monkeypatch it."""
     time.sleep(seconds)
@@ -382,10 +399,43 @@ def _http_status(e: BaseException) -> tuple[int | None, Any]:
     return None, None
 
 
+# SQLSTATE codes of errors a retry of the whole transaction can clear (Postgres and others)
+_DEADLOCK_STATES = {"40P01", "40001", "55P03"}  # deadlock, serialization failure, lock not available
+_UNIQUE_STATES = {"23505"}
+# writers whose write is one transaction, so a retry after a conflict starts clean
+SQL_WRITERS = ("sqlite.write", "postgres.write", "sql.write")
+
+
+def sql_conflict(e: BaseException) -> str | None:
+    """`deadlock` or `unique_violation` when an error in the chain is a lock conflict or a
+    unique-key race of a SQL database (psycopg, sqlite3 or SQLAlchemy wrapping either)."""
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        state = getattr(cur, "sqlstate", None) or getattr(cur, "pgcode", None)
+        if isinstance(state, str):
+            if state in _DEADLOCK_STATES:
+                return "deadlock"
+            if state in _UNIQUE_STATES:
+                return "unique_violation"
+        name = type(cur).__name__
+        text = str(cur).lower()
+        if name == "OperationalError" and ("database is locked" in text or "table is locked" in text):
+            return "deadlock"
+        if name == "IntegrityError" and "unique constraint failed" in text:
+            return "unique_violation"
+        orig = getattr(cur, "orig", None)  # SQLAlchemy keeps the driver error here
+        cur = orig if isinstance(orig, BaseException) else (cur.__cause__ or cur.__context__)
+    return None
+
+
 def _retry_matches(e: BaseException, on: list[str]) -> bool:
     if "any" in on:
         return True
     if "transport" in on and is_transport_error(e):
+        return True
+    if ("deadlock" in on or "unique_violation" in on) and sql_conflict(e) in on:
         return True
     status = _http_status(e)[0]
     return status is not None and (
@@ -1595,9 +1645,8 @@ class Runner:
             return
         registry.get(step.rejected_to.use)(list(rows), **step.rejected_to.with_)
 
-    def _run_step(
-        self, run_id: str, step: StepSpec, outputs: dict[str, Records], result: RunResult
-    ) -> Records:
+    def _step_input(self, step: StepSpec, outputs: dict[str, Records]) -> Any:
+        """What a step reads: its one input, a dict of inputs, or None for a source."""
         refs = step.inputs
         whole = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
 
@@ -1605,13 +1654,32 @@ class Runner:
             branch = self._routed.get(ref)
             return branch[step.id] if branch is not None and step.id in branch else whole(ref)
 
-        data: Any = None
         if step.id in self.replay:
-            data = self.replay[step.id]
-        elif len(refs) == 1:
-            data = raw(refs[0])
-        elif refs:
-            data = {r: raw(r) if r in self._routed else outputs[r] for r in refs}
+            return self.replay[step.id]
+        if len(refs) == 1:
+            return raw(refs[0])
+        if refs:
+            return {r: raw(r) if r in self._routed else outputs[r] for r in refs}
+        return None
+
+    def _run_step(
+        self,
+        run_id: str,
+        step: StepSpec,
+        outputs: dict[str, Records],
+        result: RunResult,
+        data: Any = _ALL,
+    ) -> Records:
+        """Runs one step body. `data` replaces its input (one series of an isolated step)."""
+        refs = step.inputs
+        whole = outputs.raw if isinstance(outputs, Outputs) else outputs.__getitem__
+
+        def raw(ref: str) -> Any:  # a router's target reads only its branch (#299)
+            branch = self._routed.get(ref)
+            return branch[step.id] if branch is not None and step.id in branch else whole(ref)
+
+        if data is _ALL:
+            data = self._step_input(step, outputs)
 
         if step.kind == "wait":
             return self._run_wait(run_id, step, outputs, [] if data is None else data, result)
@@ -2230,14 +2298,15 @@ class Runner:
         except Exception as e:  # a checkpoint never fails a run
             log.warning("checkpoint of step %s failed: %s", step.id, e)
 
-    def _run_retried(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
+    def _run_retried(self, run_id: str, step: StepSpec, result: RunResult, data: Any = _ALL) -> Any:
         """Runs a step body, retrying it on the errors its `retries.on` lists (#296). A budget stop
-        or NoChange is never retried; a cached result returns without running anything."""
-        r = step.retries
+        or NoChange is never retried; a cached result returns without running anything. SQL
+        writers without `retries` retry deadlocks and unique-key races (`default_retries`)."""
+        r = step.retries or default_retries(step)
         attempts = r.attempts if r else 1
         for attempt in range(1, attempts + 1):
             try:
-                return self._run_step(run_id, step, result.outputs, result)
+                return self._run_step(run_id, step, result.outputs, result, data)
             except (BudgetExceeded, registry.NoChange):
                 raise
             except Exception as e:
@@ -2254,12 +2323,56 @@ class Runner:
                 _sleep(wait)
         raise AssertionError("unreachable")
 
-    def _run_resilient(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
+    def _run_isolated(self, run_id: str, step: StepSpec, result: RunResult) -> Any:
+        """`isolate: per_series` (#206): the step (with its retries and fallbacks) once per group of
+        `series` values. A failed group emits `step.series_failed` and is recorded in
+        `RunResult.series_failed`; the others still run. Fails only when every group failed."""
+        data = self._step_input(step, result.outputs)
+        if _is_table(data):
+            data = data.to_pylist()
+        groups: dict[str, list[Any]] = {}
+        for r in data or []:
+            values = [r.get(c) if isinstance(r, dict) else None for c in step.series]
+            label = (
+                str(values[0])
+                if len(values) == 1
+                else ",".join(f"{c}={v}" for c, v in zip(step.series, values, strict=True))
+            )
+            groups.setdefault(label, []).append(r)
+        if not groups:
+            return self._run_resilient(run_id, step, result, data)
+        out: list[Any] = []
+        failed: dict[str, str] = {}
+        first: Exception | None = None
+        for label, rows in groups.items():
+            try:
+                got = self._run_resilient(run_id, step, result, rows)
+            except (BudgetExceeded, registry.NoChange):
+                raise
+            except Exception as e:
+                first = first or e
+                failed[label] = _describe(e)
+                self._emit(
+                    run_id, "step.series_failed", step.id, series=label, rows=len(rows), error=failed[label]
+                )
+                continue
+            out.extend(got.to_pylist() if _is_table(got) else got)
+        self._emit(run_id, "step.isolated", step.id, series=len(groups), failed=len(failed))
+        if first is not None and len(failed) == len(groups):
+            raise first
+        if failed:
+            with self._spend:
+                result.series_failed[step.id] = failed
+        return out
+
+    def _run_resilient(self, run_id: str, step: StepSpec, result: RunResult, data: Any = _ALL) -> Any:
         """The step with its retries, then each `fallback` body in order with the same input."""
+        if step.isolate and data is _ALL:
+            return self._run_isolated(run_id, step, result)
         if not step.fallback:
-            return self._run_retried(run_id, step, result)
+            return self._run_retried(run_id, step, result, data)
         try:
-            out, source = self._run_retried(run_id, step, result), "main"
+            out, source = self._run_retried(run_id, step, result, data), "main"
         except (BudgetExceeded, registry.NoChange):
             raise
         except Exception as e:
@@ -2283,7 +2396,8 @@ class Runner:
                     }
                 )
                 try:
-                    out, source = self._run_step(run_id, alt, result.outputs, result), f"fallback[{i}]"
+                    out = self._run_step(run_id, alt, result.outputs, result, data)
+                    source = f"fallback[{i}]"
                     break
                 except (BudgetExceeded, registry.NoChange):
                     raise
@@ -2362,6 +2476,7 @@ class Runner:
                     or not nxt.required
                     or nxt.routes is not None
                     or nxt.id in gates
+                    or nxt.isolate
                     or nxt.persist
                 ):
                     break
@@ -2684,6 +2799,8 @@ class Runner:
         partial: dict[str, Any] = {}
         if result.partial:
             partial = {"partial": True, "best_effort_failed": sorted(result.best_effort_failed)}
+            if result.series_failed:
+                partial["series_failed"] = {k: sorted(v) for k, v in result.series_failed.items()}
         self._classify(result)
         self.store.finish_run(run_id, result.status, result.error, result.outcome)
         # before the final event, so run.<status> stays the last event of a run
@@ -2757,6 +2874,7 @@ class Runner:
                 result.error = f"{policy.max_skipped} skipped runs in a row; last: {result.reason}"
         elif (
             result.best_effort_failed
+            or result.series_failed
             or any(by_id[s].fallback_outcome == "partial" for s in result.fallbacks if s in by_id)
             or (policy.on_rejected == "partial" and any(result.rejected.values()))
         ):

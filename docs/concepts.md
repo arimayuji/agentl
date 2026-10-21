@@ -64,6 +64,22 @@ steps:
 - Without `after:`, independent destinations still run in parallel.
 - A budget stop (`budget.exceeded`) always fails the run.
 
+`isolate: per_series` runs a `use` or `fn` step once per group of records with the same `series`
+values (one column or a list), so a failure writing one series does not stop the others:
+
+```yaml
+  - { id: legacy, use: sql.write, input: rows, with: { table: legacy_facts },
+      required: false, isolate: per_series, series: [station, metric] }
+```
+
+- Each group gets its own retries and fallbacks. A failed group emits `step.series_failed` with
+  `series` (the value, or `col=value,...` for several columns), `rows` and `error`; the step then
+  emits `step.isolated` with the number of series and of failed ones.
+- `RunResult.series_failed` maps the step to `{series: error}`; the run ends `succeeded` with
+  outcome `partial`, and `run.succeeded` carries `series_failed` (the failed series per step).
+- When every series fails, the step fails like any other (and a best-effort step records it).
+- An isolated step reads one input, all in memory: it is never part of a `chunk_size` stream.
+
 ### Retries and fallbacks
 
 Any `use`, `fn` or agent step can retry on errors that are likely to pass, and a `use` or `fn`
@@ -84,13 +100,19 @@ step can fall back to other step bodies with the same input. Both are off by def
 
 - `retries`: `attempts` (default 3, the first try included), `backoff` (default `1s`, doubled
   after each try, times a jitter factor between 0.5 and 1), `max_backoff` (default `30s`) and `on`,
-  the errors that count: `transport` (timeouts and connection errors), `http_5xx`, `http_429` or
-  `any`. A `Retry-After` header on the error (seconds or a date) is honored, up to `max_backoff`.
+  the errors that count: `transport` (timeouts and connection errors), `http_5xx`, `http_429`,
+  `deadlock` (deadlocks, serialization failures and lock timeouts of a SQL database, including
+  SQLite's "database is locked"), `unique_violation` (a duplicate key) or `any`. A `Retry-After` header on the error (seconds or a date) is honored, up to `max_backoff`.
   Other errors fail at once. Each wait emits `step.retry` with `attempt`, `error` and `wait`.
 - `fallback`: step bodies `{use, with}` tried in order once the main body (with its retries) has
   failed. The first that succeeds gives the step output; downstream steps see no difference. Each
   switch emits `step.fallback` with `from`, `to` and `error`. When every body fails, the step fails
   with the last error. Fallback bodies are not retried and cannot have fallbacks of their own.
+- SQL writers (`sqlite.write`, `postgres.write`, `sql.write`) without `retries` retry
+  `deadlock` 3 times (backoff `0.2s`, max `2s`), and also `unique_violation` in modes `upsert`,
+  `scd2` and `changeset`, where two runs can race to insert the same key. Each write is one
+  transaction, so a retry starts clean. `retries: {attempts: 1}` turns this off. Writers streamed
+  with `chunk_size` are not retried.
 - `fallback_tag: true` adds `_source` to each record: `main` or `fallback[i]` (from 0).
 - A run that used a fallback ends with outcome `partial` (status `succeeded`);
   `fallback_outcome: success` keeps it `success`. `RunResult.fallbacks` maps each such step to

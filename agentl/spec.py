@@ -197,7 +197,7 @@ class WriterSpec(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
 
 
-RetryOn = Literal["transport", "http_5xx", "http_429", "any"]
+RetryOn = Literal["transport", "http_5xx", "http_429", "deadlock", "unique_violation", "any"]
 
 
 def _retry_on_default() -> list[RetryOn]:
@@ -556,6 +556,10 @@ class StepSpec(BaseModel):
     fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
     fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
     fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
+    # Isolation (#206): `isolate: per_series` runs the step once per group of `series` key values,
+    # so a failure writing one group is recorded without failing the others.
+    isolate: Literal["per_series"] | None = None
+    series: list[str] = Field(default_factory=list)
 
     def _check_jury(self, jury: JurySpec) -> None:
         sid = self.id
@@ -636,6 +640,8 @@ class StepSpec(BaseModel):
             raw = {**rest, "required": value == "required"}
         if isinstance(raw, dict) and isinstance(raw.get("after"), str):
             raw = {**raw, "after": [raw["after"]]}
+        if isinstance(raw, dict) and isinstance(raw.get("series"), str):
+            raw = {**raw, "series": [raw["series"]]}
         if isinstance(raw, dict) and raw.get("routes") is not None:
             # A router answers one label per record; its output schema is implicit.
             if raw.get("output") not in (None, ROUTE_OUTPUT):
@@ -835,6 +841,13 @@ class StepSpec(BaseModel):
             rejected_limits(self.expect["rejected_rate"], self.check or "")
         if self.records_per_call > 1 and "index" in (self.output or {}):
             raise ValueError(f"step '{self.id}': with records_per_call, 'index' is reserved in output")
+        if self.isolate:
+            if not (self.use or self.fn) or len(self.inputs) != 1:
+                raise ValueError(f"step '{self.id}': isolate goes on a use or fn step with one input")
+            if not self.series:
+                raise ValueError(f"step '{self.id}': isolate: per_series needs `series` (key columns)")
+        elif self.series:
+            raise ValueError(f"step '{self.id}': series needs isolate: per_series")
         if self.retries and (self.check or self.wait_until):
             raise ValueError(f"step '{self.id}': retries go on use, fn or agent steps")
         if self.fallback:
