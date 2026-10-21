@@ -79,7 +79,7 @@ def browser_scrape(
     headless: bool = True,
     executable_path: str | None = None,
     user_agent: str | None = None,
-    evidence: bool | str = False,
+    evidence: bool | str | dict = False,
     evidence_keep_days: int | None = None,
     retry_if_empty: int = 0,
 ) -> list[dict]:
@@ -91,10 +91,18 @@ def browser_scrape(
 
     `extract: markdown` gives the page's main content as clean Markdown (needs `agentl-etl[web]`).
     `evidence` keeps the page HTML, the Markdown and a screenshot of every page (true:
-    `.agentl/evidence`, or a folder). `retry_if_empty` loads the page again when the extraction
-    gave nothing (a late render, a flaky page)."""
+    `.agentl/evidence`, or a folder), in dated files. A mapping (`{raw: true, screenshot: true,
+    request: true, when: changed}`) uses the content-addressed evidence store instead and tags
+    records with `_evidence` (see agentl/evidence.py). `retry_if_empty` loads the page again when
+    the extraction gave nothing (a late render, a flaky page)."""
     if extract not in EXTRACT:
         raise ValueError(f"extract must be one of {EXTRACT}")
+    recorder = None
+    if isinstance(evidence, dict):
+        from .. import evidence as _evidence
+
+        recorder = _evidence.recorder(evidence, "browser.scrape", screenshot=True)
+        evidence = False
     sync_api = require("playwright.sync_api", "browser")
     records = input if isinstance(input, list) and input else [{}]
     ms = timeout * 1000
@@ -136,6 +144,20 @@ def browser_scrape(
                     load()
                     rows = _extract(page, extract, selector, table)
                 ev: dict = {}
+                if recorder is not None:
+                    from ..evidence import request_metadata
+
+                    o = recorder.opts
+                    ev = recorder.capture(
+                        page.url,
+                        page.content().encode() if o.raw else None,
+                        request_metadata("GET", page.url, None) if o.request else None,
+                        page.screenshot(full_page=True) if o.screenshot else None,
+                        failed=not rows,
+                        content_type="text/html",
+                    )
+                    if not rows and ev:
+                        out.append({"_url": page.url, "_empty": True, **ev})
                 if evidence:
                     from .web import save_evidence
 

@@ -276,6 +276,16 @@ def run_store() -> Any:
     return _RUN_STORE.get()
 
 
+# (pipeline name, step id) of the step being run, for connectors that index what they captured
+# (`evidence:`); None outside a run.
+_STEP: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar("agentl_step", default=None)
+
+
+def current_step() -> tuple[str, str] | None:
+    """(pipeline, step id) of the step being run, or None outside a run."""
+    return _STEP.get()
+
+
 # ---------------------------------------------------------------- after the run
 # Queue consumers acknowledge messages only once the whole run succeeded (at-least-once). A
 # connector registers what to do then; the runner calls it when the run ends.

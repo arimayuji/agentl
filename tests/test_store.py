@@ -115,3 +115,13 @@ def test_rejected_contract(store):
     store.rejected_retried([rows[0]["id"]], "r2")
     assert [r["record"]["n"] for r in store.rejected_list(pipe, "a", pending=True)] == [2]
     assert store.rejected_list(pipe, "b") == []
+
+
+def test_evidence_index(store):
+    pipe = f"ev-{uuid.uuid4().hex[:8]}"
+    row = {"run_id": "r1", "pipeline": pipe, "step": "s", "url": "https://a.example/", "kind": "raw"}
+    store.evidence_add({**row, "sha256": "a" * 64, "bytes": 3, "captured_at": 1.0, "location": "L"})
+    store.evidence_add({**row, "run_id": "r2", "sha256": "b" * 64, "bytes": 4, "location": "L"})
+    assert store.evidence_last(pipe, "s", "https://a.example/", "raw", "L") == "b" * 64
+    assert store.evidence_last(pipe, "s", "https://a.example/", "raw", "other") is None
+    assert [r["bytes"] for r in store.evidence_list(sha256="a" * 12) if r["pipeline"] == pipe] == [3]

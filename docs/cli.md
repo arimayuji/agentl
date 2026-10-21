@@ -5,6 +5,7 @@ agentl run PIPELINE [--no-cache] [--no-check] [--show STEP] [--param KEY=VALUE .
 agentl resume RUN_ID PIPELINE [--no-cache] [--param KEY=VALUE ...]   # skip completed steps
 agentl replay PIPELINE --from-raw RUN_ID [--no-cache] [--param KEY=VALUE ...]   # reprocess kept originals
 agentl raw ls|prune [PIPELINE] [--dir DIR] [--run RUN_ID] [--keep-days N] [--json]
+agentl evidence ls|verify [RUN_ID] [--json] | agentl evidence show SHA256 [--out FILE]
 agentl backfill PIPELINE --glob PATTERN | --from DATE --to DATE [--every day|week|month]
                 [--param-name NAME] [--param KEY=VALUE ...] [--concurrency N] [--redo|--no-resume] [--json]
 agentl validate PIPELINE [--format text|json|github] [--connect [--llm]]
@@ -41,6 +42,8 @@ Run parameters and `agentl backfill` are described in
 `agentl resume` is described in [Resume a failed run](orchestration.md#resume-a-failed-run).
 `agentl replay --from-raw` and `agentl raw` are described in
 [Keep originals and replay them](orchestration.md#keep-originals-and-replay-them).
+`agentl evidence` is described in
+[Evidence of what a source returned](orchestration.md#evidence-of-what-a-source-returned).
 
 ## Run ledger and LLM cost
 

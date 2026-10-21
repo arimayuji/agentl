@@ -164,7 +164,7 @@ before it is written to disk.
 
 | Connector | Parameters |
 |---|---|
-| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `retry_after`, `rate_limit`, `mirrors`, `tls`, `auth`, `if_changed`, `on_unchanged` |
+| `http.get` | `url`, `headers`, `params`, `paginate`, `items`, `concurrency`, `timeout`, `retries`, `retry_after`, `rate_limit`, `mirrors`, `tls`, `auth`, `if_changed`, `on_unchanged`, `evidence` |
 | `http.post` | same as `http.get`, plus `json` |
 
 With an upstream step, `{field}` placeholders in the URL (and in string values of the JSON body) are
@@ -856,6 +856,9 @@ headings, lists, tables and links (made absolute), and nothing else. It uses
 to look. `evidence_keep_days` deletes older date folders at the start of the step.
 A page that is still empty after `retry_if_empty` comes back as a record with an empty
 `markdown` (`_empty: true` in the browser) and its evidence, instead of disappearing.
+In `browser.scrape`, a mapping such as `evidence: {raw: true, screenshot: true}` uses the
+content-addressed evidence store instead, indexed in the run store; see
+[Evidence of what a source returned](orchestration.md#evidence-of-what-a-source-returned).
 
 Pages that need clicks or forms still go through `browser.scrape` with `steps`. For an agent that
 navigates on its own, give an agent step a browser MCP server as a tool (for example
@@ -966,6 +969,7 @@ extra). Feed it to `html.select`, `html.read` or an agent step.
 | `user_agent`, `headers` | `agentl/<version> (+https://agentl.com.br)` | identify yourself |
 | `proxy` | none | one proxy URL, or host to proxy URL (`"*"` for the rest); pass it from a secret |
 | `incremental` | `false` | skip pages unchanged since the last successful run |
+| `evidence` | off | keep each page and its request metadata, content-addressed ([evidence](orchestration.md#evidence-of-what-a-source-returned)) |
 | `retries`, `timeout` | 2, 30 | 429 and 5xx are retried after `Retry-After` (seconds or a date), else with backoff |
 
 URLs are normalised before dedupe (lowercase scheme and host, no default port, no fragment,

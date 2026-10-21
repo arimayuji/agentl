@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS errors (
   last_seen REAL, count INTEGER, status TEXT, alerted REAL, resolved REAL,
   PRIMARY KEY (pipeline, fingerprint)
 );
+CREATE TABLE IF NOT EXISTS evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, pipeline TEXT, step TEXT, url TEXT,
+  kind TEXT, sha256 TEXT, bytes INTEGER, content_type TEXT, captured_at REAL, location TEXT
+);
+CREATE INDEX IF NOT EXISTS evidence_run ON evidence(run_id);
+CREATE INDEX IF NOT EXISTS evidence_source ON evidence(pipeline, step, url, kind);
 """
 
 # Prefixed names so the store can live in an application database without clashes.
@@ -88,6 +94,11 @@ POSTGRES_SCHEMA = [
       pipeline TEXT, fingerprint TEXT, step TEXT, error_class TEXT, error TEXT,
       first_seen DOUBLE PRECISION, last_seen DOUBLE PRECISION, count INTEGER, status TEXT,
       alerted DOUBLE PRECISION, resolved DOUBLE PRECISION, PRIMARY KEY (pipeline, fingerprint))""",
+    """CREATE TABLE IF NOT EXISTS agentl_evidence (
+      id BIGSERIAL PRIMARY KEY, run_id TEXT, pipeline TEXT, step TEXT, url TEXT, kind TEXT,
+      sha256 TEXT, bytes BIGINT, content_type TEXT, captured_at DOUBLE PRECISION, location TEXT)""",
+    "CREATE INDEX IF NOT EXISTS agentl_evidence_run ON agentl_evidence(run_id)",
+    "CREATE INDEX IF NOT EXISTS agentl_evidence_source ON agentl_evidence(pipeline, step, url, kind)",
 ]
 
 
@@ -101,6 +112,7 @@ MIGRATIONS: list[tuple[int, str, str | None, str, str]] = [
     (2, "runs", "labels", "TEXT", "TEXT"),  # run labels (#295)
     (3, "cache", "expires", "REAL", "DOUBLE PRECISION"),  # cache TTLs (#204)
     (4, "errors", None, "", ""),  # run errors by fingerprint (#356)
+    (5, "evidence", None, "", ""),  # evidence artifact index (#293)
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
@@ -119,6 +131,7 @@ class Store:
         "seen": "seen",
         "review": "review",
         "errors": "errors",
+        "evidence": "evidence",
         "schema_version": "schema_version",
     }
     INSERT_SEEN = "INSERT OR IGNORE INTO {seen} (scope, key, run_id, ts) VALUES (?, ?, ?, ?)"
@@ -511,6 +524,50 @@ class Store:
             return None
         return {"records": self._load(rows[0]["records"]), "total": rows[0]["total"]}
 
+    # evidence: the index of artifacts captured by source steps (#293)
+    EVIDENCE_COLUMNS = (
+        "run_id",
+        "pipeline",
+        "step",
+        "url",
+        "kind",
+        "sha256",
+        "bytes",
+        "content_type",
+        "captured_at",
+        "location",
+    )
+
+    def evidence_add(self, row: dict) -> None:
+        cols = self.EVIDENCE_COLUMNS
+        self._exec(
+            f"INSERT INTO {{evidence}} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+            tuple(row.get(c) for c in cols),
+        )
+
+    def evidence_last(self, pipeline: str, step: str, url: str, kind: str, location: str) -> str | None:
+        """The sha256 last indexed for this source in this storage location, or None."""
+        rows = self._query(
+            "SELECT sha256 FROM {evidence} WHERE pipeline = ? AND step = ? AND url = ? AND kind = ? "
+            "AND location = ? ORDER BY id DESC LIMIT 1",
+            (pipeline, step, url, kind, location),
+        )
+        return rows[0]["sha256"] if rows else None
+
+    def evidence_list(
+        self, run_id: str | None = None, sha256: str | None = None, limit: int = 1000
+    ) -> list[dict]:
+        """Indexed artifacts, newest first; `sha256` may be a prefix."""
+        where, params = [], []
+        if run_id:
+            where.append("run_id = ?")
+            params.append(run_id)
+        if sha256:
+            where.append("sha256 LIKE ?")
+            params.append(sha256.replace("%", "").replace("_", "") + "%")
+        sql = "SELECT * FROM {evidence}" + (" WHERE " + " AND ".join(where) if where else "")
+        return self._query(sql + " ORDER BY id DESC LIMIT ?", (*params, limit))
+
     # quarantine: rejected records, kept to list and retry (#180)
     def rejected_add(self, run_id: str, pipeline: str, step: str, records: list[dict]) -> None:
         now = time.time()
@@ -728,7 +785,8 @@ class Store:
 class PostgresStore(Store):
     """Postgres store, shared by every worker that points to the same database.
     Needs `agentl-etl[postgres]`. Tables: agentl_runs, agentl_events, agentl_cache, agentl_state,
-    agentl_samples, agentl_rejected, agentl_locks, agentl_seen, agentl_review, agentl_errors."""
+    agentl_samples, agentl_rejected, agentl_locks, agentl_seen, agentl_review, agentl_errors,
+    agentl_evidence."""
 
     T: ClassVar[dict[str, str]] = {
         "runs": "agentl_runs",
@@ -741,6 +799,7 @@ class PostgresStore(Store):
         "seen": "agentl_seen",
         "review": "agentl_review",
         "errors": "agentl_errors",
+        "evidence": "agentl_evidence",
         "schema_version": "agentl_schema_version",
     }
     INSERT_SEEN = (

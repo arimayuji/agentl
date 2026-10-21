@@ -222,7 +222,7 @@ def test_sqlite_version_3_store_gains_the_errors_table(tmp_path):
     conn.commit()
     conn.close()
     with Store(path) as s:
-        assert s.schema_version() == SCHEMA_VERSION == 4
+        assert s.schema_version() == SCHEMA_VERSION
         assert s.cache_get("missing") is None
         _use_errors_table(s)
     assert {"fingerprint", "count", "alerted", "resolved"} <= columns(path, "errors")
@@ -237,5 +237,22 @@ def test_postgres_version_3_store_gains_the_errors_table(pg_schema):
         conn.execute("DROP TABLE agentl_errors")
         conn.execute("UPDATE agentl_schema_version SET version = 3")
     with PostgresStore(dsn) as s:
-        assert s.schema_version() == SCHEMA_VERSION == 4
+        assert s.schema_version() == SCHEMA_VERSION
         _use_errors_table(s)
+
+
+def test_sqlite_version_4_store_gains_the_evidence_table(tmp_path):
+    path = tmp_path / "v4.db"
+    with Store(path):
+        pass
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE evidence")  # the layout agentl had at schema version 4
+    conn.execute("UPDATE schema_version SET version = 4")
+    conn.commit()
+    conn.close()
+    with Store(path) as s:
+        assert s.schema_version() == SCHEMA_VERSION == 5
+        row = {"run_id": "r", "pipeline": "p", "step": "s", "url": "u", "kind": "raw"}
+        s.evidence_add({**row, "sha256": "a"})
+        assert s.evidence_last("p", "s", "u", "raw", None) is None  # location must match
+        assert [r["sha256"] for r in s.evidence_list(run_id="r")] == ["a"]
