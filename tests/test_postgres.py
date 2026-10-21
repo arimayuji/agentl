@@ -494,3 +494,22 @@ def test_postgres_write_retries_a_lock_conflict(table, tmp_path, monkeypatch):
     assert waits == [0.2]
     assert any(e["type"] == "step.retry" for e in events)
     assert [r["v"] for r in read(table)] == ["a", "b"]
+
+
+def test_gather_claims_once_on_postgres():
+    import uuid
+
+    from agentl import gather
+    from agentl.store import PostgresStore
+
+    group = f"batch-{uuid.uuid4().hex[:8]}"
+    with PostgresStore(DSN) as store:
+        gather.add_part(store, group, "a", "r1")
+        gather.add_part(store, group, "a", "r2")
+        g = next(x for x in gather.groups(store) if x["group"] == group)
+        assert g["items"] == ["a"]
+        key = group + gather.SEP + "p"
+        assert store.seen_claim(gather.FIRED, key, "complete")
+        assert not store.seen_claim(gather.FIRED, key, "complete")
+        gather.forget(store, group)
+        assert all(x["group"] != group for x in gather.groups(store))

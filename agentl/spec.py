@@ -1234,6 +1234,51 @@ class ScheduleSpec(BaseModel):
         return self
 
 
+class GatherExpectSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int | None = None  # at least this many distinct items
+    items: list[str] = Field(default_factory=list)  # these items, by name (missing ones are listed)
+
+    @model_validator(mode="after")
+    def _some(self) -> GatherExpectSpec:
+        if self.count is None and not self.items:
+            raise ValueError("gather.expect needs `count` or `items`")
+        if self.count is not None and self.count < 1:
+            raise ValueError("gather.expect.count must be at least 1")
+        return self
+
+
+class GatherDeadlineSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    after: str | float  # counted from the group's first part
+    fire: Literal["partial", "fail"] = "fail"
+
+
+class GatherSpec(BaseModel):
+    """Fan in: fire once per group when the expected parts (added by `gather.add`) arrived."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    group: str  # pattern: "batch-{date}"; `{date}` reaches the run as a field
+    expect: GatherExpectSpec
+    ttl: str | float = "24h"  # parts and the fired mark are dropped this long after the first part
+    deadline: GatherDeadlineSpec | None = None  # without it, a group still short at `ttl` fails
+
+    @model_validator(mode="after")
+    def _times(self) -> GatherSpec:
+        from .checks import parse_duration
+
+        ttl = parse_duration(self.ttl)
+        if self.deadline and parse_duration(self.deadline.after) > ttl:
+            raise ValueError("gather.deadline.after must not be longer than ttl")
+        from .gather import pattern
+
+        pattern(self.group)
+        return self
+
+
 class TriggerSpec(BaseModel):
     """What starts a run under `agentl serve`: a cron schedule, a webhook path or new files."""
 
@@ -1249,14 +1294,17 @@ class TriggerSpec(BaseModel):
     storage_options: dict[str, Any] = Field(default_factory=dict)
     after: str | None = None  # another pipeline's name: run when that one finishes
     status: Literal["succeeded", "failed", "any"] = "succeeded"  # after: which outcomes count
+    gather: GatherSpec | None = None  # fan in parts added by `gather.add` in other runs
 
     @model_validator(mode="after")
     def _one(self) -> TriggerSpec:
-        kinds = [k for k in ("cron", "schedule", "webhook", "files", "after") if getattr(self, k)]
+        kinds = [k for k in ("cron", "schedule", "webhook", "files", "after", "gather") if getattr(self, k)]
         if not kinds and "every" in self.model_fields_set:
             kinds = ["every"]  # on its own: run again every `every`, never two at once
         if len(kinds) != 1:
-            raise ValueError("a trigger has exactly one of cron, schedule, webhook, files, after or every")
+            raise ValueError(
+                "a trigger has exactly one of cron, schedule, webhook, files, after, gather or every"
+            )
         if self.cron:
             from .triggers import Cron
 
@@ -1271,7 +1319,7 @@ class TriggerSpec(BaseModel):
 
     @property
     def kind(self) -> str:
-        for k in ("cron", "schedule", "webhook", "files", "after"):
+        for k in ("cron", "schedule", "webhook", "files", "after", "gather"):
             if getattr(self, k):
                 return k
         return "every"

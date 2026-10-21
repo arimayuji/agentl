@@ -192,6 +192,56 @@ after_all:                             # once every foreach child finished, what
   deduplicate by its `id` field (`dedup_field: id` on a FIFO queue, `key: id` on Kafka) to keep it
   idempotent by run.
 
+### Fan in: gather parts from independent runs
+
+When processing can start only once N parts arrived (every file of a daily batch, every region
+of a report) and each part lands in its own run, in any order, mark the parts with `gather.add`
+and start the consumer with a `gather:` trigger:
+
+```yaml
+# capture pipeline, one run per part
+params:
+  date: { type: str }
+  part: { type: str }
+steps:
+  - id: mark
+    use: gather.add                    # added when this run succeeds; the same item counts once
+    with: { group: "batch-${params.date}", item: "${params.part}" }
+```
+
+```yaml
+# consuming pipeline, under agentl serve
+trigger:
+  - gather:
+      group: "batch-{date}"            # `{date}` reaches the run as a field
+      expect: { count: 24 }            # or `items: [east, west, north]`, or both
+      ttl: 12h                         # parts are dropped this long after the first one
+      deadline: { after: 3h, fire: partial }
+notify:
+  channels: { slack: { webhook: "${SLACK_WEBHOOK}" } }
+  rules:
+    - on: [gather.partial, gather.failed]
+      to: [slack]
+```
+
+- The `trigger` step gets one record: `group`, the pattern's fields (`date`), `items`, `count`,
+  `missing` (the expected `items` that did not arrive), `missing_count` and `partial`.
+- Each group fires once per consuming pipeline. The firing is claimed with a single insert in
+  the run store, so concurrent additions, a restart or several services sharing a Postgres store
+  still give one run.
+- `deadline.after` counts from the first part. When it passes with parts missing, `fire:
+  partial` starts the run with what arrived and `fire: fail` (the default) starts nothing; both
+  log the missing parts and emit `gather.partial` or `gather.failed` with them. Without a
+  `deadline`, a group still short at `ttl` fails the same way.
+- After `ttl` the group's parts and its firing mark are dropped; a part that arrives later starts
+  a new group.
+- The trigger checks the store every `every` (default `1m`).
+
+```bash
+agentl gather ls                  # groups, their parts and which pipelines fired them
+agentl gather forget batch-2026-10-01   # drop a group so it gathers and fires again
+```
+
 `agentl serve` is one process. If you already have cron, Airflow or GitHub Actions, keep them:
 they bring retries, history and high availability that a single process does not. Put a reverse
 proxy with TLS in front of webhooks exposed to the internet.

@@ -7,6 +7,7 @@
       - files: "inbox/*.csv"                      # new or changed files, local or remote glob
         every: 1m
       - after: extract_orders                     # when that pipeline finishes (`status`)
+      - gather: { group: "batch-{date}", expect: { count: 24 } }  # parts from `gather.add`
 
 A `use: trigger` step gets what started the run: the webhook body as records, one record per new
 file (`path`, `name`, `size`, `modified`), `{scheduled_at}` for a schedule, or the finished
@@ -463,6 +464,11 @@ class Service:
                         continue  # back to back, never piling up
                     self.next_files[(name, i)] = wall + parse_duration(t.every)
                     self.submit(spec, [{"started_at": _dt.datetime.fromtimestamp(wall).isoformat()}], "every")
+                elif t.gather:
+                    if wall < self.next_files.get((name, i), 0):
+                        continue
+                    self.next_files[(name, i)] = wall + parse_duration(t.every)
+                    self._tick_gather(spec, t, wall)
                 elif t.files:
                     if wall < self.next_files.get((name, i), 0):
                         continue
@@ -477,6 +483,34 @@ class Service:
                         busy.update(f["path"] for f in files)
                         self.submit(spec, files, "files", after=self._seen(name, i, t.files, files))
             self._tick_digest(spec, wall)
+
+    def _tick_gather(self, spec: Any, t: Any, wall: float) -> None:
+        """Start one run per group whose parts arrived (or whose deadline passed with `fire:
+        partial`); a group short at its deadline with `fire: fail` only notifies."""
+        from . import gather
+
+        for how, record in gather.due(self.store, spec.name, t.gather, wall):
+            if how != "complete":
+                log.warning(
+                    "%s: gather %s %s: %d part(s) missing%s",
+                    spec.name,
+                    record["group"],
+                    "fired partial" if how == "partial" else "failed",
+                    record["missing_count"],
+                    f" ({', '.join(record['missing'])})" if record["missing"] else "",
+                )
+                self._notify(spec, f"gather.{how}", record)
+            if how != "failed":
+                self.submit(spec, [record], "gather")
+
+    def _notify(self, spec: Any, type: str, data: dict) -> None:
+        """Send an event that belongs to no run through the pipeline's `notify:` rules."""
+        if spec.notify is None:
+            return
+        from .notify import Notifier
+
+        event = {"run_id": None, "pipeline": spec.name, "ts": time.time(), "type": type, "step": None}
+        Notifier(spec.notify, spec.name)({**event, "data": data})  # never raises
 
     def _tick_digest(self, spec: Any, wall: float) -> None:
         """Send the pipeline's `notify.digest` when it is due (checked once a minute)."""
@@ -636,6 +670,7 @@ class Service:
                 t.cron
                 or (f"schedule {t.schedule.tz}" if t.schedule else None)
                 or t.webhook
+                or (f"gather {t.gather.group}" if t.gather else None)
                 or (f"files {t.files}" if t.files else f"after {t.after}" if t.after else f"every {t.every}")
                 for t in spec.trigger
             )
