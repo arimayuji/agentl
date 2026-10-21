@@ -1,1 +1,0 @@
-HTML parsing keeps the partial tree instead of failing with AssertionError on badly broken markup such as `<![` followed by junk, which older Python releases raise from `html.parser`. Found by the fuzzer.
