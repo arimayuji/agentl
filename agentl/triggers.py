@@ -27,6 +27,7 @@ import queue
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -222,10 +223,13 @@ class Service:
         self.on_late: Callable[[Any, _dt.date, _dt.datetime], None] | None = None
         self.pending: dict[tuple[str, int], set[str]] = {}  # files handed to a run not finished yet
         self._stop = threading.Event()
+        self.last_status: dict[str, str] = {}  # pipeline -> status of its last run in this service
+        self.groups: dict[str, dict] = {}  # foreach fan-out id -> what after_all needs
+        self._lock = threading.Lock()
         from . import chain
 
         chain.check(specs)
-        chained = {a.trigger for s in specs for a in [*s.on_success, *s.on_failure, *s.after]}
+        chained = {a.trigger for s in specs for a in chain.actions(s)}
         for spec in specs:
             if not spec.trigger and spec.name not in chained:
                 raise ValueError(f"pipeline '{spec.name}' has no trigger; add one under `trigger:`")
@@ -256,20 +260,30 @@ class Service:
         after: Callable[[bool], None] | None = None,
         parent: dict | None = None,
         chain: tuple[str, ...] = (),
+        group: str | None = None,
     ) -> None:
         """Queue a run; runs of one pipeline go one at a time in its own worker thread. `parent`
-        and `chain` are set when another pipeline's run started this one."""
+        and `chain` are set when another pipeline's run started this one; `group` when it is one
+        of a `foreach` fan-out."""
         q = self.queues.get(spec.name)
         if q is None:
             q = self.queues[spec.name] = queue.Queue()
             threading.Thread(target=self._worker, args=(q,), daemon=True, name=f"agentl-{spec.name}").start()
-        q.put((spec, records, kind, after, parent, chain))
+        q.put((spec, records, kind, after, parent, chain, group))
 
     def _worker(self, q: queue.Queue) -> None:
         while True:
-            spec, records, kind, after, parent, chain = q.get()
+            spec, records, kind, after, parent, chain, group = q.get()
             ok = False
             result = None
+            blocked = self._blocked(spec)
+            if blocked:
+                log.warning("%s: %s run not started: %s", spec.name, kind, blocked)
+                if after:
+                    after(False)
+                self._group_done(group, None)
+                q.task_done()
+                continue
             try:
                 result = self._run(spec, records, kind)
                 ok = getattr(result, "status", "succeeded") == "succeeded"
@@ -287,12 +301,61 @@ class Service:
             finally:
                 if after:
                     after(ok)
+                self.last_status[spec.name] = getattr(result, "status", "failed") if result else "failed"
                 try:
                     self._link(spec, result, parent)
                     self._then(spec, records, result, (*chain, spec.name))
                 except Exception:
                     log.exception("%s: after-run actions failed", spec.name)
+                try:
+                    self._group_done(group, result)
+                except Exception:
+                    log.exception("%s: after_all failed", spec.name)
                 q.task_done()
+
+    def _blocked(self, spec: Any) -> str | None:
+        """Why a run must not start: a `depends_on` pipeline whose last run did not succeed. One
+        still queued or running is waited for first."""
+        for dep in spec.depends_on:
+            q = self.queues.get(dep)
+            if q is not None and q.unfinished_tasks:
+                q.join()
+            status = self.last_status.get(dep)
+            if status is None and hasattr(self.store, "recent_runs"):
+                last = self.store.recent_runs(dep, 1)
+                status = last[0]["status"] if last else None
+            if status != "succeeded":
+                return f"depends on '{dep}', whose last run {'is ' + status if status else 'never ran'}"
+        return None
+
+    def _group_done(self, group: str | None, result: Any) -> None:
+        """One `foreach` child finished; the last one runs the parent's `after_all`."""
+        if group is None:
+            return
+        from . import chain as ch
+
+        with self._lock:
+            g = self.groups.get(group)
+            if g is None:
+                return
+            g["metrics"].append(ch.metrics(result))
+            if len(g["metrics"]) < g["size"]:
+                return
+            del self.groups[group]
+        self._after_all(g)
+
+    def _after_all(self, g: dict) -> None:
+        from . import chain as ch
+
+        spec, ctx = g["spec"], g["ctx"]
+        m = ch.combine(g["metrics"])
+        if hasattr(self.store, "event") and ctx["run"]["id"]:
+            self.store.event(ctx["run"]["id"], "chain.after_all", None, {"children": len(g["metrics"]), **m})
+        if spec.after_all.when and not ch.evaluate(spec.after_all.when, m):
+            return
+        ctx = {**ctx, "run": {**ctx["run"], "status": m["status"]}}
+        for a in spec.after_all.do:
+            self._act(spec, a, ctx, g["parent"], g["chain"])
 
     def _link(self, spec: Any, result: Any, parent: dict | None) -> None:
         """Record parent <-> child on both runs, so the dashboard shows where a run came from."""
@@ -313,27 +376,69 @@ class Service:
         ctx = ch.context(spec, result, records)
         parent = {"pipeline": spec.name, "run_id": ctx["run"]["id"], "status": m["status"]}
         actions = [*(spec.on_success if m["status"] == "succeeded" else spec.on_failure), *spec.after]
+        fan: list[tuple[str, list[dict]]] = []  # foreach: (pipeline, one record per child run)
         for a in actions:
             if a.when and not ch.evaluate(a.when, m):
                 continue
-            if a.emit:
-                try:
-                    ch.emit(a.emit, ctx)
-                except Exception as e:  # an unreachable receiver must not stop the service
-                    log.warning("%s: emit %s failed: %s", spec.name, a.emit.topic, e)
-            elif a.trigger:
-                self._start(a.trigger, [ch.resolve(a.with_, ctx)], parent, chain)
+            if a.foreach is not None:
+                assert a.trigger
+                recs = [
+                    ch.resolve(a.with_, {**ctx, "item": it}) if a.with_ else it
+                    for it in ch.items(a.foreach, ctx)
+                ]
+                fan.append((a.trigger, recs))
+            else:
+                self._act(spec, a, ctx, parent, chain)
+        if fan or spec.after_all:
+            self._fan_out(spec, ctx, parent, chain, fan)
         for name, other in self.specs.items():
             for t in other.trigger:
                 if t.after == spec.name and t.status in (m["status"], "any"):
                     rec = {**parent, "error": ctx["run"]["error"]}
                     self._start(name, [rec], parent, chain)
 
-    def _start(self, name: str, records: list[dict], parent: dict, chain: tuple[str, ...]) -> None:
+    def _act(self, spec: Any, a: Any, ctx: dict, parent: dict, chain: tuple[str, ...]) -> None:
+        """One action that is not a fan-out: emit an event, call a connector, start a pipeline."""
+        from . import chain as ch
+
+        if a.emit:
+            try:
+                ch.emit(a.emit, ctx)
+            except Exception as e:  # an unreachable receiver must not stop the service
+                log.warning("%s: emit %s failed: %s", spec.name, a.emit.topic, e)
+        elif a.use:
+            try:
+                ch.call(a.use, ch.resolve(a.with_, ctx), {**ctx["run"]})
+            except Exception as e:
+                log.warning("%s: action %s failed: %s", spec.name, a.use, e)
+        elif a.trigger:
+            self._start(a.trigger, [ch.resolve(a.with_, ctx)], parent, chain)
+
+    def _fan_out(
+        self, spec: Any, ctx: dict, parent: dict, chain: tuple[str, ...], fan: list[tuple[str, list[dict]]]
+    ) -> None:
+        """Start one child run per foreach record, all in one group whose last child to finish
+        runs `after_all` (at once when there is nothing to fan out)."""
+        runs = [(name, rec) for name, recs in fan for rec in recs if name not in chain]
+        group = None
+        if spec.after_all:
+            group = uuid.uuid4().hex
+            g = {"spec": spec, "ctx": ctx, "parent": parent, "chain": chain, "size": len(runs), "metrics": []}
+            if not runs:
+                self._after_all(g)
+                return
+            with self._lock:
+                self.groups[group] = g
+        for name, rec in runs:
+            self._start(name, [rec], parent, chain, group)
+
+    def _start(
+        self, name: str, records: list[dict], parent: dict, chain: tuple[str, ...], group: str | None = None
+    ) -> None:
         if name in chain:  # checked when the service starts; this is the runtime backstop
             log.error("%s: not started, it would chain in a cycle: %s", name, " -> ".join([*chain, name]))
             return
-        self.submit(self.specs[name], records, "chain", parent=parent, chain=chain)
+        self.submit(self.specs[name], records, "chain", parent=parent, chain=chain, group=group)
 
     def tick(self, now: float | None = None) -> None:
         """Start the runs that are due: schedules whose time came, and file triggers with new files.

@@ -6,6 +6,13 @@ another pipeline or emit an event, `when` conditions over run metrics, and cycle
         with: { rows: "${outputs.extract}", day: "${trigger.day}" }
       - emit: { url: "${EVENTS_URL}", topic: report.ready }
         when: all_ok and rows_changed > 0
+      - trigger: load_day                     # one child run per record
+        foreach: "${outputs.days}"
+        with: { day: "${item.day}" }
+    after_all:                                # once every foreach child finished
+      when: all_ok
+      do: [{ use: email.send, with: { to: [desk@example.org], subject: "Loads done" } }]
+    depends_on: [load_reference]              # its last run must have succeeded
 
 Standard library only."""
 
@@ -111,12 +118,28 @@ def metrics(result: Any) -> dict[str, Any]:
     }
 
 
-_REF = re.compile(r"\$\{(outputs|trigger|run)\.([A-Za-z0-9_]+)\}")
+def combine(children: list[dict[str, Any]]) -> dict[str, Any]:
+    """The metrics of a group of runs (every `foreach` child) as one: all_ok only if each is,
+    counts and cost summed."""
+    ok = all(m["status"] == "succeeded" for m in children)
+    status = "succeeded" if ok else "failed"
+    return {
+        "outcome": status,
+        "status": status,
+        "all_ok": all(m["all_ok"] for m in children),
+        "failed": not ok,
+        **{k: sum(m[k] for m in children) for k in ("rows_changed", "records", "rejected")},
+        "cost_usd": sum(m["cost_usd"] or 0.0 for m in children),
+    }
+
+
+_REF = re.compile(r"\$\{(outputs|trigger|run|item)\.([A-Za-z0-9_]+)\}")
 
 
 def resolve(value: Any, ctx: dict[str, Any]) -> Any:
     """Fill `${outputs.<step>}` (that step's records), `${trigger.<field>}` (first record that
-    started the parent run) and `${run.id|pipeline|status|error}`. A value that is only a
+    started the parent run), `${run.id|pipeline|status|error}` and, in a `foreach`,
+    `${item.<field>}`. A value that is only a
     reference keeps its type; inside text it is formatted."""
     if isinstance(value, dict):
         return {k: resolve(v, ctx) for k, v in value.items()}
@@ -131,6 +154,8 @@ def resolve(value: Any, ctx: dict[str, Any]) -> Any:
         if kind == "trigger":
             first = ctx["trigger"][0] if ctx["trigger"] else {}
             return first.get(key)
+        if kind == "item":
+            return (ctx.get("item") or {}).get(key)
         return ctx["run"].get(key)
 
     whole = _REF.fullmatch(value)
@@ -152,9 +177,27 @@ def context(spec: Any, result: Any, trigger: list[dict]) -> dict[str, Any]:
     }
 
 
+def items(expr: str, ctx: dict[str, Any]) -> list[dict]:
+    """The records a `foreach` fans out over; a value that is not a record becomes `{value: ...}`."""
+    got = resolve(expr, ctx)
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        got = [got]
+    return [g if isinstance(g, dict) else {"value": g} for g in got]
+
+
+def call(use: str, params: dict[str, Any], record: dict) -> Any:
+    """Run a connector once with one input record (an action's `use`, or emit's queue)."""
+    from . import registry
+
+    return registry.get(use)([record], **params)
+
+
 def emit(cfg: Any, ctx: dict[str, Any], post: Any = None) -> dict:
-    """POST the event. Its `id` (and the `Idempotency-Key` header) is `<run_id>:<topic>`, so a
-    receiver can drop a repeat."""
+    """POST the event, or send it with a queue connector (`use`). Its `id` (and the
+    `Idempotency-Key` header) is `<run_id>:<topic>`, so a receiver can drop a repeat; on a queue,
+    key or deduplicate by the `id` field (`key: id`, `dedup_field: id`)."""
     run = ctx["run"]
     event = {
         "id": f"{run['id']}:{cfg.topic}",
@@ -164,6 +207,9 @@ def emit(cfg: Any, ctx: dict[str, Any], post: Any = None) -> dict:
         "status": run["status"],
         "payload": resolve(cfg.payload, ctx),
     }
+    if cfg.use:
+        call(cfg.use, resolve(cfg.with_, ctx), event)
+        return event
     headers = {"Idempotency-Key": event["id"]}
     if cfg.secret:
         body = json.dumps(event, default=str).encode()
@@ -180,18 +226,30 @@ def edges(specs: list[Any]) -> dict[str, set[str]]:
     """Pipeline -> pipelines a finished run of it can start."""
     out: dict[str, set[str]] = {s.name: set() for s in specs}
     for s in specs:
-        for a in [*s.on_success, *s.on_failure, *s.after]:
+        for a in actions(s):
             if a.trigger:
                 out[s.name].add(a.trigger)
         for t in s.trigger:
             if t.after:
                 out.setdefault(t.after, set()).add(s.name)
+        for d in s.depends_on:  # the dependency runs (and is waited for) before this one
+            out.setdefault(d, set()).add(s.name)
     return out
+
+
+def actions(spec: Any) -> list[Any]:
+    """Every action of a pipeline, `after_all` included."""
+    return [*spec.on_success, *spec.on_failure, *spec.after, *(spec.after_all.do if spec.after_all else [])]
 
 
 def check(specs: list[Any]) -> None:
     """Unknown pipeline names and cycles (a -> b -> a) are errors before anything runs."""
     names = {s.name for s in specs}
+    for s in specs:
+        if s.name in s.depends_on:
+            raise ValueError(f"pipeline '{s.name}' depends on itself")
+        if s.after_all and not any(a.foreach is not None for a in actions(s)):
+            raise ValueError(f"pipeline '{s.name}': after_all needs a trigger action with foreach")
     graph = edges(specs)
     for src, dsts in graph.items():
         for name in sorted({src, *dsts} - names):
