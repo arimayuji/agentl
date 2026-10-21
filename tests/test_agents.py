@@ -226,3 +226,85 @@ def test_samples_mask_secret_values(tmp_path, monkeypatch):
         Runner(spec, store=store).run()
     stored = b"".join(p.read_bytes() for p in tmp_path.glob("s.db*"))
     assert b"zzzzzzzzzz" not in stored and b"***" in stored
+
+
+def test_mcp_profile_file_types_and_suggested_cast(tmp_path, monkeypatch):
+    """#128: profile a local file before writing the pipeline for it, over the stdio protocol."""
+    import io
+
+    from agentl import registry
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "orders.csv").write_text(
+        "id,code,amount,price,day,paid,email,note,at\n"
+        '1,007,"1.234,56","1,234.50",15/10/2026,yes,A@b.com,hi,2026-10-15T10:00:00\n'
+        '2,008,"10,00",3.5,16/10/2026,no,c@d.com,,2026-10-16T11:00:00\n'
+    )
+    s = Server(str(tmp_path / "runs.db"), root=str(tmp_path))
+    request = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "profile_file", "arguments": {"path": "orders.csv", "sample": 1}},
+    }
+    out = io.StringIO()
+    s.serve(io.StringIO(json.dumps(request) + "\n"), out)
+    res = json.loads(out.getvalue().splitlines()[0])
+    assert res["id"] == 7 and not res["result"]["isError"]
+    prof = json.loads(res["result"]["content"][0]["text"])
+    cols = prof["columns"]
+    assert prof["rows"] == 2 and len(prof["sample"]) == 1
+    assert {c: cols[c]["type"] for c in cols} == {
+        "id": "int",
+        "code": "text",  # leading zeros: a code, not a number
+        "amount": "decimal",
+        "price": "decimal",
+        "day": "date",
+        "paid": "bool",
+        "email": "email",
+        "note": "text",
+        "at": "datetime",
+    }
+    assert cols["note"]["null_rate"] == 0.5 and cols["amount"]["max"] == 1234.56
+    cast = prof["suggested_cast"]["with"]
+    assert cast["fields"]["amount"] == {"type": "decimal", "locale": "pt-BR"}
+    assert cast["fields"]["price"] == {"type": "decimal", "locale": "en-US"}
+    rows = registry.get("cast")(registry.get("csv.read")(None, path="orders.csv"), **cast)
+    assert rows[0]["amount"] == 1234.56 and rows[0]["price"] == 1234.5 and rows[1]["paid"] is False
+
+    err, text = call(s, "profile_file", path=str(tmp_path.parent / "x.csv"))
+    assert err and "only reads files under" in text
+    err, text = call(s, "profile_file", path="missing.csv")
+    assert err and "no file" in text
+
+
+def test_mcp_list_artifacts(tmp_path, monkeypatch):
+    """#128: what recent runs wrote, where and how many rows."""
+    monkeypatch.chdir(tmp_path)
+    s = setup(tmp_path)
+    tools = {
+        t["name"]: t for t in s.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
+    }
+    assert tools["list_artifacts"]["annotations"]["readOnlyHint"]
+    assert tools["profile_file"]["annotations"]["readOnlyHint"]
+    err, text = call(s, "list_artifacts")
+    assert not err and json.loads(text) == []
+    err, text = call(s, "run_pipeline", pipeline=str(tmp_path / "p.yaml"))
+    run_id = json.loads(text)["run_id"]
+    err, text = call(s, "list_artifacts")
+    (run,) = json.loads(text)
+    assert not err and run["run_id"] == run_id and run["status"] == "succeeded"
+    assert run["outputs"] == {"rows": 2, "some": 2, "save": 2}
+    (art,) = run["artifacts"]
+    assert art["step"] == "save" and art["rows"] == 2 and art["path"].endswith("out.json")
+
+    monkeypatch.setenv("AGENTL_SAMPLES", "0")
+    call(s, "run_pipeline", pipeline=str(tmp_path / "p.yaml"), no_cache=True)
+    err, text = call(s, "list_artifacts", limit=1)
+    assert json.loads(text)[0]["artifacts"] == [{"step": "save", "rows": 2}]
+    err, text = call(s, "list_artifacts", run_id=run_id)
+    assert json.loads(text)[0]["run_id"] == run_id
+    err, text = call(s, "list_artifacts", pipeline="other")
+    assert json.loads(text) == []
+    err, text = call(s, "list_artifacts", run_id="nope")
+    assert err and "no run" in text

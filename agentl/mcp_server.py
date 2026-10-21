@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import threading
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
@@ -85,6 +86,98 @@ def code_in(spec: PipelineSpec) -> list[str]:
                 found.append(f"step '{s.id}' uses tool {name}")
     found += [f"mcp server '{n}' runs {m.command[0]}" for n, m in spec.mcp.items() if m.command]
     return found
+
+
+def column_type(values: list[Any]) -> tuple[str, str | None]:
+    """The type of `cast` a column reads as, and the number locale when its values tell
+    (pt-BR for `1.234,56`, en-US for `1,234.56`). Values that are already typed (from JSON,
+    Excel or Parquet) keep their type; text is tried against int, decimal, bool, date, datetime
+    and email, in that order, and is `text` when any value fails."""
+    import re
+
+    from . import types
+    from .checks import _empty
+
+    present = [v for v in values if not _empty(v)][:500]
+    if not present:
+        return "text", None
+    if all(isinstance(v, bool) for v in present):
+        return "bool", None
+    if all(isinstance(v, int) and not isinstance(v, bool) for v in present):
+        return "int", None
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
+        return "decimal", None
+    text = [str(v).strip() for v in present]
+    if any(len(t) > 1 and t.startswith("0") and t.isdigit() for t in text):
+        return "text", None  # leading zeros: an id or a code, not a number
+    locale = None
+    if any(re.fullmatch(r"-?\d{1,3}(\.\d{3})*,\d+", t) for t in text):
+        locale = "pt-BR"
+    elif any(re.fullmatch(r"-?\d{1,3}(,\d{3})+(\.\d+)?", t) for t in text):
+        locale = "en-US"
+
+    def parses(fn: Callable[[Any], Any]) -> bool:
+        try:
+            return all(fn(t) is not None for t in text)
+        except (ValueError, OverflowError):
+            return False
+
+    loc = locale or "en-US"
+    if parses(lambda t: types.to_int(t, locale=loc)) and not any("." in t or "," in t for t in text):
+        return "int", locale
+    if parses(lambda t: types.to_decimal(t, locale=loc)):
+        return "decimal", locale
+    if parses(types.to_bool):
+        return "bool", None
+    try:
+        order = types.date_order(text) or "dmy"
+    except ValueError:
+        return "text", None
+    timed = any(re.search(r"\d:\d\d", t) for t in text)
+    if not timed and parses(lambda t: types.to_date(t, order=order)):
+        return "date", None
+    if timed and parses(lambda t: types.to_datetime(t, order=order)):
+        return "datetime", None
+    if parses(types.to_email):
+        return "email", None
+    return "text", None
+
+
+def _clip_values(record: dict) -> dict:
+    return {k: (v[:200] + "...") if isinstance(v, str) and len(v) > 200 else v for k, v in record.items()}
+
+
+_SUMMARY_COUNTS = ("written", "inserted", "updated", "unchanged", "deleted", "versioned")
+
+
+def _artifacts(store: Any, run: dict) -> dict:
+    """One run's outputs: records per step, and for each writer step the targets it wrote (from
+    the summary records kept as the step's sample) with their row counts."""
+    outputs: dict[str, int] = {}
+    artifacts: list[dict] = []
+    for e in store.events(run["id"]):
+        if e["type"] != "step.succeeded" or not e["step"]:
+            continue
+        data = e["data"] or {}
+        outputs[e["step"]] = data.get("records", 0)
+        if "written" not in data:
+            continue
+        sample = store.sample(run["id"], e["step"])
+        targets = [r for r in (sample or {}).get("records", []) if isinstance(r, dict) and "written" in r]
+        if not targets:  # samples off (AGENTL_SAMPLES=0): only the count is known
+            artifacts.append({"step": e["step"], "rows": data["written"]})
+        for r in targets:
+            where = {k: v for k, v in r.items() if k not in _SUMMARY_COUNTS}
+            counts = {k: r[k] for k in _SUMMARY_COUNTS[1:] if isinstance(r.get(k), int)}
+            artifacts.append({"step": e["step"], **where, "rows": r["written"], **counts})
+    return {
+        "run_id": run["id"],
+        "pipeline": run["pipeline"],
+        "status": run["status"],
+        "started": run["started"],
+        "outputs": outputs,
+        "artifacts": artifacts,
+    }
 
 
 class Server:
@@ -250,6 +343,34 @@ class Server:
             },
             self.show_output,
             required=["step"],
+        )
+
+        add(
+            "profile_file",
+            "Shape of a local data file before writing a pipeline for it: rows, columns, the type "
+            "each column reads as (int, decimal, date, datetime, bool, email or text), null rates, a "
+            "sample of rows and a suggested cast: step. Reads the file under the server's root with "
+            "the reader its extension picks; runs no code and calls no LLM.",
+            {
+                "path": {"type": "string", "description": "a data file under the root, e.g. data/orders.csv"},
+                "sample": {"type": "integer", "description": "sample rows, default 5, at most 20"},
+                "max_rows": {"type": "integer", "description": "rows profiled, default 10000"},
+            },
+            self.profile_file,
+            required=["path"],
+        )
+        add(
+            "list_artifacts",
+            "What recent runs wrote: for each writer step, the file, table or other target and how "
+            "many rows, plus the records every step produced. run_id picks one run; otherwise the "
+            "latest runs, newest first.",
+            {
+                "run_id": {"type": "string"},
+                "pipeline": {"type": "string", "description": "only runs of this pipeline"},
+                "limit": {"type": "integer", "description": "runs, default 5, at most 50"},
+            },
+            self.list_artifacts,
+            required=[],
         )
 
     def _add(
@@ -477,6 +598,76 @@ class Server:
             "total": sample["total"],
             "records": sample["records"][:limit],
         }
+
+    def profile_file(self, args: dict) -> dict:
+        from . import checks, quick
+
+        path = Path(args["path"])
+        path = path if path.is_absolute() else self.root / path
+        if not path.resolve().is_relative_to(self.root):
+            raise ValueError(f"profile_file only reads files under {self.root}")
+        if not path.is_file():
+            raise FileNotFoundError(f"no file '{args['path']}'")
+        records = [r if isinstance(r, dict) else {"value": r} for r in quick.read(str(path))]
+        total = len(records)
+        records = records[: max(1, int(args.get("max_rows") or 10000))]
+        prof = checks.profile(records, sample=max(1, min(int(args.get("sample") or 5), 20)))
+        from . import types
+
+        columns: dict[str, Any] = {}
+        found: dict[str, tuple[str, str | None]] = {}
+        for name, col in prof["columns"].items():
+            values = [r.get(name) for r in records]
+            kind, locale = column_type(values)
+            found[name] = (kind, locale)
+            stats = {k: v for k, v in col.items() if k not in ("min", "max", "mean", "sum")}
+            if kind in ("int", "decimal"):  # numbers read with the column's own locale
+                loc = locale or "en-US"
+                nums = [types.to_decimal(v, locale=loc) for v in values if not checks._empty(v)]
+                clean = [n for n in nums if n is not None]
+                low, high = min(clean), max(clean)
+                if kind == "int":
+                    low, high = int(low), int(high)
+                stats.update(min=low, max=high, mean=round(sum(clean) / len(clean), 4))
+                stats.pop("top", None)
+            elif "top" not in stats:
+                seen = Counter(str(v) for v in values if not checks._empty(v))
+                stats["top"] = [[v, n] for v, n in seen.most_common(5)]
+            columns[name] = {
+                "type": kind,
+                "null_rate": round(col["nulls"] / len(records), 4) if records else 0.0,
+                **stats,
+            }
+        locales = {loc for _, loc in found.values() if loc}
+        one = locales.pop() if len(locales) == 1 else None
+        fields: dict[str, Any] = {
+            name: kind if not loc or loc == one else {"type": kind, "locale": loc}
+            for name, (kind, loc) in found.items()
+            if kind != "text"
+        }
+        cast: dict[str, Any] = {**({"locale": one} if one else {}), "fields": fields}
+        return {
+            "path": path.resolve().relative_to(self.root).as_posix(),
+            "rows": total,
+            "profiled_rows": len(records),
+            "columns": columns,
+            "sample": [_clip_values(r) for r in prof["sample"]],
+            "suggested_cast": {"use": "cast", "with": cast} if fields else None,
+        }
+
+    def list_artifacts(self, args: dict) -> list:
+        with open_store(self.db) as store:
+            if args.get("run_id"):
+                run = store.run(args["run_id"])
+                if run is None:
+                    raise KeyError(f"no run '{args['run_id']}'")
+                runs = [run]
+            else:
+                limit = max(1, min(int(args.get("limit") or 5), 50))
+                pipeline = args.get("pipeline")
+                runs = store.runs(limit * 20 if pipeline else limit)
+                runs = [r for r in runs if not pipeline or r["pipeline"] == pipeline][:limit]
+            return [_artifacts(store, r) for r in runs]
 
     # ------------------------------------------------------------ resources
     def _pipeline_files(self, limit: int = 200) -> list[Path]:

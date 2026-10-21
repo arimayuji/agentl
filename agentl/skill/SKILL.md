@@ -50,10 +50,11 @@ Python. URLs to private addresses are refused unless `AGENTL_ALLOW_HOSTS` allows
 4. `agentl run pipeline.yaml`. If a step fails: `agentl doctor` explains it.
    `agentl validate pipeline.yaml --connect` checks databases, URLs, files and LLM keys.
 
-With the MCP server (`agentl mcp`) the same steps are tools: `list_templates` and
-`new_from_template` (start here, no LLM call), `describe_connector`, `lint`, `preview_step`, `plan`,
-`run_pipeline`, `show_output` (the first records a step produced), `doctor`, `list_failures`,
-`pipeline_stats`.
+With the MCP server (`agentl mcp`) the same steps are tools: `profile_file` (columns, types and
+a `cast:` block for a data file), `list_templates` and `new_from_template` (start here, no LLM
+call), `describe_connector`, `lint`, `preview_step`, `plan`, `run_pipeline`, `show_output` (the
+first records a step produced), `list_artifacts` (what a run wrote, where), `doctor`,
+`list_failures`, `pipeline_stats`.
 
 ## Pipeline shapes
 
