@@ -1,0 +1,25 @@
+# Quarantine (dead letter): bad rows leave the flow with the reason and wait in the quarantine
+# (agentl rejected) while the good rows load; the run ends with outcome partial.
+name: quarantine-dead-letter
+outcomes: { on_rejected: partial }
+steps:
+  - id: orders
+    use: csv.read
+    with: { path: orders.csv }
+  - id: typed
+    use: cast
+    input: orders
+    with:
+      on_bad: reject
+      fields: { id: int, total: float, ordered_on: date }
+  - id: verify
+    check: typed
+    expect:
+      rows: { min: 1 }
+      accepted: { region: [north, south, east, west] }
+    severity:
+      accepted: reject
+  - id: load
+    use: sqlite.write
+    input: verify
+    with: { db: out/orders.db, table: orders, mode: upsert, key: id }

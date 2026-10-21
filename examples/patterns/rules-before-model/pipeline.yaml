@@ -1,0 +1,22 @@
+# Rules before the model: deterministic rules handle the clean records, and only the ones they
+# miss are sent to the LLM. Each record carries _path: rules or agent.
+name: rules-before-model
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: customers
+    use: csv.read
+    with: { path: customers.csv }
+  - id: parse_address
+    input: customers
+    rules:
+      - compute:
+          zip: "regex(address, '\\d{5}$')"
+          state: "regex(address, '[A-Z]{2}(?= \\d{5}$)')"
+    agent: Extract the zip code and the two-letter state from the address.
+    output: { zip: str, state: str }
+  - id: save
+    use: csv.write
+    input: parse_address
+    with: { path: out/addresses.csv }

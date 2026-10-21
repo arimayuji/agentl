@@ -1,0 +1,17 @@
+# Best-effort side output: the main destination is required, a secondary one (a legacy table,
+# an export) is recorded when it fails but never fails the run.
+name: best-effort-side-output
+steps:
+  - id: rows
+    use: csv.read
+    with: { path: facts.csv }
+  - id: main
+    use: sqlite.write
+    input: rows
+    with: { db: out/main.db, table: facts, mode: replace }
+  - id: legacy
+    use: csv.write
+    input: rows
+    with: { path: out/legacy/facts.csv }
+    required: false
+    after: main

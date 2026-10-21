@@ -1,0 +1,4 @@
+payment_id,customer,amount
+p-001,acme,250.00
+p-002,globex,99.90
+p-003,initech,410.00

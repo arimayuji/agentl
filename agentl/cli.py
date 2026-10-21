@@ -812,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
     n = cmd("new", "write a pipeline: from a tested template (no LLM), or from a description (asks an LLM)")
     n.add_argument("description", nargs="?", help="what the pipeline should do (asks an LLM)")
     n.add_argument("--template", "-t", metavar="NAME", help="start from a tested template, no LLM call")
-    n.add_argument("--list", action="store_true", help="list the templates")
+    n.add_argument("--list", action="store_true", help="list the templates: recipes and ETL patterns")
     n.add_argument("-o", "--output", help="write the YAML here instead of printing it")
     n.add_argument("--provider", help="LLM provider (default: $AGENTL_PROVIDER or anthropic)")
     n.add_argument("--model", help="model (default: $AGENTL_MODEL)")
@@ -1299,8 +1299,10 @@ def main(argv: list[str] | None = None) -> int:
 
             if a.list:
                 width = max(map(len, templates.names()))
-                for name in templates.names():
-                    print(f"{name:<{width}}  {templates.summary(name)}")
+                for i, kind in enumerate(templates.GROUPS):
+                    print(f"{chr(10) if i else ''}{kind}:")
+                    for name in templates.names(kind):
+                        print(f"{name:<{width}}  {templates.summary(name)}")
                 return 0
             text = templates.text(a.template)
             if a.output:

@@ -1,0 +1,13 @@
+# Incremental load with a cursor: fetch only the rows newer than the last successful run.
+name: incremental-cursor
+steps:
+  - id: orders
+    use: http.get
+    with:
+      url: "${API_URL:-https://api.example.com}/orders"
+      params: { since: "{cursor}" }
+    cursor: { field: updated_at, initial: "2026-01-01T00:00:00" }
+  - id: load
+    use: sqlite.write
+    input: orders
+    with: { db: out/orders.db, table: orders, mode: upsert, key: id }

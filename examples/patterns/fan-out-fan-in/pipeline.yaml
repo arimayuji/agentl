@@ -1,0 +1,30 @@
+# Fan-out and fan-in: one source feeds independent branches that run in parallel, and a
+# concat step brings them back together before the write.
+name: fan-out-fan-in
+steps:
+  - id: sales
+    use: csv.read
+    with: { path: sales.csv }
+  - id: online
+    use: filter
+    input: sales
+    with: { where: { channel: online } }
+  - id: stores
+    use: filter
+    input: sales
+    with: { where: { channel: store } }
+  - id: online_net
+    use: compute
+    input: online
+    with: { fields: { net: "total * 0.97" } }
+  - id: stores_net
+    use: compute
+    input: stores
+    with: { fields: { net: "total" } }
+  - id: all_sales
+    use: concat
+    input: [online_net, stores_net]
+  - id: save
+    use: csv.write
+    input: all_sales
+    with: { path: out/sales_net.csv }

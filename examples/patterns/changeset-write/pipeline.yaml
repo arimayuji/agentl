@@ -1,0 +1,17 @@
+# Changeset write: insert new keys, update changed rows, leave equal rows alone, and delete the
+# rows missing from each month the source sends.
+name: changeset-write
+steps:
+  - id: facts
+    use: csv.read
+    with: { path: facts.csv }
+  - id: save
+    use: sqlite.write
+    input: facts
+    with:
+      db: out/facts.db
+      table: facts
+      key: [month, product]
+      mode: changeset
+      partition_by: month
+      deletes: { when: partition_replaced }

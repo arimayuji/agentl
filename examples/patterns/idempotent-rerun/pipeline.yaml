@@ -1,0 +1,15 @@
+# Idempotent re-run: skip_seen drops what an earlier run handled, and an upsert on the key
+# keeps one row per id however many times the pipeline runs.
+name: idempotent-rerun
+steps:
+  - id: payments
+    use: csv.read
+    with: { path: payments.csv }
+  - id: new_payments
+    use: skip_seen
+    input: payments
+    with: { key: payment_id }
+  - id: load
+    use: sqlite.write
+    input: new_payments
+    with: { db: out/payments.db, table: payments, mode: upsert, key: payment_id }

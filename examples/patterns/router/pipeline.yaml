@@ -1,0 +1,30 @@
+# Router: label each record with one branch and send it only there; rules decide the easy
+# records before the LLM, and drop discards the rest.
+name: router
+llm:
+  default: { provider: openrouter, model: openai/gpt-4o-mini }
+budget: { max_usd: 1 }
+steps:
+  - id: docs
+    use: json.read
+    with: { path: docs.json }
+  - id: route
+    input: docs
+    agent: Is this document an invoice, a contract or something else?
+    routes: { invoice: invoices, contract: contracts, other: drop }
+    rules:
+      - { when: "kind == 'nfe'", route: invoice }
+    route_tag: true
+  - id: invoices
+    agent: Extract the invoice total.
+    output: { total: float }
+  - id: contracts
+    agent: Extract the parties of the contract.
+    output: { parties: "list[str]" }
+  - id: all
+    use: concat
+    input: [invoices, contracts]
+  - id: save
+    use: json.write
+    input: all
+    with: { path: out/documents.json }

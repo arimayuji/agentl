@@ -1,0 +1,5 @@
+[
+  {"id": 1, "kind": "nfe", "text": "Invoice 123, total 450.00"},
+  {"id": 2, "kind": "pdf", "text": "Agreement between Acme and Globex for 12 months"},
+  {"id": 3, "kind": "pdf", "text": "Lunch menu for Friday"}
+]
