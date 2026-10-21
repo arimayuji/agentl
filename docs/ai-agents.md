@@ -78,6 +78,7 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 
 | Tool | What it does |
 | --- | --- |
+| `profile_file` | A local data file under `--root`: rows, columns, the type each reads as, null rates, a sample and a suggested `cast:` step |
 | `validate` | Check a pipeline (a file path or the YAML text): every error with line, code and fix |
 | `lint` | Validate plus best-practice warnings, as JSON findings |
 | `preview_step` | The first records into and out of a step (readers and transforms only, nothing written) |
@@ -88,6 +89,7 @@ args to point at a run store other than `.agentl/agentl.db` in the working direc
 | `diagram` | The pipeline as Mermaid |
 | `run_pipeline` | Run a pipeline file; returns status, run id, records per step and cost |
 | `show_output` | The first records a step produced in a run (at most 5, values cut at 200 characters) |
+| `list_artifacts` | What recent runs wrote: per writer step the file or table and its rows, plus records per step |
 | `list_runs`, `get_run` | Recent runs; one run with its events |
 | `list_failures` | Recent failed runs with the failing step and error |
 | `doctor` | Why a run failed, as text |
@@ -143,7 +145,7 @@ before side effects ask before running a pipeline or writing a file. It runs wit
 
 - it only runs pipeline files under the folder the server started in (`--root` to change it), never
   YAML text sent by the client (`plan` and `preview_step` follow the same rule, since they read
-  the sources);
+  the sources, and `profile_file` only reads data files under it);
 - `show_output` reads a sample the runner keeps in the run store: the first 5 records of each
   step, values cut at 200 characters. Secret values that end up in the data are replaced by `***`
   first: cloud secret references, and environment variables the pipeline used whose names look
