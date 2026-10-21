@@ -533,6 +533,8 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
   checks (passed/warn/reject/failed, last):
     [verify] rows: 39/2/0/1, last passed
     [verify] vs_runs: 41/0/0/1, last passed
+  [classify] answer drift vs the last 7 runs (threshold 0.15):
+    share(category=travel): 62% -> 31% (-31% pts)
   failures by reason:
       3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
       1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
@@ -540,7 +542,10 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
 ```
 
 `checks` counts, per check step and rule, how many runs gave each [result](checks.md#severity-per-rule)
-and the latest one; `--json` has the same rows under `checks`.
+and the latest one; `--json` has the same rows under `checks`. For agent steps with
+[`drift:`](agents.md#drift-alerts-the-step-starts-answering-differently), the latest run's answers are
+compared with the runs before it in the period; `--json` has them under `drift`, with `profile`,
+`baseline` and `changes`.
 
 Failures are grouped by the step that failed first and the error with what changes between runs
 taken out (numbers, ids, paths, URLs), so the same timeout on different days counts as one

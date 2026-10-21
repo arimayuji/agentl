@@ -630,6 +630,42 @@ Records that are exactly the same within a step are sent once and share the answ
 an `agent.deduplicated` event with how many were saved. Across runs the cache does the same. Select
 only the fields the instruction needs first (a `select` step) so near-duplicates become identical.
 
+## Drift alerts: the step starts answering differently
+
+A provider updates a model, or the input data changes, and the answers shift with no error raised.
+`drift:` on an agent step profiles its answers after each successful run and compares them with
+the mean of its last runs:
+
+```yaml
+- id: classify
+  agent: Classify the expense.
+  output: {category: str, amount: float}
+  drift: {window: 7, threshold: 0.15}   # or `drift: true` for these defaults
+```
+
+| Metric | Change measured |
+|---|---|
+| `reject_rate`: rejected records over all records | points (`0.15` is 15 points) |
+| `review_rate`: answers sent to the [review queue](review.md) over all records | points |
+| `share(field=value)`: the share of each value of a `str` or `bool` output field | points |
+| `mean(field)`: the mean of an `int` or `float` output field | relative (`0.15` is 15%) |
+| `cost_per_record`: the step's cost over its records | relative |
+
+A `str` field with more than 20 distinct values in a run is free text and has no distribution.
+`min_runs` (default 1) sets how many earlier runs are needed before comparing. A change beyond the
+threshold emits `step.drift` with `window`, `threshold`, `changes` (each with `metric`, `before`,
+`after`, `change` and `kind`) and a one-line `summary`; route it like any event:
+
+```yaml
+notify:
+  rules: [{on: step.drift, to: [ops]}]
+```
+
+The profile is kept in the run store and travels on `step.succeeded` as `profile`, so
+[`agentl stats`](cli.md#track-record) shows the same comparison. Only answers are compared; numeric
+values are summarized as means and only the shares of short categorical values are kept.
+Steps with `chunk:` do not support `drift:` yet.
+
 ## Tools and MCP servers
 
 An agent step can look things up while it answers: call an API, query a database, ask an MCP

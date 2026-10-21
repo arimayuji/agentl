@@ -44,7 +44,9 @@ def matches(rule: Rule, event: dict) -> bool:
 def format_text(event: dict, pipeline: str) -> str:
     data = event.get("data", {})
     step = f" step {event['step']}" if event.get("step") else ""
-    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in ("error", "summary", "sections"))
+    # `changes` (step.drift, #155) is long; its `summary` line says the same in words
+    skip = ("error", "summary", "sections", "changes")
+    details = ", ".join(f"{k}={v}" for k, v in data.items() if k not in skip)
     lines = [f"[agentl] {pipeline}: {event['type']}{step}"]
     if details:
         lines.append(details)

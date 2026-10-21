@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
-from . import checks, contracts, drift, graph, llm, registry, waits
+from . import answers, checks, contracts, drift, graph, llm, registry, waits
 from . import labels as run_labels
 from .notify import Notifier
 from .spec import DROP, LLM_KEY_EXCLUDE, LLMSpec, PiiSpec, PipelineSpec, RetrySpec, ReviewSpec, StepSpec, load
@@ -597,6 +597,40 @@ class Runner:
             )
         except Exception as e:
             return f"(summary unavailable: {e})"
+
+    def _answer_drift(self, run_id: str, step: StepSpec, out: Any, result: RunResult) -> dict[str, Any]:
+        """`drift:` on an agent step (#155): profiles this run's answers, compares the profile with
+        the last runs' (kept in the store cache), emits `step.drift` on a change beyond the
+        threshold and records the profile. Returns {"profile": ...} for `step.succeeded`."""
+        if step.drift is None or not step.agent:
+            return {}
+        rows = out.to_pylist() if _is_table(out) else list(out or [])
+        with self._spend:
+            spend = dict(result.spend.get(step.id) or {})
+        now = answers.profile(
+            rows,
+            step.output or {},
+            rejected=len(result.rejected.get(step.id) or []),
+            review_queued=int((spend.get("review") or {}).get("queued") or 0),
+            cost_usd=float(spend.get("cost_usd") or 0),
+        )
+        key = _hash("answer-drift", self.spec.name, step.id)
+        history = list(self.store.cache_get(key) or [])[: step.drift.window]
+        if len(history) >= step.drift.min_runs:
+            changes = answers.compare(now, history, step.drift.threshold)
+            if changes:
+                self._emit(
+                    run_id,
+                    "step.drift",
+                    step.id,
+                    window=len(history),
+                    threshold=step.drift.threshold,
+                    changes=changes,
+                    summary="; ".join(answers.describe(c) for c in changes[:5]),
+                )
+        if now["records"]:  # an empty run says nothing about the answers
+            self.store.cache_set(key, [now, *history][: step.drift.window])
+        return {"profile": now, "drift": {"window": step.drift.window, "threshold": step.drift.threshold}}
 
     def _step_spend(self, step: StepSpec, result: RunResult) -> dict[str, Any]:
         """The step's spend, with cost rounded for events. Empty for non-agent steps."""
@@ -2232,6 +2266,7 @@ class Runner:
             **counts,
             seconds=round(time.time() - t0, 3),
             **self._step_spend(step, result),
+            **self._answer_drift(run_id, step, out, result),
         )
         self._checkpoint(run_id, step, out, hooks_after > hooks_before)
         if step.persist == "raw":

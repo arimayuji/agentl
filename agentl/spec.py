@@ -379,6 +379,25 @@ class ChunkSpec(BaseModel):
     field: str = "text"
 
 
+class DriftSpec(BaseModel):
+    """Answer drift of an agent step (#155): after each run its answers (reject and review rates,
+    the share of each `str`/`bool` output value, numeric means, cost per record) are compared with
+    the mean of the last `window` runs; a change beyond `threshold` emits `step.drift`. Rates and
+    shares move by points (0.15 is 15 points), means and cost by relative change (15%)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window: int = Field(default=7, ge=1, le=100)
+    threshold: float = Field(default=0.15, gt=0)
+    min_runs: int = Field(default=1, ge=1)  # runs of history needed before comparing
+
+    @model_validator(mode="after")
+    def _runs(self) -> DriftSpec:
+        if self.min_runs > self.window:
+            raise ValueError(f"drift min_runs ({self.min_runs}) is larger than window ({self.window})")
+        return self
+
+
 class CriticSpec(BaseModel):
     """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
     step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
@@ -504,6 +523,8 @@ class StepSpec(BaseModel):
     attempts: list[AttemptSpec] = Field(default_factory=list)
     # A reviewer llm approves each answer or sends it back with feedback (#299). See CriticSpec.
     critic: CriticSpec | None = None
+    # Answer drift alerts (#155): `drift: {window: 7, threshold: 0.15}` or `drift: true`.
+    drift: DriftSpec | None = None
     # Several llms answer and a vote or a judge decides (#299). See JurySpec.
     jury: JurySpec | None = None
     jury_tag: bool = False  # add `_agreement` (share of jurors behind the answer) to each record
@@ -609,6 +630,10 @@ class StepSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _cascade(cls, raw: Any) -> Any:
+        if isinstance(raw, dict) and raw.get("drift") is True:
+            raw = {**raw, "drift": {}}  # `drift: true` takes the defaults
+        elif isinstance(raw, dict) and raw.get("drift") is False:
+            raw = {k: v for k, v in raw.items() if k != "drift"}
         if isinstance(raw, dict) and isinstance(raw.get("check"), dict):
             # `check: {schema_matches: sheet, on_drift: fail}` is short for check + on_drift
             short = dict(raw["check"])
@@ -725,6 +750,10 @@ class StepSpec(BaseModel):
             )
         if self.agent and not self.output:
             raise ValueError(f"step '{self.id}': agent steps need an 'output' schema")
+        if self.drift is not None and not self.agent:
+            raise ValueError(f"step '{self.id}': drift belongs to agent steps")
+        if self.drift is not None and self.chunk is not None:
+            raise ValueError(f"step '{self.id}': drift does not support chunk steps yet")
         if self.mode == "batch" and self.records_per_call > 1:
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
