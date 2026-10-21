@@ -533,7 +533,32 @@ the input changed. The run's `run.started` event carries `replayed_from_raw`. It
 `cannot replay` (exit code 2) when the run has no original for a raw step, an original is
 missing or changed, or a step downstream reads a step upstream of the raw zone directly.
 
-From Python: `agentl.runner.replay_raw("orders.yaml", run_id)`, or `Runner(spec, raw_from=run_id)`.
+To reprocess many runs at once, give `--from-raw` no run id and select originals with filters;
+every filter given must match:
+
+```bash
+agentl replay orders.yaml --from-raw --prefix 202606            # run ids start with the date
+agentl replay orders.yaml --from-raw --since 2026-06-01 --until 2026-06-30
+agentl replay orders.yaml --from-raw --sha 3f2a9c                # one original by hash prefix
+agentl replay orders.yaml --from-raw 20261019-101500-a1b2c3 --since-step rows
+```
+
+- `--prefix` matches the start of the run id; `--since` and `--until` take a date (`YYYY-MM-DD`,
+  `--until` includes that day) or an ISO date-time, UTC unless it has an offset, and compare the
+  time the original was stored; `--sha` matches the start of its sha256.
+- Each raw step reads the matching originals of every selected run, oldest first, concatenated.
+  Runs that kept the same payload share one original, which is read once.
+- `--since-step STEP` runs only `STEP` and the steps that depend on it; side branches are skipped
+  (output `[]`), so their sinks are not written again. Steps that `STEP` reads from, between the
+  raw zone and it, run again to feed it (agent steps hit the cache). It is refused when such a
+  step writes to a sink, or when `STEP` runs before the raw zone.
+- The `run.replayed` event lists the originals read (`sha256`, `records`, `runs`) and
+  `since_step`.
+
+From Python: `agentl.runner.replay_raw("orders.yaml", run_id)`, or `Runner(spec, raw_from=run_id)`;
+`raw_from` also takes `agentl.raw.Selection(prefix=..., since=..., until=..., sha=...)` (timestamps;
+`agentl.raw.parse_when("2026-06-30", end=True)` converts a date), and `since_step="rows"` works
+with both.
 
 ## Celery
 

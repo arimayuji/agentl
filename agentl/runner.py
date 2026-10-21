@@ -463,13 +463,15 @@ class Runner:
         trigger: list[dict] | None = None,
         replay: dict[str, Records] | None = None,
         resume_from: str | None = None,
-        raw_from: str | None = None,
+        raw_from: Any = None,
+        since_step: str | None = None,
     ):
         self.spec = spec
         # a failed run to resume (#339): its completed steps are skipped and their outputs read back
         self.resume_from = resume_from
         # a run whose `persist: raw` originals to reprocess with this code (#208); no source fetch
-        self.raw_from = raw_from
+        self.raw_from = raw_from  # a run id or a raw.Selection (#208)
+        self.since_step = since_step
         self._plan: Any = None
         # step id -> records that step runs on instead of its inputs (retry of rejected records)
         self.replay = dict(replay or {})
@@ -2918,11 +2920,11 @@ class Runner:
         elif self.raw_from:
             from . import raw
 
-            self._plan = raw.plan(self.spec, self.store, self.raw_from)
+            self._plan = raw.plan(self.spec, self.store, self.raw_from, self.since_step)
         self.store.start_run(run_id, self.spec.name, graph.mermaid(self.spec), run_labels.of(self.spec))
         resumed: dict[str, Any] = {}
         if self.raw_from and self._plan is not None:
-            resumed = {"replayed_from_raw": self.raw_from}
+            resumed = {"replayed_from_raw": self._plan.resumed_from}
         elif self._plan is not None:
             resumed = {"resumed_from": self._plan.resumed_from, "resumed_chain": self._plan.ancestors}
         self._emit(
@@ -2936,8 +2938,9 @@ class Runner:
             self._emit(
                 run_id,
                 "run.replayed",
-                from_raw=self.raw_from,
+                from_raw=self._plan.resumed_from,
                 originals=self._plan.checkpoints,
+                **({"since_step": self.since_step} if self.since_step else {}),
                 skipped=sorted(self._plan.done),
             )
         elif self._plan is not None:
@@ -3449,7 +3452,7 @@ def resume(
 
 def replay_raw(
     pipeline: PipelineSpec | str | os.PathLike,
-    run_id: str,
+    run_id: Any,
     *,
     vars: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
@@ -3458,8 +3461,10 @@ def replay_raw(
     **kwargs: Any,
 ) -> RunResult:
     """Reprocess the `persist: raw` originals of run `run_id` with the current pipeline (#208):
-    the raw steps and everything upstream of them are skipped, so no source is fetched. Raises
-    `agentl.raw.ReplayRefused` when the run has no originals for every raw step."""
+    the raw steps and everything upstream of them are skipped, so no source is fetched. `run_id`
+    may also be an `agentl.raw.Selection` across runs; pass `since_step=` to replay only one step
+    and what depends on it. Raises `agentl.raw.ReplayRefused` when the selection has no originals
+    for every raw step."""
     return run(
         pipeline,
         vars=vars,
