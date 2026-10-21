@@ -655,6 +655,109 @@ def html_result(d: Path) -> list:
         return sorted(tuple(r[k] for k in ("Plan", "Seats", "Price")) for r in csv.DictReader(f))
 
 
+# ---------------------------------------------------------------- case: NF-e XML -> CSV
+NFE_NS = "http://www.portalfiscal.inf.br/nfe"
+NFE_FIELDS = ("chave", "item", "description", "quantity", "item_total")
+
+
+def _mod11(body: str, weights: list[int]) -> str:
+    rest = sum(int(c) * w for c, w in zip(body, weights, strict=True)) % 11
+    return "0" if rest < 2 else str(11 - rest)
+
+
+def _fake_cnpj(base12: str) -> str:
+    """A made-up CNPJ with valid check digits (synthetic data, never a real company)."""
+    first = base12 + _mod11(base12, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    return first + _mod11(first, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+
+
+def _fake_chave(cnpj: str, number: int) -> str:
+    body = f"352610{cnpj}55001{number:09d}1{number % 10**8:08d}"
+    total = sum(int(c) * (2 + i % 8) for i, c in enumerate(reversed(body)))
+    rest = total % 11
+    return body + ("0" if rest < 2 else str(11 - rest))
+
+
+def _make_nfe(d: Path, n: int) -> Path:
+    """`n` synthetic authorised NF-e files (nfeProc, layout 4.00) with 3 items each."""
+    folder = d / "xml"
+    folder.mkdir()
+    issuer = _fake_cnpj("112223330001")
+    for i in range(n):
+        key = _fake_chave(issuer, i + 1)
+        items = "".join(
+            f'<det nItem="{k}"><prod><cProd>P{k}</cProd><xProd>Product {i % 97}-{k}</xProd>'
+            f"<NCM>84713012</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>{k}.0000</qCom>"
+            f"<vUnCom>{i % 50 + 1}.50</vUnCom><vProd>{k * (i % 50 + 1.5):.2f}</vProd></prod><imposto>"
+            f"<ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>10.00</vBC><pICMS>18.00</pICMS>"
+            f"<vICMS>1.80</vICMS></ICMS00></ICMS><PIS><PISAliq><CST>01</CST><vBC>10.00</vBC>"
+            f"<vPIS>0.17</vPIS></PISAliq></PIS><COFINS><COFINSAliq><CST>01</CST><vBC>10.00</vBC>"
+            f"<vCOFINS>0.76</vCOFINS></COFINSAliq></COFINS></imposto></det>"
+            for k in (1, 2, 3)
+        )
+        doc = (
+            f'<?xml version="1.0" encoding="UTF-8"?><nfeProc xmlns="{NFE_NS}" versao="4.00"><NFe>'
+            f'<infNFe Id="NFe{key}" versao="4.00"><ide><mod>55</mod><serie>1</serie><nNF>{i + 1}</nNF>'
+            f"<dhEmi>2026-10-01T10:00:00-03:00</dhEmi></ide><emit><CNPJ>{issuer}</CNPJ>"
+            f"<xNome>Sample Seller Ltd</xNome><enderEmit><UF>SP</UF></enderEmit></emit>"
+            f"<dest><CPF>12345678909</CPF><xNome>Sample Buyer</xNome><enderDest><UF>RJ</UF>"
+            f"</enderDest></dest>{items}<total><ICMSTot><vProd>10.00</vProd><vNF>10.00</vNF>"
+            f"</ICMSTot></total></infNFe></NFe><protNFe><infProt><chNFe>{key}</chNFe>"
+            f"<nProt>135260000000001</nProt><cStat>100</cStat></infProt></protNFe></nfeProc>"
+        )
+        (folder / f"{key}.xml").write_text(doc, encoding="utf-8")
+    return folder
+
+
+def nfe_agentl(d: Path) -> Callable[[], None]:
+    return _agentl_run(
+        d,
+        [
+            {"id": "notes", "use": "nfe.read", "with": {"path": str(d / "xml" / "*.xml"), "level": "item"}},
+            {"id": "keep", "use": "select", "input": "notes", "with": {"fields": list(NFE_FIELDS)}},
+            {"id": "save", "use": "csv.write", "input": "keep", "with": {"path": str(d / "out.csv")}},
+        ],
+    )
+
+
+def nfe_etree(d: Path) -> Callable[[], None]:
+    """The usual hand-written script: ElementTree with the namespace, one row per item."""
+    import xml.etree.ElementTree as ET
+
+    ns = {"n": NFE_NS}
+
+    def run() -> None:
+        with open(d / "out.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(NFE_FIELDS)
+            for path in sorted((d / "xml").glob("*.xml")):
+                inf = ET.parse(path).getroot().find("n:NFe/n:infNFe", ns)
+                assert inf is not None
+                key = (inf.get("Id") or "").removeprefix("NFe")
+                for det in inf.findall("n:det", ns):
+                    prod = det.find("n:prod", ns)
+                    assert prod is not None
+                    w.writerow(
+                        [
+                            key,
+                            det.get("nItem"),
+                            prod.findtext("n:xProd", "", ns),
+                            float(prod.findtext("n:qCom", "0", ns)),
+                            float(prod.findtext("n:vProd", "0", ns)),
+                        ]
+                    )
+
+    return run
+
+
+def nfe_result(d: Path) -> list:
+    with open(d / "out.csv", newline="", encoding="utf-8") as f:
+        return sorted(
+            (r["chave"], int(r["item"]), r["description"], float(r["quantity"]), float(r["item_total"]))
+            for r in csv.DictReader(f)
+        )
+
+
 # ---------------------------------------------------------------- cases
 CASES: dict[str, dict] = {
     "csv -> clean -> sqlite": {
@@ -716,6 +819,16 @@ CASES: dict[str, dict] = {
             "pandas (read_html)": (html_pandas, ("pandas", "lxml")),
         },
     },
+    "NF-e XML -> CSV": {
+        "rows": 10_000,  # files, 3 items each
+        "make": _make_nfe,
+        "result": nfe_result,
+        "needs": (),
+        "variants": {
+            "agentl (nfe.read, level item)": (nfe_agentl, ()),
+            "plain Python (xml.etree)": (nfe_etree, ()),
+        },
+    },
     "csv -> pandas -> parquet": {
         "rows": 500_000,
         "make": _make_frames_csv,
@@ -743,6 +856,7 @@ GATES: list[tuple[str, str, str, float]] = [
     ("csv -> pandas -> parquet", "agentl (@dataframe, Arrow)", "pandas only", 0.75),
     ("one request per record", "agentl (http.get, concurrency 16)", "requests (16 threads)", 0.25),
     ("HTML table -> CSV", "agentl (html.read)", "BeautifulSoup (lxml)", 0.25),
+    ("NF-e XML -> CSV", "agentl (nfe.read, level item)", "plain Python (xml.etree)", 0.25),
 ]
 
 

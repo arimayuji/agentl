@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic invoice for the recipe: made-up companies and keys, not a real document. -->
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe>
+   <infNFe Id="NFe35261011222333000181550010000000031000000031" versao="4.00">
+    <ide><mod>55</mod><serie>1</serie><nNF>3</nNF><dhEmi>2026-10-03T10:00:00-03:00</dhEmi></ide>
+    <emit><CNPJ>11222333000181</CNPJ><xNome>Sample Supplier Ltd</xNome><enderEmit><UF>SP</UF></enderEmit></emit>
+    <dest><CNPJ>44555666000181</CNPJ><xNome>Sample Buyer Inc</xNome><enderDest><UF>RJ</UF></enderDest></dest>
+    <det nItem="1">
+      <prod><cProd>P301</cProd><xProd>Office cleaning service, October</xProd><NCM>00000000</NCM><CFOP>5102</CFOP><uCom>UN</uCom><qCom>1.0000</qCom><vUnCom>1200.00</vUnCom><vProd>1200.00</vProd></prod>
+      <imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><vBC>1200.00</vBC><pICMS>18.00</pICMS><vICMS>216.00</vICMS></ICMS00></ICMS></imposto>
+    </det>
+    <total><ICMSTot><vICMS>216.00</vICMS><vProd>1200.00</vProd><vNF>1200.00</vNF></ICMSTot></total>
+   </infNFe>
+  </NFe>
+  <protNFe><infProt><chNFe>35261011222333000181550010000000031000000031</chNFe><dhRecbto>2026-10-03T10:00:05-03:00</dhRecbto><nProt>135260000000003</nProt><cStat>100</cStat></infProt></protNFe>
+</nfeProc>

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,14 @@ def chave_ok(chave: str) -> bool:
 def _find(node: ET.Element | None, path: str) -> ET.Element | None:
     if node is None:
         return None
-    found = node.find("/".join(_NS + part for part in path.split("/")))
-    if found is None:  # documents without the namespace
-        found = node.find(path)
-    return found
+    # Children share their parent's namespace: a namespaced node gets the qualified path, a
+    # document without the namespace the plain one. No second lookup for absent elements.
+    return node.find(_qualified(path) if node.tag.startswith(_NS) else path)
+
+
+@lru_cache(maxsize=256)
+def _qualified(path: str) -> str:
+    return "/".join(_NS + part for part in path.split("/"))
 
 
 def _text(node: ET.Element | None, path: str) -> str | None:
@@ -174,7 +179,7 @@ def nfe_read(
     """
     if level not in ("note", "item"):
         raise ValueError("nfe.read: level must be 'note' or 'item'")
-    notes: list[tuple[dict, list[ET.Element]]] = []
+    notes: list[tuple[dict, list[dict]]] = []
     events: list[dict] = []
     bad: Records = []
     for p in paths(input, path, field, url, headers, storage_options):
@@ -191,6 +196,8 @@ def nfe_read(
                 if kind not in ("nfeProc", "NFe"):
                     raise ValueError(f"not an NF-e document (root <{kind}>)")
                 rec, dets = _note(root)
+                # items now, so the parsed tree is freed file by file
+                items = [_item(d) for d in dets] if level == "item" else []
             except Exception as e:  # a broken file never stops the run
                 bad.append({"_file": shown, "_error": f"{shown}: {e}"})
                 continue
@@ -198,7 +205,7 @@ def nfe_read(
                 bad.append({**rec, "_file": shown, "_error": f"{shown}: invalid chave {rec['chave']!r}"})
                 continue
             rec["_file"] = shown
-            notes.append((rec, dets))
+            notes.append((rec, items))
     by_key = {rec["chave"]: rec for rec, _ in notes}
     for ev in events:
         note = by_key.get(ev["chave"])
@@ -210,9 +217,9 @@ def nfe_read(
             note["cancelled"] = True
             note["cancelled_at"] = ev["at"]
     out: Records = []
-    for rec, dets in notes:
+    for rec, items in notes:
         if level == "note":
             out.append(rec)
         else:
-            out.extend({**rec, **_item(d)} for d in dets)
+            out.extend({**rec, **it} for it in items)
     return Rejects(out, bad)

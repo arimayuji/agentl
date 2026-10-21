@@ -24,6 +24,7 @@ NEEDS = {
     "07-web-page-to-markdown": ["trafilatura"],
     "09-excel-cleanup": ["openpyxl"],
     "16-daily-report": ["openpyxl"],
+    "21-nfe-to-excel": ["openpyxl"],
 }
 _SAMPLE = {"str": "example", "int": 1, "float": 0.9, "bool": False, "list": [], "dict": {}}
 
