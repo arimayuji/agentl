@@ -264,8 +264,44 @@ jobs:
 ```
 
 Agent steps get `echo` answers (fields copied from the record), so the golden file checks the
-pipeline's plumbing, not the model. A dry diff of inserts and updates against the destination
-(`agentl diff`) is planned.
+pipeline's plumbing, not the model. To see what a run would change in the destination, use
+`agentl diff`.
+
+## What a run would change: agentl diff
+
+`agentl diff` runs the pipeline without writing and shows, for each database writer, the rows it
+would insert, update and delete:
+
+```text
+$ agentl diff orders.yaml
+diff for orders (nothing is written)
+
+  save           sqlite.write    out: +1 inserted, ~1 updated, -0 deleted, 1 unchanged
+      + {"id": 3, "amount": 30}
+      ~ {"id": 2, "amount": 21}
+          amount: 20 -> 21
+  dump           json.write      3 record(s), not a database writer; not written
+```
+
+- `sqlite.write`, `postgres.write` and `sql.write` with a `key` are compared by key with the
+  table: each runs as `mode: changeset` with `dry_run: true` and `emit: changes`, so the table is
+  read and never changed. `mode: replace` reports the rows the table would lose as deleted;
+  `upsert` and `append` never delete; a `changeset` keeps its own `deletes` and `partition_by`.
+- Writers without `key`, `mode: scd2` and every other writer (files, HTTP, queues) are not run;
+  the line only says how many records would reach them.
+- The other steps run as in a real run, `fn:` steps and agent steps included. Agent steps read
+  the cache from a copy of the SQLite run store (`--db`) and call the LLM for records not in it;
+  `--echo` answers them with the offline `echo` provider instead. The real run store records
+  nothing; a Postgres run store is not copied, so its cache is not used.
+- `--fixture [STEP=]PATH` reads a file instead of a source, as in `agentl test`.
+- Notifications are off. `--limit N` changes how many changed rows are shown per writer (default
+  10), `--json` prints every change for scripts.
+- Exit code 0, or 1 when the run fails. With `--exit-code` it is also 1 when any writer would
+  change something, which makes a check in CI that the destination is in sync:
+
+```yaml
+      - run: agentl diff orders.yaml --exit-code --echo
+```
 
 ## Run store
 
@@ -488,11 +524,17 @@ daily-sales: 42 runs, 38 succeeded, 4 failed (90% success)
   last run: 20261014-090012-1a2b3c succeeded
   agent cost (USD):
     [classify] claude-haiku-4-5: 0.000410/record, 0.000432/accepted (9480 of 10000), 3100 cache hits, cache saved 1.8414
+  checks (passed/warn/reject/failed, last):
+    [verify] rows: 39/2/0/1, last passed
+    [verify] vs_runs: 41/0/0/1, last passed
   failures by reason:
       3x [load] TimeoutError: db.internal:<n> timed out after <n>s  (last 2026-10-12 09:00, ...)
       1x [verify] check failed: <n> rows, expected at least <n>  (last 2026-10-03 09:00, ...)
   run days, oldest first (. all ok, x some failed): ....x.......x..x.....
 ```
+
+`checks` counts, per check step and rule, how many runs gave each [result](checks.md#severity-per-rule)
+and the latest one; `--json` has the same rows under `checks`.
 
 Failures are grouped by the step that failed first and the error with what changes between runs
 taken out (numbers, ids, paths, URLs), so the same timeout on different days counts as one

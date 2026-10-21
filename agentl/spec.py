@@ -366,6 +366,19 @@ class AttemptSpec(BaseModel):
     on_invalid: Literal["quarantine"] = "quarantine"
 
 
+class ChunkSpec(BaseModel):
+    """`chunk: {by: page, size: 3}` on a rows-mode agent step (#215): split each input record into
+    groups of `size` pages and ask once per group, so a long document does not hit the output
+    limit in one answer. Pages are the items of `field` when it is a list, or its text split on
+    form feeds (the page separator of the pdf reader)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Literal["page"]
+    size: int = Field(default=1, ge=1, le=1000)
+    field: str = "text"
+
+
 class CriticSpec(BaseModel):
     """A second llm reviews each answer of an agent step (#299). A rejected answer goes back to the
     step's llm with the reviewer's feedback, up to `max_rounds` rejections; then the record is
@@ -505,6 +518,7 @@ class StepSpec(BaseModel):
     output_mode: Literal["records", "rows"] = "records"
     on_truncated: Literal["continue", "fail"] = "continue"  # rows mode: answer cut by max_tokens
     max_continuations: int = Field(default=4, ge=0, le=50)
+    chunk: ChunkSpec | None = None  # rows mode: split each record by page, one call per group
     mode: Literal["sync", "batch"] = "sync"
     batch_poll_seconds: float = Field(default=30, gt=0)
     batch_timeout_seconds: float = Field(default=86400, gt=0)
@@ -679,9 +693,11 @@ class StepSpec(BaseModel):
                 or not 1 <= vr.get("last", 5) <= 50
             ):
                 raise ValueError(f"step '{self.id}': vs_runs needs a mapping like {{last: 5, rows: 30%}}")
-            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum")]
+            unknown_vr = [k for k in vr if k not in ("last", "rows", "sum", "nulls")]
             if unknown_vr:
-                raise ValueError(f"step '{self.id}': vs_runs takes last, rows and sum, not {unknown_vr}")
+                raise ValueError(
+                    f"step '{self.id}': vs_runs takes last, rows, sum and nulls, not {unknown_vr}"
+                )
         if (
             self.expect or (isinstance(self.review, str) and not self.agent) or self.severity
         ) and not self.check:
@@ -699,6 +715,8 @@ class StepSpec(BaseModel):
             raise ValueError(
                 f"step '{self.id}': mode batch sends one record per request; drop records_per_call"
             )
+        if self.chunk is not None and self.output_mode != "rows":
+            raise ValueError(f"step '{self.id}': chunk belongs to agent steps with output_mode rows")
         if self.output_mode == "rows":
             if not self.agent:
                 raise ValueError(f"step '{self.id}': output_mode rows belongs to agent steps")
@@ -990,7 +1008,9 @@ class PublicationSpec(BaseModel):
 
     days: list[str] = Field(default_factory=list)  # mon..sun
     at: str = "00:00"  # "16:00", in the schedule's tz
-    calendar: str | None = None  # us_federal, br_national
+    nth: list[int] = Field(default_factory=list)  # only the n-th such weekday of the month; -1 = last
+    months: list[str | int] = Field(default_factory=list)  # only these months: [jan, mar] or [1, 3]
+    calendar: str | None = None  # us_federal, br_national, uk_england, de_national, ca_federal
     exceptions: str | None = None  # file with one extra holiday (YYYY-MM-DD) per line
     if_holiday: Literal["skip", "next_business_day", "previous_business_day", "run"] = "skip"
 
@@ -998,12 +1018,20 @@ class PublicationSpec(BaseModel):
     def _check(self) -> PublicationSpec:
         import datetime as _dt
 
-        from .schedule import _DAYS, CALENDARS
+        from .schedule import _DAYS, _MONTHS, CALENDARS
 
         self.days = [d.lower() for d in self.days]
         bad = [d for d in self.days if d not in _DAYS]
         if bad:
             raise ValueError(f"expect.days: unknown day(s) {bad}; use mon, tue, wed, thu, fri, sat, sun")
+        bad_n = [n for n in self.nth if n not in (1, 2, 3, 4, 5, -1)]
+        if bad_n:
+            raise ValueError(f"expect.nth: {bad_n}; use 1 to 5, or -1 for the last one in the month")
+        months = [m.lower() if isinstance(m, str) else m for m in self.months]
+        bad_m = [m for m in months if m not in _MONTHS and m not in range(1, 13)]
+        if bad_m:
+            raise ValueError(f"expect.months: unknown month(s) {bad_m}; use jan..dec or 1..12")
+        self.months = [_MONTHS[m] if isinstance(m, str) else m for m in months]
         try:
             _dt.time.fromisoformat(self.at)
         except ValueError as e:

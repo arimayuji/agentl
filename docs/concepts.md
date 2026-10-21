@@ -266,3 +266,5 @@ stats` and the dashboard show the outcome.
 Every run emits `run.started`, `step.started`, `step.succeeded`, `step.failed`, `step.retry`, `step.fallback`, `llm.throttled`, `item.rejected`, `tool.called`, `check.passed`, `check.failed`,
 `wait.polled`, `wait.done`, `wait.timeout`, `ack.failed`, `source.empty`, `run.succeeded`, `run.failed`, `run.skipped`, `run.alert` (see [run outcomes](#run-outcomes)) and `run.resolved` (see [repeated failures](notifications.md#repeated-failures-alert-once-remind-resolve)). They feed the run store, the dashboard and
 [notifications](notifications.md).
+`agentl serve` also emits `schedule.late` outside any run, when a
+[publication cycle](orchestration.md) closes with no successful run; it goes to notifications only.
