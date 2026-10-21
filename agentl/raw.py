@@ -74,16 +74,20 @@ def _write_new(path: Path, data: bytes) -> None:
     if path.exists():
         return
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    linked = False
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         # fails if another writer got there first: same content anyway
         with contextlib.suppress(FileExistsError):
             os.link(tmp, path)
-            # read-only only once linked: Windows refuses to unlink a read-only temp file
-            os.chmod(path, 0o400)
+            linked = True
     finally:
         os.unlink(tmp)
+    # read-only only after the temp name is gone: on Windows the attribute belongs to the file, so
+    # both hard links would be read-only and the temp one could not be deleted
+    if linked:
+        os.chmod(path, 0o400)
 
 
 def store_output(
