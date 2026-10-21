@@ -251,6 +251,83 @@ class FallbackSpec(BaseModel):
         return raw
 
 
+class FirstValidCheck(BaseModel):
+    """What an alternative of `first_valid` must produce to be accepted (#195): at least
+    `rows_min` records, every `required` field set (not null, not empty) and every `types` field a
+    clean value of its semantic type (as in `schema:`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows_min: int = Field(default=1, ge=0)
+    required: list[str] = Field(default_factory=list)
+    types: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _types(self) -> FirstValidCheck:
+        if self.types:
+            from . import contracts
+
+            contracts.parse(self.types)
+        return self
+
+
+class FirstValidAlt(BaseModel):
+    """One alternative of `first_valid`: a function, a connector or an agent with its `output:`.
+    `name` is the label in `_path` (default: the function, the connector or `agent`)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    fn: str | None = None
+    use: str | None = None
+    agent: str | None = None
+    with_: dict[str, Any] = Field(default_factory=dict, alias="with")
+    output: dict[str, str] | None = None
+    llm: str | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> FirstValidAlt:
+        kinds = [k for k in ("fn", "use", "agent") if getattr(self, k)]
+        if len(kinds) != 1:
+            raise ValueError("each first_valid alternative sets exactly one of fn, use or agent")
+        if self.fn and ":" not in self.fn:
+            raise ValueError(f"first_valid fn '{self.fn}': use module:function")
+        if self.agent and not self.output:
+            raise ValueError("a first_valid agent alternative needs 'output:'")
+        if not self.agent and (self.output is not None or self.llm is not None):
+            raise ValueError("output and llm belong to the agent alternative of first_valid")
+        return self
+
+    @property
+    def label(self) -> str:
+        return self.name or self.fn or self.use or "agent"
+
+
+class FirstValidSpec(BaseModel):
+    """`first_valid` (#195): try each alternative in order with the step's input and keep the
+    output of the first that runs without error and passes `validate`. Each record carries `_path`
+    (the alternative's label) unless `report_path: false`. `alert_agent_share` (0-1) emits
+    `first_valid.alert` when the agent path ran in more than that share of the last
+    `alert_window` runs."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    validate_: FirstValidCheck = Field(default_factory=FirstValidCheck, alias="validate")
+    try_: list[FirstValidAlt] = Field(alias="try", min_length=1)
+    report_path: bool = True
+    alert_agent_share: float | None = Field(default=None, gt=0, lt=1)
+    alert_window: int = Field(default=20, ge=1)
+
+    @model_validator(mode="after")
+    def _labels(self) -> FirstValidSpec:
+        labels = [a.label for a in self.try_]
+        if len(set(labels)) != len(labels):
+            raise ValueError("first_valid alternatives need distinct labels; set 'name' on repeats")
+        if self.alert_agent_share is not None and not any(a.agent for a in self.try_):
+            raise ValueError("first_valid alert_agent_share needs an agent alternative")
+        return self
+
+
 class GoldenSpec(BaseModel):
     """Golden set of an agent step (#154): a JSONL file of records with the expected answer, for
     `agentl eval`. `min_accuracy` (share of records with every field right) makes it fail below."""
@@ -553,6 +630,8 @@ class StepSpec(BaseModel):
     # ({use, with}) in order with the same input. See RetrySpec and FallbackSpec.
     retries: RetrySpec | None = None
     fallback: list[FallbackSpec] = Field(default_factory=list)
+    # Deterministic parsers first, an agent last (#195), see FirstValidSpec.
+    first_valid: FirstValidSpec | None = None
     fallback_tag: bool = False  # add `_source` ("main" or "fallback[i]") to each record
     fallback_outcome: Literal["success", "partial"] = "partial"  # run outcome when a fallback ran
     fallback_writer: bool = False  # allow a fallback on a writer (it may write twice)
@@ -598,6 +677,8 @@ class StepSpec(BaseModel):
     def llms(self) -> list[str]:
         """Every llm the step may call, in order, without repeats."""
         names = [self.llm, *self.escalate, *(a.llm or self.llm for a in self.attempts)]
+        if self.first_valid:
+            names = [a.llm or self.llm for a in self.first_valid.try_ if a.agent]
         if self.critic is not None:
             names.append(self.critic.llm or self.llm)
         if self.jury is not None:
@@ -653,9 +734,16 @@ class StepSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one_kind(self) -> StepSpec:
-        kinds = [k for k in ("use", "fn", "agent", "check", "wait_until") if getattr(self, k)]
+        kinds = [k for k in ("use", "fn", "agent", "check", "wait_until", "first_valid") if getattr(self, k)]
         if len(kinds) != 1:
-            raise ValueError(f"step '{self.id}': set exactly one of use/fn/agent/check/wait_until")
+            raise ValueError(
+                f"step '{self.id}': set exactly one of use/fn/agent/check/wait_until/first_valid"
+            )
+        if self.first_valid and (self.output is not None or self.rules or self.fallback or self.with_):
+            raise ValueError(
+                f"step '{self.id}': first_valid takes with, output and fallbacks per alternative; "
+                "drop them from the step"
+            )
         if self.wait_until and self.input is not None:
             raise ValueError(f"step '{self.id}': wait_until names its source in 'step'; drop 'input'")
         if self.check and self.input not in (None, self.check):
@@ -915,6 +1003,8 @@ class StepSpec(BaseModel):
     def kind(self) -> str:
         if self.wait_until:
             return "wait"
+        if self.first_valid:
+            return "first_valid"
         return "use" if self.use else "fn" if self.fn else "check" if self.check else "agent"
 
     @property
@@ -1481,7 +1571,7 @@ class PipelineSpec(BaseModel):
     @model_validator(mode="after")
     def _refs(self) -> PipelineSpec:
         if self.budget and self.budget.max_usd is not None:
-            used = {n for s in self.steps if s.kind == "agent" for n in s.llms}
+            used = {n for s in self.steps if s.kind in ("agent", "first_valid") for n in s.llms}
             used |= {f for n in used if n in self.llm for f in self.llm[n].fallback}
             unpriced = sorted(n for n in used if n in self.llm and self.llm[n].price is None)
             free = ("echo", "ollama", "openrouter")  # openrouter reports the cost of each call
@@ -1511,7 +1601,7 @@ class PipelineSpec(BaseModel):
             for ref in s.after:
                 if ref not in ids or ref == s.id:
                     raise ValueError(f"step '{s.id}': after names unknown step '{ref}'")
-            for name in s.llms if s.kind == "agent" else []:
+            for name in s.llms if s.kind in ("agent", "first_valid") else []:
                 if name not in self.llm:
                     raise ValueError(f"step '{s.id}': unknown llm '{name}'")
             if s.on_drift == "remap" and not any(

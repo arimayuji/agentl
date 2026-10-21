@@ -581,6 +581,49 @@ record first; only the records they cannot handle are sent to the llm. (On a `ch
 - Rules that match but give a wrong value never reach the llm. Strict types in `cast`, a
   `schema:` and `check` steps downstream are the safety net; test the rules on a sample first.
 
+### Parsers first, the agent last
+
+`first_valid` tries whole-input alternatives in order: deterministic parsers first, an agent last.
+The first one that runs without an error and whose output passes `validate` wins; the others are
+skipped. Use it for semi-structured documents whose layout changes between versions.
+
+```yaml
+- id: rows
+  input: doc
+  first_valid:
+    validate: { rows_min: 1, required: [date, value], types: { value: float } }
+    try:
+      - fn: parsers:parse_v2
+      - fn: parsers:parse_v1
+      - agent: Extract the table's rows.
+        output: { date: str, value: float }
+    alert_agent_share: 0.2       # optional: alert when the agent wins more than 20% of runs
+```
+
+- Each alternative is `fn: module:function` or `use: connector` (with `with:`), or `agent:` with
+  its `output:` and an optional `llm:`. It gets the step's whole input, as a step of that kind
+  would. `name:` sets its label; the default is the function, the connector or `agent`.
+- `validate`: at least `rows_min` records (default 1), every `required` field set (not null or
+  empty), and every `types` field a clean value of its semantic type, as in `schema:`.
+- An alternative that raises or fails `validate` emits `first_valid.fallthrough` (with the
+  reason) and the next one runs. The step fails only when every alternative does, with each
+  reason in the error.
+- Each record carries `_path`, the winning label (`report_path: false` turns this off). The
+  `first_valid.path` event and `spend[step]["paths"]` record which one ran. The dashboard shows
+  the share of the last 20 runs each path won.
+- `alert_agent_share` (0 to 1): emit `first_valid.alert` when the agent won in more than that
+  share of the last `alert_window` runs (default 20). Route it with a notify rule
+  `on: first_valid.alert`.
+
+How it differs from the neighbours:
+
+- `rules:` on an agent step (above) decides per record: each record tries the rules and only the
+  ones they miss go to the llm. `first_valid` decides once for the whole input, which suits a
+  parser that reads a document and returns its rows.
+- `fallback:` on a use or fn step only catches errors and has no agent. `first_valid` also falls
+  through on output that runs but fails `validate`, the "plausible garbage" a parser gives on a
+  new layout.
+
 ### Route each record to one branch
 
 A router is an agent step with `routes:`. It labels each record with one of the route keys and
