@@ -83,9 +83,24 @@ rowwise("filter")
 
 
 @connector("dedupe")
-def dedupe(input: Any, on: str | list[str], keep: str | dict[str, str] = "first") -> list[dict]:
+def dedupe(
+    input: Any,
+    on: str | list[str] | None = None,
+    keep: str | dict[str, str] = "first",
+    semantic: dict[str, Any] | None = None,
+) -> list[dict]:
     """One record per `on` key. `keep: first` (default) or `last` keeps that one in input order;
-    `keep: {latest: field}` keeps the record with the largest `field` (empty values lose)."""
+    `keep: {latest: field}` keeps the record with the largest `field` (empty values lose).
+    `semantic: {field: text, ...}` also drops records whose text is similar to a kept one, after
+    the `on` dedupe when both are given (see agentl/semantic.py). Called directly, only the
+    offline `shingles` backend is available; `semantic.llm` needs a pipeline run."""
+    if semantic is not None:
+        from .. import semantic as sem
+
+        rows = dedupe(input, on, keep) if on else list(single(input))
+        return sem.dedupe(rows, semantic)[0]
+    if not on:
+        raise ValueError("dedupe needs `on` (the key fields) or `semantic`")
     on = _names(on)
     latest = keep.get("latest") if isinstance(keep, dict) else None
     if latest is None and keep not in ("first", "last"):

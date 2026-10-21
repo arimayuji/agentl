@@ -354,7 +354,7 @@ Other databases will ship as plugins.
 |---|---|---|
 | `select` | `fields` (name or list), `rename` (map) | Keep and rename fields ([below](#keep-and-rename-select)) |
 | `filter` | `where` (map of field: value, all must match), `not_empty` (name or list) | Keep matching records |
-| `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`) | One record per key |
+| `dedupe` | `on` (name or list), `keep` (`first`, `last`, `{latest: field}`), `semantic` | One record per key; with `semantic`, also one per similar text ([below](#same-text-rewritten-dedupe-with-semantic)) |
 | `skip_seen` | `key` (`sha256` of the file at `path`, `path`, or any field), `scope` (default: the pipeline name) | Only records no earlier successful run let through; see below |
 | `gather.add` | `group`, `item` | Marks `item` as a part of `group` once the run succeeds, for a `gather:` trigger; passes its input through ([fan in](orchestration.md#fan-in-gather-parts-from-independent-runs)) |
 | `join` | `left`, `right`, `on` (name or list) or `left_on` / `right_on`, `how` (`inner`, `left`, `right`, `outer`), `suffix` or `suffixes: [_l, _r]` | Join two inputs; a key missing from one side fails naming it |
@@ -531,6 +531,56 @@ from the store (`cached`). Export them for review, fix them, and import them bac
 agentl resolve export my-pipeline regions decisions.json
 agentl resolve import my-pipeline regions decisions.json
 ```
+
+### Same text rewritten: `dedupe` with `semantic`
+
+News, posts and announcements repeat the same fact in slightly different words, so an exact key
+misses them. `semantic` compares a text field instead:
+
+```yaml
+- id: unique
+  use: dedupe
+  input: news
+  with:
+    semantic: { field: text, time: published_at, window: 48h, keep: earliest, id: url }
+```
+
+- `field`: the text to compare. `threshold`: the similarity from which two records are the same
+  (default 0.7 offline, 0.92 with embeddings).
+- `keep`: `first` or `last` in input order, or `earliest` / `latest` by `time`. `window` (`48h`,
+  `7d`) only compares records whose `time` is that close; records without a date are compared with
+  all. `on` still works and runs first, as an exact dedupe.
+- `id`: the field that names the kept record in `_duplicate_of` (default: its input position).
+  `mark: true` keeps every record: kept ones get `_duplicate_of: null`, dropped ones the kept
+  record's id, `_similarity` and `_kept_because` (`earliest published_at`, for example).
+- The `dedupe.semantic` event reports the counts and, for the first 20 groups, which record
+  survived, why, and the similarity of each one dropped.
+
+**Backends.** Without `llm`, a deterministic MinHash over character shingles of the normalised
+text (lowercase, no accents or punctuation), with the exact Jaccard similarity of the candidates.
+It needs no network and no model, and it finds near-duplicates: copies with edits, a changed
+headline, added or removed sentences. It does not find a paraphrase in other words. For that, set
+`llm:` to an entry of the `llm` section whose provider has embeddings: `openai`,
+`openai-compatible` and `ollama` (the `/embeddings` endpoint; `options.embedding_model` picks the
+model, else `model`). With Ollama the model runs locally, so no text leaves the machine:
+
+```yaml
+llm:
+  embed: { provider: ollama, model: nomic-embed-text }
+steps:
+  - id: unique
+    use: dedupe
+    input: news
+    with:
+      semantic: { field: text, llm: embed, threshold: 0.92, window: 48h, time: published_at, keep: earliest }
+```
+
+Each vector is cached in the run store by provider, model and text hash, so a text already seen
+is not sent again. The calls count in the step's spend and in `budget`, like agent calls (set a
+`price` for paid models). The `echo` provider returns hashed word-count vectors for tests. The
+llm's `rate_limit`, `fallback` and cassettes do not apply to embedding calls. Comparisons are
+pairwise against the kept records, so very large inputs are slow with embeddings; narrow them with
+`window`.
 
 ### Time windows: `aggregate` with `window`
 

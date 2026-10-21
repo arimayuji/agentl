@@ -501,6 +501,7 @@ class Runner:
         # router id -> target step id -> the records routed to it this run (#299)
         self._routed: dict[str, dict[str, Records]] = {}
         self._outputs: dict = {}
+        self._embedders: dict[str, Any] = {}  # dedupe semantic: raw providers by llm name
         self._run_id: str | None = None  # for events raised from inside providers (llm.fallback)
         self._cursor_start: dict[str, Any] = {}  # step id -> cursor this run started from
         self._cursor_new: dict[str, Any] = {}  # step id -> largest value seen this run
@@ -1908,6 +1909,8 @@ class Runner:
 
         if step.use == "resolve":
             return self._run_resolve(run_id, step, refs, outputs, data, result)
+        if step.use == "dedupe" and isinstance(step.with_.get("semantic"), dict) and not _is_table(data):
+            return self._run_semantic_dedupe(run_id, step, data, result)
         if step.id in self._arrow_out or _is_table(data):
             return self._run_arrow(step, data)
         fn = registry.get(step.use) if step.use else registry.resolve_fn(step.fn or "", self.spec.base_dir)
@@ -2026,6 +2029,63 @@ class Runner:
         if out.rejected:
             self._rejects(run_id, step.id, out.rejected, len(out) + len(out.rejected), result)
         return list(out)
+
+    def _run_semantic_dedupe(self, run_id: str, step: StepSpec, data: Any, result: RunResult) -> Records:
+        """`dedupe` with `semantic:` (#200). Emits `dedupe.semantic` with the counts and which record
+        survived each group and why. With `semantic.llm` the vectors come from that llm's
+        provider, cached by text hash in the run store and charged to the step's spend."""
+        from . import semantic as sem
+        from .connectors.transforms import dedupe as exact
+
+        if isinstance(data, dict):
+            raise ValueError("dedupe takes a single input")
+        opts = dict(step.with_)
+        semantic = dict(opts.pop("semantic"))
+        rows = exact(data, **opts) if opts.get("on") else list(data or [])
+        stats = {"embedded": 0, "cached": 0}
+        embed = None
+        name = semantic.get("llm")
+        if name:
+            if name not in self.spec.llm:
+                raise ValueError(f"dedupe semantic llm '{name}' is not in the pipeline's llm section")
+            spec = self.spec.llm[name]
+            with self._provider_lock:  # not behind throttling, fallback or cassettes: those wrap chat calls
+                prov: Any = self._embedders.get(name) or llm.provider(spec)
+                self._embedders[name] = prov
+            if not callable(getattr(prov, "embed", None)):
+                raise ValueError(f"dedupe semantic: llm provider '{spec.provider}' has no embeddings")
+
+            def embed(texts: list[str]) -> list[list[float]]:
+                keys = [sem.text_key(spec.provider, spec.model, t) for t in texts]
+                found: dict[str, list[float]] = {}
+                if self.use_cache:
+                    for k in set(keys):
+                        if (hit := self.store.cache_get(k)) is not None:
+                            found[k] = hit
+                todo = list(dict.fromkeys((k, t) for k, t in zip(keys, texts, strict=True) if k not in found))
+                stats["cached"] = len(texts) - sum(1 for k in keys if k not in found)
+                for start in range(0, len(todo), 128):
+                    part = todo[start : start + 128]
+                    held = self._check_budget(result, step.id)
+                    got = prov.embed([t for _, t in part])
+                    self._charge(result, step, spec, got, ticket=held)
+                    if len(got.vectors) != len(part):
+                        raise ValueError(
+                            f"dedupe semantic: '{name}' returned {len(got.vectors)} vectors "
+                            f"for {len(part)} texts"
+                        )
+                    for (k, _), v in zip(part, got.vectors, strict=True):
+                        found[k] = list(v)
+                        if self.use_cache:
+                            self.store.cache_set(k, found[k])
+                stats["embedded"] = len(todo)
+                return [found[k] for k in keys]
+
+        out, _dropped, report = sem.dedupe(rows, semantic, embed)
+        if name:
+            report.update(stats)
+        self._emit(run_id, "dedupe.semantic", step.id, **report)
+        return out
 
     # checks ---------------------------------------------------------------
     def _run_check(self, run_id: str, step: StepSpec, records: Any, result: RunResult) -> Records:
@@ -2337,7 +2397,14 @@ class Runner:
     # run ----------------------------------------------------------------
     def _run_one(self, run_id: str, step: StepSpec, result: RunResult) -> None:
         step_id = step.id
-        if step.kind in ("agent", "first_valid") or step.review or step.use in ("map_schema", "resolve"):
+        sem_opts = step.with_.get("semantic") if step.use == "dedupe" else None
+        semantic_llm = isinstance(sem_opts, dict) and bool(sem_opts.get("llm"))
+        if (
+            step.kind in ("agent", "first_valid")
+            or step.review
+            or step.use in ("map_schema", "resolve")
+            or semantic_llm
+        ):
             with self._spend:
                 result.spend[step_id] = dict.fromkeys(
                     ("input_tokens", "output_tokens", "cache_read_tokens", "llm_calls", "tool_calls"), 0
