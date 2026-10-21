@@ -170,7 +170,7 @@ answer counts as wrong in every field. When `min_accuracy` is set and any run (t
 that git ref (`HEAD~1`, a branch, a tag; the file must be in a git repository). The text report
 shows each field's change against the first run of the step (`category: 91.0%  (vs default: -2.1%)`).
 
-`agentl lint` warns (AL014) when a field the golden set gives as input is never named in the
+`agentl lint` warns (AL015) when a field the golden set gives as input is never named in the
 step's `agent:` instruction: often a placeholder that was renamed or a field nobody uses.
 
 Seed a golden set from a real run: `agentl eval add pipeline.yaml classify --from-run RUN_ID`

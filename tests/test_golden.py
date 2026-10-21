@@ -187,11 +187,11 @@ def test_lint_flags_golden_fields_the_prompt_never_names(project, tmp_path):
     from agentl import lint
 
     path = project("golden/classify.jsonl")
-    codes = [f for f in lint.check_file(path).findings if f.code == "AL014"]
+    codes = [f for f in lint.check_file(path).findings if f.code == "AL015"]
     assert len(codes) == 1 and "text, price" in codes[0].message
     text = (tmp_path / "pipeline.yaml").read_text(encoding="utf-8")
     (tmp_path / "pipeline.yaml").write_text(
         text.replace("Classify the expense.", "Classify the expense from its text and price."),
         encoding="utf-8",
     )
-    assert not [f for f in lint.check_file(path).findings if f.code == "AL014"]
+    assert not [f for f in lint.check_file(path).findings if f.code == "AL015"]

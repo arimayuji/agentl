@@ -68,7 +68,7 @@ RULES = {
     "AL011": "http source with a fallback but no retries",
     "AL012": "personal data in sample records reaches an agent step without protect or pii",
     "AL013": "an http step turns off TLS certificate checks",
-    "AL014": "a golden input field the agent prompt never mentions",
+    "AL015": "a golden input field the agent prompt never mentions",
 }
 
 
@@ -667,7 +667,7 @@ def _mentions(prompt: str, name: str) -> bool:
 
 
 def _golden_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
-    """AL014: a field the golden set gives the step as input that its prompt never names. The model
+    """AL015: a field the golden set gives the step as input that its prompt never names. The model
     sees the whole record, but a field the instruction never mentions is often a renamed
     placeholder or a leftover the eval scores without the prompt using it."""
     out: list[Finding] = []
@@ -684,7 +684,7 @@ def _golden_hints(spec: PipelineSpec, pos: _Positions) -> list[Finding]:
             line, col = pos.step(s.id, "agent")
             out.append(
                 Finding(
-                    "AL014",
+                    "AL015",
                     "warning",
                     f"agent step '{s.id}': its golden set gives {', '.join(unused)} as input and the "
                     "prompt never mentions them",
